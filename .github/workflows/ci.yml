@@ -1,9 +1,9 @@
 name: CI
 
 on:
-  push:
-    branches: [main]
-  pull_request:
+  schedule:
+    - cron: "0 9 * * *"
+  workflow_dispatch:
 
 permissions:
   contents: read
