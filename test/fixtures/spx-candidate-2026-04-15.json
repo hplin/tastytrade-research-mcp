@@ -1,0 +1,107 @@
+{
+  "metadata": {
+    "captured_at": "2026-09-25T22:15:23.155Z",
+    "checkpoint": "2026-04-15T14:30:00.000Z",
+    "source": "live tastytrade Backtester capability spike",
+    "sanitized": true
+  },
+  "create_response": {
+    "id": "fixture-spx-2026-04-15",
+    "status": "completed"
+  },
+  "logs": {
+    "trials": [
+      {
+        "profitLoss": null,
+        "openDateTime": "2026-04-14T19:45:00Z",
+        "closeDateTime": "2026-04-15T19:45:00Z",
+        "orders": [
+          {
+            "id": 1,
+            "fees": "1.127",
+            "legs": [
+              {
+                "action": "buy to open",
+                "quantity": "1",
+                "fillPrice": "42.35",
+                "instrument": {
+                  "side": "put",
+                  "type": "equity-option",
+                  "strike": "6690",
+                  "symbol": "SPX",
+                  "expiration": "2026-05-12T20:00:00Z",
+                  "internalSymbol": "equity-option.SPX.20260512200000.P.6690000",
+                  "underlyingSymbol": "SPX"
+                }
+              }
+            ],
+            "type": "market",
+            "price": "42.35",
+            "status": "filled",
+            "datetime": "2026-04-14T19:45:00Z",
+            "fillPrice": "42.35",
+            "underlying": "SPX",
+            "priceEffect": "debit",
+            "timeInForce": "day"
+          }
+        ],
+        "closeReason": "reached days in trade limit",
+        "underlyingPriceAtOpen": "6969.23",
+        "underlyingPriceAtClose": "7009.16"
+      },
+      {
+        "profitLoss": null,
+        "openDateTime": "2026-04-15T19:45:00Z",
+        "closeDateTime": "2026-04-16T19:45:00Z",
+        "orders": [
+          {
+            "id": 3,
+            "fees": "1.127",
+            "legs": [
+              {
+                "action": "buy to open",
+                "quantity": "1",
+                "fillPrice": "42.55",
+                "instrument": {
+                  "side": "put",
+                  "type": "equity-option",
+                  "strike": "6740",
+                  "symbol": "SPX",
+                  "expiration": "2026-05-13T20:00:00Z",
+                  "internalSymbol": "equity-option.SPX.20260513200000.P.6740000",
+                  "underlyingSymbol": "SPX"
+                }
+              }
+            ],
+            "type": "market",
+            "price": "42.55",
+            "status": "filled",
+            "datetime": "2026-04-15T19:45:00Z",
+            "fillPrice": "42.55",
+            "underlying": "SPX",
+            "priceEffect": "debit",
+            "timeInForce": "day"
+          }
+        ],
+        "closeReason": "reached days in trade limit",
+        "underlyingPriceAtOpen": "7009.16",
+        "underlyingPriceAtClose": "7039.36"
+      }
+    ],
+    "snapshots": {}
+  },
+  "simulation": {
+    "startTime": "2026-04-14T19:45:00Z",
+    "endTime": "2026-04-14T19:45:00Z",
+    "snapshots": [
+      {
+        "dateTime": "2026-04-14T19:45:00Z",
+        "price": "42.35",
+        "effect": "debit",
+        "delta": "-20.17",
+        "underlyingPrice": "0"
+      }
+    ],
+    "underlying": "SPX"
+  }
+}

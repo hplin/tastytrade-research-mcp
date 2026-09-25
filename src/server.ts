@@ -17,6 +17,10 @@ import {
   type HistoricalCandlesInput,
 } from "./historical-candles.js";
 import {
+  discoverHistoricalSpxCandidates,
+  type HistoricalSpxCandidatesInput,
+} from "./historical-spx-candidates.js";
+import {
   verifyHistoricalFillWithBacktester,
   type HistoricalFillBacktesterInput,
 } from "./historical-fill.js";
@@ -149,6 +153,67 @@ const BACKTEST_SELECTOR_SCHEMA = {
     value: DECIMAL_SCHEMA,
   },
   required: ["method", "value"],
+  additionalProperties: false,
+} as const;
+
+const HISTORICAL_CANDIDATE_SELECTOR_SCHEMA = {
+  type: "object",
+  properties: {
+    ...BACKTEST_SELECTOR_SCHEMA.properties,
+    days_until_expiration: {
+      type: "integer",
+      minimum: 1,
+      maximum: 365,
+    },
+  },
+  required: ["method", "value", "days_until_expiration"],
+  additionalProperties: false,
+} as const;
+
+const HISTORICAL_SPX_CANDIDATES_SCHEMA = {
+  type: "object",
+  properties: {
+    request: {
+      type: "object",
+      properties: {
+        underlying: { type: "string", enum: ["SPX"] },
+        as_of: RFC3339_SCHEMA,
+        min_dte: { type: "integer", minimum: 1, maximum: 365 },
+        max_dte: { type: "integer", minimum: 1, maximum: 365 },
+        sides: {
+          type: "array",
+          minItems: 1,
+          maxItems: 2,
+          uniqueItems: true,
+          items: { type: "string", enum: ["CALL", "PUT"] },
+        },
+        selector_grid: {
+          type: "array",
+          minItems: 1,
+          maxItems: 12,
+          items: HISTORICAL_CANDIDATE_SELECTOR_SCHEMA,
+        },
+        lookback_calendar_days: {
+          type: "integer",
+          minimum: 0,
+          maximum: 30,
+        },
+        phase: {
+          type: "string",
+          enum: ["REGRESSION_RESEARCH"],
+        },
+        references: REFERENCES_SCHEMA,
+      },
+      required: [
+        "underlying",
+        "as_of",
+        "selector_grid",
+        "phase",
+      ],
+      additionalProperties: false,
+    },
+  },
+  required: ["request"],
   additionalProperties: false,
 } as const;
 
@@ -487,6 +552,12 @@ export const TOOLS: Tool[] = [
     inputSchema: PACKAGE_PRICING_SCHEMA,
   },
   {
+    name: "tastytrade_discover_historical_spx_candidates",
+    description:
+      "Discover timestamp-safe historical SPX contracts selected by a caller-supplied Backtester selector grid. Returns exact provider identities when logs support them, enriches only at or before as_of, and never claims a full historical chain or future outcome.",
+    inputSchema: HISTORICAL_SPX_CANDIDATES_SCHEMA,
+  },
+  {
     name: "tastytrade_prepare_spx_spread",
     description:
       "Normalize an SPX debit vertical, credit vertical, iron condor, or double diagonal into deterministic Backtester and exact-leg simulation requests without submitting it.",
@@ -647,6 +718,13 @@ export function createResearchServer(
       case "tastytrade_price_option_package":
         return toolResult(
           priceOptionPackage(requestArg<PackagePricingInput>(args)),
+        );
+      case "tastytrade_discover_historical_spx_candidates":
+        return toolResult(
+          await discoverHistoricalSpxCandidates(
+            backtester,
+            requestArg<HistoricalSpxCandidatesInput>(args),
+          ),
         );
       case "tastytrade_prepare_spx_spread":
         return toolResult(

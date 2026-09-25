@@ -1,5 +1,9 @@
 import type { JsonObject } from "./backtester-client.js";
 import { createHash } from "node:crypto";
+import {
+  normalizeBacktestSelector,
+  type BacktestStrikeSelector,
+} from "./backtest-selector.js";
 import { ExactDecimal, type DecimalInput } from "./decimal.js";
 import {
   createExecutionEvidence,
@@ -15,11 +19,7 @@ import { normalizeDate, normalizeRfc3339 } from "./time.js";
 
 export type OptionSide = "CALL" | "PUT";
 
-export type BacktestStrikeSelector =
-  | { method: "DELTA"; value: DecimalInput }
-  | { method: "PERCENTAGE_OTM"; value: DecimalInput }
-  | { method: "CURRENT_PRICE_OFFSET"; value: DecimalInput }
-  | { method: "PREMIUM"; value: DecimalInput };
+export type { BacktestStrikeSelector } from "./backtest-selector.js";
 
 export type SpreadLeg = {
   provider_symbol: string;
@@ -240,30 +240,6 @@ function validateStructure(
   }
 }
 
-function normalizeSelector(selector: BacktestStrikeSelector): JsonObject {
-  const valueText = ExactDecimal.parse(
-    selector.value,
-    `backtest_selector.${selector.method}`,
-  ).toString();
-  const value = Number(valueText);
-  if (!Number.isFinite(value)) {
-    throw new Error(`backtest_selector.${selector.method} is out of range.`);
-  }
-  switch (selector.method) {
-    case "DELTA":
-      return { strikeSelection: "delta", delta: value };
-    case "PERCENTAGE_OTM":
-      return { strikeSelection: "percentageOTM", percentageOTM: value };
-    case "CURRENT_PRICE_OFFSET":
-      return {
-        strikeSelection: "currentPriceOffset",
-        currentPriceOffset: value,
-      };
-    case "PREMIUM":
-      return { strikeSelection: "premium", premium: value };
-  }
-}
-
 function stableRequestId(value: unknown): string {
   return createHash("sha256")
     .update(JSON.stringify(value))
@@ -417,7 +393,9 @@ export function prepareSpreadResearch(
         direction: leg.direction,
         side: leg.option_side.toLowerCase(),
         quantity: leg.quantity,
-        ...normalizeSelector(leg.backtest_selector!),
+        ...normalizeBacktestSelector(
+          leg.backtest_selector!,
+        ).provider_fields,
         daysUntilExpiration: leg.days_until_expiration,
       })),
       ...(backtest.entry_conditions

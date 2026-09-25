@@ -34,10 +34,11 @@ describe("MCP research server", () => {
     await client.connect(clientTransport);
     try {
       const tools = await client.listTools();
-      expect(tools.tools).toHaveLength(13);
+      expect(tools.tools).toHaveLength(14);
       expect(tools.tools.map((tool) => tool.name)).toEqual(
         expect.arrayContaining([
           "tastytrade_price_option_package",
+          "tastytrade_discover_historical_spx_candidates",
           "tastytrade_verify_historical_fill",
           "tastytrade_get_historical_candles",
           "tastytrade_prepare_spx_spread",
@@ -100,6 +101,50 @@ describe("MCP research server", () => {
       );
       expect(candleResult.resampled).toBe(false);
       expect(candles.getHistoricalCandles).toHaveBeenCalledTimes(1);
+
+      const candidates = textResult(
+        await client.callTool({
+          name: "tastytrade_discover_historical_spx_candidates",
+          arguments: {
+            request: {
+              underlying: "SPX",
+              as_of: "2026-04-15T14:30:00.000Z",
+              sides: ["PUT"],
+              selector_grid: [
+                {
+                  method: "DELTA",
+                  value: "20",
+                  days_until_expiration: 28,
+                },
+              ],
+              phase: "REGRESSION_RESEARCH",
+            },
+          },
+        }),
+      );
+      expect(candidates).toMatchObject({
+        status: "NOT_AVAILABLE",
+        evidence_type: "HISTORICAL_SELECTOR_CANDIDATE_SET",
+        evidence_phase: "REGRESSION_RESEARCH",
+        surface: {
+          atm_iv: null,
+          skew: null,
+          term_structure: null,
+        },
+      });
+      expect(backtester.createBacktest).toHaveBeenCalledWith(
+        expect.objectContaining({
+          symbol: "SPX",
+          legs: [
+            expect.objectContaining({
+              side: "put",
+              strikeSelection: "delta",
+              delta: 20,
+              daysUntilExpiration: 28,
+            }),
+          ],
+        }),
+      );
 
       await expect(
         client.callTool({
