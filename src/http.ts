@@ -1,4 +1,5 @@
 import { requireEnv } from "./config.js";
+import { createEntraTokenVerifier } from "./entra-oauth.js";
 import { createResearchHttpServer } from "./http-server.js";
 
 function httpPort(): number {
@@ -20,8 +21,48 @@ for (const name of [
 
 const host = process.env.MCP_HTTP_HOST?.trim() || "127.0.0.1";
 const port = httpPort();
+const authMode = process.env.MCP_AUTH_MODE?.trim().toLowerCase() || "api-key";
+const auth =
+  authMode === "api-key"
+    ? {
+        type: "api-key" as const,
+        apiKey: requireEnv("MCP_API_KEY"),
+      }
+    : authMode === "oauth"
+      ? (() => {
+          const resource = requireEnv("MCP_PUBLIC_URL");
+          const issuer = requireEnv("OAUTH_ISSUER");
+          const audience = requireEnv("OAUTH_AUDIENCE");
+          const jwksUrl = requireEnv("OAUTH_JWKS_URL");
+          const requiredScope = requireEnv("OAUTH_REQUIRED_SCOPE");
+          const tokenScope =
+            process.env.OAUTH_TOKEN_SCOPE?.trim() ||
+            requiredScope.split("/").at(-1) ||
+            requiredScope;
+          return {
+            type: "oauth" as const,
+            resource,
+            issuer,
+            requiredScope,
+            resourceName:
+              process.env.OAUTH_RESOURCE_NAME?.trim() ||
+              "Tastytrade Research MCP",
+            verifier: createEntraTokenVerifier({
+              issuer,
+              audience,
+              jwksUrl,
+              resource,
+              requiredScope: tokenScope,
+            }),
+          };
+        })()
+      : (() => {
+          throw new Error(
+            "MCP_AUTH_MODE must be either api-key or oauth.",
+          );
+        })();
 const httpServer = createResearchHttpServer({
-  apiKey: requireEnv("MCP_API_KEY"),
+  auth,
 });
 
 await new Promise<void>((resolve, reject) => {

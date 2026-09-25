@@ -177,10 +177,17 @@ Do not commit credentials. If using Node's `--env-file`, unset inherited
 All API timestamps must be RFC3339 values containing `Z` or an explicit UTC
 offset; timezone-less timestamps are rejected.
 
-The remote HTTP entrypoint requires a bearer token from `MCP_API_KEY`, compares
-it in constant time, accepts MCP only at `POST /mcp`, and limits request bodies
-to 1 MiB. `GET /healthz` is intentionally unauthenticated and contains only
-service health metadata.
+The remote HTTP entrypoint supports two authentication modes:
+
+- `api-key` for local development and emergency rollback, using a constant-time
+  comparison against `MCP_API_KEY`;
+- `oauth` for production, validating Entra JWT signature, issuer, audience,
+  expiration, and `mcp.read` scope through cached JWKS.
+
+OAuth mode publishes RFC 9728 protected-resource metadata at both supported
+well-known paths and includes that URL and the required scope in every 401
+challenge. MCP is accepted only at `POST /mcp`, request bodies are limited to
+1 MiB, and `GET /healthz` remains unauthenticated with health metadata only.
 
 ## Requirements and setup
 
@@ -216,6 +223,13 @@ Connect to `http://127.0.0.1:8000/mcp` with
 `Authorization: Bearer <MCP_API_KEY>`. Azure Container Apps deployment and
 Key Vault guidance are documented in
 [`docs/azure-deployment.md`](docs/azure-deployment.md).
+
+Production OAuth configuration additionally requires `MCP_PUBLIC_URL`,
+`OAUTH_ISSUER`, `OAUTH_JWKS_URL`, `OAUTH_AUDIENCE`,
+`OAUTH_REQUIRED_SCOPE`, and `OAUTH_TOKEN_SCOPE`. ChatGPT discovers the Entra
+authorization server from
+`/.well-known/oauth-protected-resource`, then sends its access token in the
+standard `Authorization` header.
 
 For an MCP client:
 

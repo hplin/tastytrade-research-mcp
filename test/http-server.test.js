@@ -148,6 +148,97 @@ describe("MCP HTTP server", () => {
     }
   });
 
+  test("publishes OAuth metadata and accepts a verified bearer token", async () => {
+    const verifier = {
+      verifyAccessToken: jest.fn(async (token) => {
+        if (token !== "valid-oauth-token") {
+          throw new Error("invalid token");
+        }
+        return {
+          token,
+          clientId: "chatgpt-client",
+          scopes: ["mcp.read"],
+          expiresAt: 2_000_000_000,
+          resource: new URL("https://research.example.com/mcp"),
+        };
+      }),
+    };
+    const baseUrl = await listen(
+      createResearchHttpServer({
+        auth: {
+          type: "oauth",
+          resource: "https://research.example.com/mcp",
+          issuer:
+            "https://login.microsoftonline.com/tenant-id/v2.0",
+          requiredScope: "api://resource-app-id/mcp.read",
+          resourceName: "Research MCP",
+          verifier,
+        },
+        services: fakeServices(),
+      }),
+    );
+
+    const metadata = await fetch(
+      `${baseUrl}/.well-known/oauth-protected-resource`,
+    );
+    await expect(metadata.json()).resolves.toEqual({
+      resource: "https://research.example.com/mcp",
+      authorization_servers: [
+        "https://login.microsoftonline.com/tenant-id/v2.0",
+      ],
+      scopes_supported: ["api://resource-app-id/mcp.read"],
+      bearer_methods_supported: ["header"],
+      resource_name: "Research MCP",
+    });
+    const pathMetadata = await fetch(
+      `${baseUrl}/.well-known/oauth-protected-resource/mcp`,
+    );
+    expect(pathMetadata.status).toBe(200);
+
+    const unauthorized = await fetch(`${baseUrl}/mcp`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: "{}",
+    });
+    expect(unauthorized.status).toBe(401);
+    expect(unauthorized.headers.get("www-authenticate")).toContain(
+      `resource_metadata="https://research.example.com/.well-known/oauth-protected-resource"`,
+    );
+    expect(unauthorized.headers.get("www-authenticate")).toContain(
+      `scope="api://resource-app-id/mcp.read"`,
+    );
+    const invalidToken = await fetch(`${baseUrl}/mcp`, {
+      method: "POST",
+      headers: {
+        Authorization: "Bearer invalid-oauth-token",
+        "Content-Type": "application/json",
+      },
+      body: "{}",
+    });
+    expect(invalidToken.status).toBe(401);
+
+    const transport = new StreamableHTTPClientTransport(
+      new URL(`${baseUrl}/mcp`),
+      {
+        requestInit: {
+          headers: { Authorization: "Bearer valid-oauth-token" },
+        },
+      },
+    );
+    const client = new Client({
+      name: "oauth-http-test-client",
+      version: "1.0.0",
+    });
+    await client.connect(transport);
+    try {
+      const tools = await client.listTools();
+      expect(tools.tools).toHaveLength(13);
+      expect(verifier.verifyAccessToken).toHaveBeenCalled();
+    } finally {
+      await client.close();
+    }
+  });
+
   test("rejects oversized and malformed request bodies", async () => {
     const baseUrl = await listen(
       createResearchHttpServer({
