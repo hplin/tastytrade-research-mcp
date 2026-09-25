@@ -29,7 +29,9 @@ The suite builds the TypeScript project before running Jest and covers:
 - untrusted DXLink-host rejection;
 - MCP tool discovery and dispatch;
 - authenticated Streamable HTTP access, public health checks, and request
-  body limits.
+  body limits;
+- Entra JWT signature, issuer, audience, expiry, and scope validation;
+- RFC 9728 protected-resource metadata and OAuth challenges.
 
 Live credentials are not used by automated tests. Provider smoke tests should
 load credentials from the environment, must not print them, and should use
