@@ -1,0 +1,181 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/hplin/tastytrade-research-mcp/docs/execution-evidence.schema.json",
+  "title": "tastytrade research execution evidence",
+  "description": "Versioned provenance contract shared by live paper checkpoints and post-session regression evidence.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "contract_version",
+    "evidence_type",
+    "evidence_phase",
+    "source",
+    "as_of",
+    "oldest_leg_as_of",
+    "freshness_status",
+    "temporal_alignment",
+    "native_available",
+    "working_limit",
+    "acceptable_bound",
+    "fill_model",
+    "fill_confidence",
+    "references",
+    "warnings"
+  ],
+  "properties": {
+    "contract_version": {
+      "const": "1.0.0"
+    },
+    "evidence_type": {
+      "enum": [
+        "NATIVE_PACKAGE",
+        "SYNTHETIC_NATURAL",
+        "SYNTHETIC_MID_REFERENCE",
+        "HISTORICAL_PATH",
+        "BACKTESTER_SIMULATION",
+        "BROKER_DRY_RUN"
+      ]
+    },
+    "evidence_phase": {
+      "enum": [
+        "LIVE_CHECKPOINT",
+        "POST_SESSION_REGRESSION"
+      ]
+    },
+    "source": {
+      "type": "string",
+      "minLength": 1
+    },
+    "as_of": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d{1,9})?(?:Z|[+-]\\d{2}:\\d{2})$"
+    },
+    "oldest_leg_as_of": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d{1,9})?(?:Z|[+-]\\d{2}:\\d{2})$"
+    },
+    "freshness_status": {
+      "enum": [
+        "FRESH",
+        "STALE",
+        "UNKNOWN"
+      ]
+    },
+    "temporal_alignment": {
+      "enum": [
+        "ALIGNED",
+        "MISALIGNED",
+        "UNKNOWN"
+      ]
+    },
+    "native_available": {
+      "type": "boolean"
+    },
+    "working_limit": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "pattern": "^-?(?:0|[1-9][0-9]*)(?:\\.[0-9]+)?$"
+    },
+    "acceptable_bound": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "pattern": "^-?(?:0|[1-9][0-9]*)(?:\\.[0-9]+)?$"
+    },
+    "fill_model": {
+      "enum": [
+        "LIMIT_TOUCH",
+        "CONSERVATIVE_CROSS",
+        "NOT_APPLICABLE"
+      ]
+    },
+    "fill_confidence": {
+      "enum": [
+        "HIGH",
+        "MEDIUM",
+        "LOW",
+        "NOT_APPLICABLE"
+      ]
+    },
+    "references": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "checkpoint_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        },
+        "paper_order_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        },
+        "position_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        }
+      }
+    },
+    "warnings": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "uniqueItems": true
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "evidence_type": {
+            "enum": [
+              "HISTORICAL_PATH",
+              "BACKTESTER_SIMULATION"
+            ]
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "evidence_phase": {
+            "const": "POST_SESSION_REGRESSION"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "evidence_type": {
+            "enum": [
+              "BROKER_DRY_RUN",
+              "SYNTHETIC_MID_REFERENCE"
+            ]
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "fill_model": {
+            "const": "NOT_APPLICABLE"
+          },
+          "fill_confidence": {
+            "const": "NOT_APPLICABLE"
+          }
+        }
+      }
+    }
+  ]
+}

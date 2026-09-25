@@ -1,66 +1,193 @@
 # tastytrade-research-mcp
 
-Research-only Model Context Protocol (MCP) server for tastytrade historical options research and strategy regression testing.
+Research-only Model Context Protocol (MCP) server for tastytrade historical
+options research, package-price evidence, and strategy regression testing.
 
-The project is intentionally separate from the official [tastytrade/tastytrade-mcp](https://github.com/tastytrade/tastytrade-mcp):
+The project is intentionally separate from the official
+[tastytrade/tastytrade-mcp](https://github.com/tastytrade/tastytrade-mcp):
 
-- **official tastytrade MCP**: live quotes, option chains, market metrics, account and trading workflows
-- **this project**: historical research, Backtester API access, and regression-test support
-- **no order placement, replacement, cancellation, or brokerage-account mutation**
+- **official tastytrade MCP**: live quotes, option chains, market metrics,
+  account workflows, and broker dry-run validation
+- **this project**: historical candles, Backtester access, package-pricing
+  research, and post-session fill verification
+- **never exposed here**: brokerage order placement, replacement, or
+  cancellation
 
-## Goals
+## MCP tools
 
-Primary use cases:
+### Provider-native Backtester tools
 
-- XSP/SPX directional-strategy regression tests
-- SPY cash-secured-put regression tests
-- historical option trade simulation
-- historical backtest coverage discovery
-- reproducible research inputs for higher-level grading engines
-
-## Initial MCP tools
-
-| Tool | Upstream tastytrade endpoint | Purpose |
+| Tool | Upstream endpoint | Purpose |
 | --- | --- | --- |
 | `tastytrade_get_backtest_available_dates` | `GET /available-dates` | Discover symbols and historical coverage |
-| `tastytrade_list_backtests` | `GET /backtests` | List submitted backtest IDs |
-| `tastytrade_create_backtest` | `POST /backtests` | Submit a historical strategy backtest |
+| `tastytrade_list_backtests` | `GET /backtests` | List submitted research jobs |
+| `tastytrade_create_backtest` | `POST /backtests` | Submit a provider-native historical strategy |
 | `tastytrade_get_backtest` | `GET /backtests/{id}` | Poll status and retrieve results |
-| `tastytrade_get_backtest_logs` | `GET /backtests/{id}/logs` | Inspect trial execution logs |
-| `tastytrade_simulate_trade` | `POST /simulate-trade` | Simulate one historical trade path |
+| `tastytrade_get_backtest_logs` | `GET /backtests/{id}/logs` | Retrieve trials and execution logs |
+| `tastytrade_cancel_backtest` | `POST /backtests/{id}/cancel` | Cancel only a Backtester job |
+| `tastytrade_simulate_trade` | `POST /simulate-trade` | Simulate one exact historical trade |
 
-Backtester base URL: `https://backtester.vast.tastyworks.com`.
+### Research and regression tools
 
-## Planned historical-market-data support
+| Tool | Purpose |
+| --- | --- |
+| `tastytrade_price_option_package` | Price verticals, iron condors, and double diagonals with explicit native/synthetic provenance |
+| `tastytrade_prepare_spx_spread` | Deterministically normalize SPX legs without calling an upstream service |
+| `tastytrade_simulate_spx_spread` | Run exact-leg SPX historical simulation and normalize its result |
+| `tastytrade_create_spx_spread_backtest` | Submit supported SPX structures through relative Backtester selectors |
+| `tastytrade_verify_historical_fill` | Check a frozen paper limit against a forward Backtester path |
+| `tastytrade_get_historical_candles` | Retrieve normalized DXLink OHLCV candles without resampling |
 
-A second phase will add a normalized MCP tool for DXLink historical candles:
+Use MCP `tools/list` for the complete JSON input schemas.
 
-```text
-tastytrade_get_historical_candles
-```
+## Execution evidence contract
 
-That tool is intended to provide OHLCV inputs for deterministic calculations such as VWAP, moving averages, ATR, and price-structure regression. It is deliberately not exposed until the DXLink request/response behavior is implemented and tested.
+Every normalized research result uses execution-evidence contract `1.0.0`.
+The contract distinguishes:
+
+- `NATIVE_PACKAGE`
+- `SYNTHETIC_NATURAL`
+- `SYNTHETIC_MID_REFERENCE`
+- `HISTORICAL_PATH`
+- `BACKTESTER_SIMULATION`
+- `BROKER_DRY_RUN`
+
+The machine-readable schema is
+[`docs/execution-evidence.schema.json`](docs/execution-evidence.schema.json).
+Migration guidance for existing paper-simulation logs is in
+[`docs/execution-evidence-migration.md`](docs/execution-evidence-migration.md).
+
+`BROKER_DRY_RUN` validates a caller-supplied order; it never implies
+fillability. Synthetic midpoint evidence is valuation-only.
+
+## Package pricing
+
+Package arithmetic uses an in-repository exact decimal implementation rather
+than binary floating-point arithmetic.
+
+- `NATIVE_PACKAGE` is selected only when the caller supplies a valid,
+  non-crossed upstream package market.
+- `SYNTHETIC_NATURAL` buys each leg at its ask and sells each leg at its bid.
+- `SYNTHETIC_MID_REFERENCE` uses leg midpoints and always reports
+  `guaranteed_executable: false`.
+- Native package bid/ask fields are never populated with synthetic arithmetic.
+- Every leg retains its exact symbol, action, quantity, expiration, timestamp,
+  and provider source.
+- `as_of`, freshness, and temporal alignment are computed from the
+  decision-critical observations.
+- Missing, crossed, stale, future-dated, and materially misaligned quotes are
+  returned as explicit warnings. Unusable evidence is never success-shaped.
+
+Supported families are `DEBIT_VERTICAL`, `CREDIT_VERTICAL`, `IRON_CONDOR`, and
+multi-expiration `DOUBLE_DIAGONAL`.
+
+## SPX spread adapter
+
+The high-level adapter preserves each exact provider/OCC option symbol in
+`/simulate-trade` requests and returns stable `1.0.0` result envelopes. Each
+result repeats the immutable normalized legs and carries a deterministic
+SHA-256 `request_id`, so persisted evidence remains attributable even though
+the provider response itself contains only prices and timestamps.
+
+Aggregate `/backtests` requests use relative selectors (`delta`,
+`percentageOTM`, `currentPriceOffset`, or `premium`) and therefore cannot
+preserve an exact historical strike or expiration. The adapter exposes that
+limitation in its capability flags.
+
+Double diagonals remain exact-simulation only because the aggregate
+Backtester cannot faithfully preserve their multi-expiration identity. 0DTE
+legs are rejected unless the caller explicitly sets `allow_0dte: true`.
+
+This MCP supplies evidence only. It does not assign grades or make production
+entry decisions.
+
+## Historical fill verification
+
+`tastytrade_verify_historical_fill`:
+
+- evaluates only `[submitted_at, valid_until]`;
+- supports both `ENTRY` and `EXIT`;
+- preserves `paper_order_id`, `checkpoint_id`, and `position_id` references;
+- returns `TOUCHED`, `NOT_TOUCHED`, or `NOT_VERIFIABLE`;
+- distinguishes `LIMIT_TOUCH` from `CONSERVATIVE_CROSS`;
+- reports an exact observed touch timestamp when defensible, otherwise a
+  bounded interval for a sparse path;
+- records disagreement with a live paper assumption without mutating the
+  original paper event.
+
+All verification is marked `POST_SESSION_REGRESSION` and includes
+`HISTORICAL_EVIDENCE_ONLY_DO_NOT_REWRITE_LIVE_EVENT`.
+
+## DXLink historical candles
+
+`tastytrade_get_historical_candles` obtains an API quote token from
+`GET /api-quote-tokens`, connects only to a `wss://` host under
+`dxfeed.com`, completes the DXLink handshake, and waits for the indexed-event
+snapshot boundary.
+
+The normalized output includes:
+
+- requested and actual UTC ranges;
+- source timestamp per bar;
+- explicit instrument type and interval;
+- `ALL`, US `REGULAR`, or caller-defined `CUSTOM` session filtering with an
+  IANA timezone;
+- OHLC, volume, VWAP, bid/ask volume, implied volatility, and open interest
+  when supplied;
+- missing-bar, empty-result, and snapshot-truncation warnings;
+- `resampled: false`.
+
+`REGULAR` requests use provider-native `a=s,tho=true` candle attributes, so
+bars are aligned to and built only from the instrument's regular trading
+session. `CUSTOM` windows filter complete provider bars by their source
+timestamp; they are never reaggregated and include an explicit warning about
+that limitation.
+
+The server sends `fromTime` as epoch **milliseconds**, matching the current
+production DXLink service. The published AsyncAPI description currently says
+seconds, but seconds cause the service to replay the full available history.
+Production currently ignores `toTime`, so the client estimates and limits the
+entire snapshot from `start_time` through the present before opening a socket,
+then enforces the same limit while receiving data. Old fine-grained ranges
+must use a coarser interval rather than silently consuming an unbounded
+snapshot.
+
+### Rate limits and retries
+
+- API quote tokens are cached for 23 hours, below their documented 24-hour
+  lifetime.
+- The quote-token REST request retries network errors, `429`, and `5xx` up to
+  three attempts with capped exponential backoff and jitter.
+- A candle snapshot has a configurable timeout (maximum 60 seconds).
+- WebSocket snapshot failures are returned explicitly and are not silently
+  retried or merged.
+- Requests are bounded by `max_candles` (default 10,000; maximum 20,000).
+- DXLink permits at most 5 concurrent sessions and 100 Candle subscriptions
+  per session. Callers should batch work rather than fan out unbounded calls.
 
 ## Security model
 
-This server is **research-only**.
+OAuth client credentials and refresh tokens are sent only to
+`api.tastyworks.com`. The short-lived OAuth token is sent to the fixed
+Backtester host and to the tastytrade quote-token endpoint. The resulting
+quote token is sent only over `wss://` to a host under `dxfeed.com`.
 
-It never exposes order-entry tools and does not need an account number to run Backtester requests. OAuth client credentials and refresh tokens are sent only to the fixed tastytrade OAuth host. The resulting short-lived access token is sent to the fixed tastytrade Backtester host.
+Do not commit credentials. If using Node's `--env-file`, unset inherited
+`TASTYTRADE_*` variables first because inherited values override the file.
+All API timestamps must be RFC3339 values containing `Z` or an explicit UTC
+offset; timezone-less timestamps are rejected.
 
-Do not commit credentials.
-
-## Requirements
+## Requirements and setup
 
 - Node.js 22+
 - tastytrade OAuth API grant:
   - `TASTYTRADE_CLIENT_ID`
   - `TASTYTRADE_CLIENT_SECRET`
   - `TASTYTRADE_REFRESH_TOKEN`
-
-## Setup
+- A fully onboarded tastytrade customer for DXLink quote tokens
 
 ```bash
-npm install
+npm ci
 npm run build
 
 export TASTYTRADE_CLIENT_ID="..."
@@ -70,7 +197,7 @@ export TASTYTRADE_REFRESH_TOKEN="..."
 npm start
 ```
 
-For an MCP client, launch:
+For an MCP client:
 
 ```json
 {
@@ -88,43 +215,31 @@ For an MCP client, launch:
 }
 ```
 
-## Regression architecture
-
-```text
-Historical market state
-        |
-        +--> XSP/SPX grading engine
-        |         |
-        |         +--> candidate gate
-        |
-        +--> SPY CSP grading engine
-                  |
-                  +--> candidate gate
-                            |
-                            v
-                 tastytrade Backtester
-                    /         \
-             aggregate      simulate
-              backtest       trade
-```
-
-This MCP supplies historical evidence and simulation results. It does not assign strategy grades or decide whether a trade should be entered.
-
 ## Development
 
 ```bash
+npm ci
 npm run typecheck
-npm run build
+npm test
 ```
+
+The regression suite covers clean and degraded package markets, all supported
+spread families, regular and custom candle sessions, both fill models,
+ambiguous paths, Backtester normalization, and MCP tool dispatch.
 
 ## Upstream documentation
 
 - Backtesting guide: https://developer.tastytrade.com/docs/guides/backtesting/
-- Backtesting API: https://developer.tastytrade.com/open-api-spec/backtesting/
-- Streaming / DXLink: https://developer.tastytrade.com/docs/concepts/streaming/
+- Backtesting API: https://developer.tastytrade.com/reference/backtesting/
+- Streaming guide: https://developer.tastytrade.com/docs/guides/stream-market-data/
+- Streaming concepts: https://developer.tastytrade.com/docs/concepts/streaming/
+- Rate limits: https://developer.tastytrade.com/docs/guides/rate-limits-and-backoff/
 
 ## Disclaimer
 
-This is an independent research project and is not an official tastytrade product. Historical simulations can differ materially from live execution because of fills, liquidity, spreads, slippage, data availability, and model assumptions.
+This is an independent research project and is not an official tastytrade
+product. Historical simulations can differ materially from live execution
+because of fills, liquidity, spreads, slippage, data availability, and model
+assumptions.
 
 MIT License.

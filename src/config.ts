@@ -7,7 +7,7 @@ export const BACKTESTER_BASE_URL =
 
 export const USER_AGENT =
   process.env.TASTYTRADE_USER_AGENT?.trim() ||
-  "tastytrade-research-mcp/0.1.0";
+  "tastytrade-research-mcp/0.2.0";
 
 export function requireEnv(name: string): string {
   const value = process.env[name]?.trim();
