@@ -27,7 +27,9 @@ The suite builds the TypeScript project before running Jest and covers:
 - DXLink compact Candle parsing and snapshot flags;
 - regular and custom overnight session windows;
 - untrusted DXLink-host rejection;
-- MCP tool discovery and dispatch.
+- MCP tool discovery and dispatch;
+- authenticated Streamable HTTP access, public health checks, and request
+  body limits.
 
 Live credentials are not used by automated tests. Provider smoke tests should
 load credentials from the environment, must not print them, and should use

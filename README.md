@@ -177,6 +177,11 @@ Do not commit credentials. If using Node's `--env-file`, unset inherited
 All API timestamps must be RFC3339 values containing `Z` or an explicit UTC
 offset; timezone-less timestamps are rejected.
 
+The remote HTTP entrypoint requires a bearer token from `MCP_API_KEY`, compares
+it in constant time, accepts MCP only at `POST /mcp`, and limits request bodies
+to 1 MiB. `GET /healthz` is intentionally unauthenticated and contains only
+service health metadata.
+
 ## Requirements and setup
 
 - Node.js 22+
@@ -196,6 +201,21 @@ export TASTYTRADE_REFRESH_TOKEN="..."
 
 npm start
 ```
+
+For remote Streamable HTTP:
+
+```bash
+export MCP_API_KEY="$(openssl rand -hex 32)"
+export MCP_HTTP_HOST=127.0.0.1
+export MCP_HTTP_PORT=8000
+
+npm run start:http
+```
+
+Connect to `http://127.0.0.1:8000/mcp` with
+`Authorization: Bearer <MCP_API_KEY>`. Azure Container Apps deployment and
+Key Vault guidance are documented in
+[`docs/azure-deployment.md`](docs/azure-deployment.md).
 
 For an MCP client:
 
