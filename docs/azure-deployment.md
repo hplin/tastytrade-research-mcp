@@ -22,11 +22,13 @@ tastytrade OAuth credentials in Azure Key Vault-backed Container App secrets.
 - Health URL:
   `https://tastytrade-research-mcp.victoriousfield-047d2c99.westus2.azurecontainerapps.io/healthz`
 - Production revision:
-  `tastytrade-research-mcp--oauth20260925043410`
+  `tastytrade-research-mcp--issue17-202609252238`
 - ACR image:
-  `hplintradingmcp.azurecr.io/tastytrade-research-mcp:oauth-20260925043221`
+  `hplintradingmcp.azurecr.io/tastytrade-research-mcp:issue17-202609252238`
 - Image digest:
-  `sha256:e4fed303079e4ad8dbc8a609b56cad06aa6ae42c3e950b697e232f0a72753e3f`
+  `sha256:fb59846fc4291d6a6e459218ef6b08dd4e2d8e1714b3966a817a2d5e53453ad9`
+- Source commit:
+  `06d7dd5bfc6cc54469f7f4fc9489bb2b20ad20b5`
 - Managed identity: `mi-tastytrade-research-mcp`
 
 Production OAuth uses Entra resource application
@@ -136,16 +138,17 @@ OAUTH_RESOURCE_NAME=Tastytrade Research MCP
 ```
 
 For emergency rollback, reactivate revision
-`tastytrade-research-mcp--r20260925041145` and move 100% traffic to it. That
-revision retains its Key Vault-backed `MCP_API_KEY` mapping; the OAuth
-production revision does not.
+`tastytrade-research-mcp--oauth20260925043410` and move 100% traffic to it.
+That revision retains the same Entra OAuth and Key Vault-backed tastytrade
+configuration as the current production revision.
 
 After deployment, verify:
 
 1. `/healthz` returns HTTP 200.
 2. The protected-resource metadata names Entra and the `mcp.read` scope.
 3. `/mcp` without a bearer token returns HTTP 401 with `resource_metadata`.
-4. A real Entra token connects, lists all 13 tools, and can call a local-only
+4. A real Entra token connects, lists all 14 tools, and can call a local-only
    tool such as `tastytrade_price_option_package`.
 5. A live provider smoke test can call
-   `tastytrade_get_backtest_available_dates`.
+   `tastytrade_discover_historical_spx_candidates` and returns timestamp-safe
+   `HISTORICAL_SELECTOR_CANDIDATE_SET` evidence.
