@@ -32,6 +32,7 @@ The project is intentionally separate from the official
 | Tool | Purpose |
 | --- | --- |
 | `tastytrade_price_option_package` | Price verticals, iron condors, and double diagonals with explicit native/synthetic provenance |
+| `tastytrade_discover_historical_spx_candidates` | Recover timestamp-safe SPX contracts from a caller-supplied Backtester selector grid without claiming a full historical chain |
 | `tastytrade_prepare_spx_spread` | Deterministically normalize SPX legs without calling an upstream service |
 | `tastytrade_simulate_spx_spread` | Run exact-leg SPX historical simulation and normalize its result |
 | `tastytrade_create_spx_spread_backtest` | Submit supported SPX structures through relative Backtester selectors |
@@ -100,6 +101,28 @@ legs are rejected unless the caller explicitly sets `allow_0dte: true`.
 
 This MCP supplies evidence only. It does not assign grades or make production
 entry decisions.
+
+## Historical SPX candidate discovery
+
+`tastytrade_discover_historical_spx_candidates` is the
+`REGRESSION_RESEARCH` bridge between selector-based Backtester evidence and
+exact-leg simulation.
+
+The official option-chain and REST quote endpoints do not document an
+historical `as_of` parameter. Backtester logs currently expose exact selected
+strike, expiration, side, and a provider-internal symbol, but those log fields
+are undocumented. The adapter therefore:
+
+- runs one bounded Backtester job per selector/side;
+- accepts only the latest provider selection at or before `as_of`;
+- uses the recovered provider symbol for exact point-in-time simulation;
+- returns `HISTORICAL_SELECTOR_CANDIDATE_SET`, never a full-chain snapshot;
+- excludes all future trials, closes, P/L, and outcome fields; and
+- keeps bid/ask, IV, skew, term structure, OI, and volume unavailable.
+
+The full provider findings, contract, anti-lookahead rules, and limitations
+are documented in
+[`docs/historical-spx-candidates.md`](docs/historical-spx-candidates.md).
 
 ## Historical fill verification
 
