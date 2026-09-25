@@ -1,0 +1,12 @@
+.git
+.github
+.env
+.env.*
+!.env.example
+coverage
+dist
+docs
+graphify-out
+node_modules
+test
+*.log
