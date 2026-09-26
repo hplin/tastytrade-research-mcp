@@ -1,0 +1,85 @@
+{
+  "provenance": {
+    "description": "Sanitized DXLink protocol metadata captured from an SPX native-hour request. Prices and volumes are synthetic.",
+    "observed_request_symbol": "SPX{=1h}",
+    "observed_response_symbol": "SPX{=h}",
+    "observed_flag_counts": {
+      "0": 187,
+      "4": 1,
+      "10": 1
+    },
+    "alternative_explanations_retained": [
+      "Provider retention or entitlement can still affect older requests.",
+      "A provider SNIP or empty completed snapshot is distinct from a client symbol mismatch."
+    ]
+  },
+  "feed_config": {
+    "type": "FEED_CONFIG",
+    "channel": 3,
+    "dataFormat": "COMPACT",
+    "eventFields": {
+      "Candle": [
+        "eventType",
+        "eventSymbol",
+        "eventFlags",
+        "index",
+        "time",
+        "sequence",
+        "count",
+        "open",
+        "high",
+        "low",
+        "close",
+        "volume",
+        "vwap",
+        "bidVolume",
+        "askVolume",
+        "impVolatility",
+        "openInterest"
+      ]
+    }
+  },
+  "feed_data": {
+    "type": "FEED_DATA",
+    "channel": 3,
+    "data": [
+      "Candle",
+      [
+        "Candle",
+        "SPX{=h}",
+        4,
+        "1787666400000",
+        1787666400000,
+        0,
+        1,
+        "100",
+        "101",
+        "99",
+        "100.5",
+        "10",
+        "100.25",
+        "4",
+        "6",
+        "0.2",
+        "1000",
+        "Candle",
+        "SPX{=h}",
+        10,
+        "1787664599999",
+        1787664599999,
+        0,
+        0,
+        "NaN",
+        "NaN",
+        "NaN",
+        "NaN",
+        "NaN",
+        "NaN",
+        "NaN",
+        "NaN",
+        "NaN",
+        "NaN"
+      ]
+    ]
+  }
+}
