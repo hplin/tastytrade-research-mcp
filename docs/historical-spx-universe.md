@@ -210,3 +210,9 @@ fixture deterministically selects:
 The live 7300-8050 grid selected Sep-15 front short 7400P / 7825C and Sep-29
 back long 7500P / 7825C. Contracts such as the fixture's 7450P with missing
 IV remain null and are excluded from delta-based selection.
+
+When configured, `evidence_cache` freezes the underlying and option-batch
+source manifests used by the universe result. Cache-only replay requires the
+exact manifest IDs and preserves partial coverage, provider errors, bar
+timing, warnings, and resolution identity. See
+[`evidence-cache.md`](evidence-cache.md).

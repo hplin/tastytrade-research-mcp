@@ -1,5 +1,6 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, jest, test } from "@jest/globals";
+import { EvidenceCacheError } from "../dist/evidence-cache.js";
 import {
   getHistoricalSpxCandidateUniverse,
   prepareHistoricalSpxCandidateUniverse,
@@ -547,5 +548,29 @@ describe("historical SPX candidate universe", () => {
         message: "fixture underlying unavailable",
       }),
     ]);
+  });
+
+  test("propagates cache integrity failures instead of returning partial provider data", async () => {
+    const candles = fixtureCandles();
+    candles.getHistoricalCandles = jest.fn(async () => {
+      throw new EvidenceCacheError(
+        "EVIDENCE_CACHE_CHECKSUM_MISMATCH",
+        "synthetic corruption",
+      );
+    });
+
+    await expect(
+      getHistoricalSpxCandidateUniverse(candles, {
+        ...REQUEST,
+        evidence_cache: {
+          mode: "CACHE_ONLY",
+          manifest_ids: [`sha256:${"2".repeat(64)}`],
+          evidence_role: "ENTRY",
+        },
+      }),
+    ).rejects.toMatchObject({
+      code: "EVIDENCE_CACHE_CHECKSUM_MISMATCH",
+    });
+    expect(candles.getHistoricalCandlesBatch).not.toHaveBeenCalled();
   });
 });

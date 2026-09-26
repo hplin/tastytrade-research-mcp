@@ -151,6 +151,67 @@ function fixturePathBCandles(source = pathBFixture) {
 }
 
 describe("historical SPX candidate discovery", () => {
+  test("keeps outcome cache roles out of the entry selector", () => {
+    expect(() =>
+      prepareHistoricalSpxCandidates({
+        ...PATH_B_REQUEST,
+        evidence_cache: {
+          mode: "READ_WRITE",
+          evidence_role: "OUTCOME_3_TRADING_DAYS",
+        },
+      }),
+    ).toThrow(
+      "Historical SPX candidate discovery only accepts ENTRY evidence.",
+    );
+  });
+
+  test("never falls through to Backtester during cache-only entry replay", async () => {
+    const backtester = fixtureBacktester(entryTimeIgnoredFixture);
+    const candles = {
+      getHistoricalCandles: jest.fn(async (request) =>
+        candleResult(
+          request.symbol,
+          request.streamer_symbol ?? request.symbol,
+          [],
+          request.interval,
+        ),
+      ),
+      getHistoricalCandlesBatch: jest.fn(async (request) =>
+        request.instruments.map((instrument) =>
+          candleResult(
+            instrument.symbol,
+            instrument.streamer_symbol ?? instrument.symbol,
+            [],
+            request.interval,
+          ),
+        ),
+      ),
+    };
+
+    const result = await discoverHistoricalSpxCandidates(
+      backtester,
+      {
+        ...PATH_B_REQUEST,
+        sides: ["CALL"],
+        selector_grid: [PATH_B_REQUEST.selector_grid[0]],
+        evidence_cache: {
+          mode: "CACHE_ONLY",
+          manifest_ids: [`sha256:${"1".repeat(64)}`],
+          evidence_role: "ENTRY",
+        },
+      },
+      candles,
+    );
+
+    expect(result.status).toBe("NOT_AVAILABLE");
+    expect(backtester.createBacktest).not.toHaveBeenCalled();
+    expect(backtester.getBacktestLogs).not.toHaveBeenCalled();
+    expect(backtester.simulateTrade).not.toHaveBeenCalled();
+    expect(result.warnings).toContain(
+      "CALL:DELTA:20:28:CACHE_ONLY_BACKTESTER_FALLBACK_DISABLED",
+    );
+  });
+
   test("builds bounded provider requests from the selector grid", () => {
     const plan = prepareHistoricalSpxCandidates(CHECKPOINT_REQUEST);
 

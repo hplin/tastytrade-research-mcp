@@ -1,6 +1,13 @@
 import { createHash } from "node:crypto";
 import { ExactDecimal } from "./decimal.js";
 import {
+  EvidenceCacheError,
+  evidenceCacheWithContext,
+  summarizeEvidenceCacheRecords,
+  type EvidenceCacheRequest,
+  type EvidenceCacheSummary,
+} from "./evidence-cache.js";
+import {
   createExecutionEvidence,
   type ExecutionEvidence,
   type ExecutionReferences,
@@ -57,6 +64,7 @@ export type HistoricalOptionPackageCheckpointInput = {
   candidate_construction_profile?: Record<string, unknown>;
   phase: "REGRESSION_RESEARCH";
   references?: ExecutionReferences;
+  evidence_cache?: EvidenceCacheRequest;
 };
 
 export type HistoricalOptionPackagePathInput = {
@@ -70,6 +78,7 @@ export type HistoricalOptionPackagePathInput = {
   candidate_construction_profile?: Record<string, unknown>;
   phase: "REGRESSION_RESEARCH";
   references?: ExecutionReferences;
+  evidence_cache?: EvidenceCacheRequest;
 };
 
 export type HistoricalPackageResolution =
@@ -154,6 +163,7 @@ export type HistoricalOptionPackageCheckpointResult = {
   source: string;
   warnings: string[];
   evidence: ExecutionEvidence;
+  evidence_cache: EvidenceCacheSummary | null;
 };
 
 export type HistoricalOptionPackagePathPoint = {
@@ -216,6 +226,7 @@ export type HistoricalOptionPackagePathResult = {
   leg_sources: HistoricalLegProvenance[];
   warnings: string[];
   evidence: ExecutionEvidence;
+  evidence_cache: EvidenceCacheSummary | null;
 };
 
 export type HistoricalOptionPackageCandlesService = {
@@ -249,6 +260,7 @@ type SelectedCandleBatch = {
   resolution: HistoricalPackageResolution | null;
   results: HistoricalCandlesResult[];
   attempts: HistoricalPackageResolutionAttempt[];
+  cache_results: HistoricalCandlesResult[];
 };
 
 const CHECKPOINT_RESOLUTIONS: HistoricalPackageResolution[] = [
@@ -493,8 +505,10 @@ async function retrieveWithFallback(
     start: string;
     end: string;
   },
+  evidenceCache: EvidenceCacheRequest | undefined,
 ): Promise<SelectedCandleBatch> {
   const attempts: HistoricalPackageResolutionAttempt[] = [];
+  const cacheResults: HistoricalCandlesResult[] = [];
   const resolutions = resolutionCandidates(profile).map(packageResolution);
   const session = candleSessionForResolutionProfile(profile);
   for (const resolution of resolutions) {
@@ -514,12 +528,14 @@ async function retrieveWithFallback(
         max_output_candles: CANDLE_MAX_OUTPUT,
         max_received_events: CANDLE_MAX_RECEIVED_EVENTS,
         max_buffer_bytes: CANDLE_MAX_BUFFER_BYTES,
+        evidence_cache: evidenceCache,
       });
       if (!Array.isArray(results)) {
         throw new Error(
           "Historical candle provider returned a non-array batch result.",
         );
       }
+      cacheResults.push(...results);
       const snapshotFailure = results.some(
         (result) => !result.snapshot_complete || result.snapshot_truncated,
       );
@@ -545,8 +561,14 @@ async function retrieveWithFallback(
         status: "SELECTED",
         reason: null,
       });
-      return { resolution, results, attempts };
+      return {
+        resolution,
+        results,
+        attempts,
+        cache_results: cacheResults,
+      };
     } catch (error) {
+      if (error instanceof EvidenceCacheError) throw error;
       if (!isLegacyLocalBudgetError(error)) throw error;
       attempts.push({
         resolution,
@@ -555,7 +577,12 @@ async function retrieveWithFallback(
       });
     }
   }
-  return { resolution: null, results: [], attempts };
+  return {
+    resolution: null,
+    results: [],
+    attempts,
+    cache_results: cacheResults,
+  };
 }
 
 function resultByStreamerSymbol(
@@ -815,6 +842,14 @@ export async function getHistoricalOptionPackageAtCheckpoint(
     candidate_construction_profile: candidateConstructionProfile,
     references: input.references ?? {},
   });
+  const evidenceCache = evidenceCacheWithContext(
+    input.evidence_cache,
+    {
+      as_of: asOf,
+      default_role: "ENTRY",
+      references: input.references,
+    },
+  );
   const selected = await retrieveWithFallback(
     service,
     legs,
@@ -830,6 +865,10 @@ export async function getHistoricalOptionPackageAtCheckpoint(
         end: asOf,
       };
     },
+    evidenceCache,
+  );
+  const evidenceCacheSummary = summarizeEvidenceCacheRecords(
+    selected.cache_results,
   );
   const warnings = [
     ...resolutionWarnings(requestedResolution, selected.resolution),
@@ -902,6 +941,7 @@ export async function getHistoricalOptionPackageAtCheckpoint(
       source,
       warnings: evidence.warnings,
       evidence,
+      evidence_cache: evidenceCacheSummary,
     };
   }
 
@@ -1136,6 +1176,7 @@ export async function getHistoricalOptionPackageAtCheckpoint(
     source,
     warnings: evidence.warnings,
     evidence,
+    evidence_cache: evidenceCacheSummary,
   };
 }
 
@@ -1205,11 +1246,23 @@ export async function getHistoricalOptionPackagePath(
     candidate_construction_profile: candidateConstructionProfile,
     references: input.references ?? {},
   });
+  const evidenceCache = evidenceCacheWithContext(
+    input.evidence_cache,
+    {
+      as_of: input.evidence_cache?.as_of ?? startTime,
+      default_role: "REFERENCE_PATH",
+      references: input.references,
+    },
+  );
   const selected = await retrieveWithFallback(
     service,
     legs,
     resolutionProfile,
     () => ({ start: startTime, end: endTime }),
+    evidenceCache,
+  );
+  const evidenceCacheSummary = summarizeEvidenceCacheRecords(
+    selected.cache_results,
   );
   const source = resultSource(resolutionProfile, selected.resolution);
   const warnings = [
@@ -1272,6 +1325,7 @@ export async function getHistoricalOptionPackagePath(
       ),
       warnings: evidence.warnings,
       evidence,
+      evidence_cache: evidenceCacheSummary,
     };
   }
 
@@ -1527,5 +1581,6 @@ export async function getHistoricalOptionPackagePath(
     ),
     warnings: evidence.warnings,
     evidence,
+    evidence_cache: evidenceCacheSummary,
   };
 }

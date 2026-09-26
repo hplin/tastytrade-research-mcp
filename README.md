@@ -46,6 +46,31 @@ Use MCP `tools/list` for the complete JSON input schemas.
 The shared profile contract and the optional seven-date live capability gate
 are documented in
 [`docs/resolution-profiles.md`](docs/resolution-profiles.md).
+Private immutable source-cache configuration, exact offline replay, and
+migration guidance are documented in
+[`docs/evidence-cache.md`](docs/evidence-cache.md).
+
+## Private historical evidence cache
+
+The historical candle, SPX candidate/universe, and exact-package tools accept
+an opt-in `evidence_cache` policy without changing the 17-tool surface.
+`READ_WRITE` stores sanitized source observations and normalized results as
+separate content-addressed objects; `REFRESH` creates a new immutable revision
+and diff; `CACHE_ONLY` replays only caller-supplied exact manifest IDs and
+never contacts the provider.
+
+The filesystem backend is disabled until
+`TASTYTRADE_EVIDENCE_CACHE_DIR` points to a private volume. It uses atomic
+writes, read-back checksum verification, bounded provider concurrency,
+request deduplication, short-lived retryable-failure indexes, and a hard disk
+quota without evicting immutable evidence. Cache identity includes exact
+symbols, range/as-of, provider/dataset/license scope, aggregation/session/
+alignment/price type, the full resolution profile, resource policy, and
+normalization/model/source revisions. Retrieval time is frozen in each
+immutable manifest and never replaces bar availability time.
+
+Run `npm run report:evidence-cache` for a deterministic synthetic cache
+hit/miss, byte-count, normalized-hash, and provider-call-reduction report.
 
 ## Execution evidence contract
 

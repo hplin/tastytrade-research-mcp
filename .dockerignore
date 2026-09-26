@@ -4,6 +4,7 @@
 .env.*
 !.env.example
 coverage
+.evidence-cache
 dist
 docs
 graphify-out
