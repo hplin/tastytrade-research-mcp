@@ -70,10 +70,12 @@ Historical Candle events do not provide bid and ask prices. Therefore:
 
 ## Short-window package path
 
-The path tool accepts `1m`, `5m`, `15m`, `30m`, or `1h`. If DXLink cannot
-replay the requested fine resolution within the bounded 20,000-event snapshot,
-the tool tries progressively coarser supported resolutions and records every
-attempt. It never silently resamples.
+The path tool accepts `1m`, `5m`, `15m`, `30m`, or `1h`. If a requested fine
+resolution exhausts the configured local receive, buffer, or output budget, or
+DXLink returns a clipped/incomplete snapshot, the tool tries progressively
+coarser supported resolutions and records every attempt. It never silently
+resamples, and it does not describe a local budget exhaustion as a provider
+hard limit.
 
 A path point is emitted only when every exact leg has a candle with the same
 bar-start timestamp and the full bar was available within the requested

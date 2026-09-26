@@ -215,6 +215,9 @@ describe("historical SPX candidate universe", () => {
       candles.getHistoricalCandlesBatch.mock.calls.every(
         ([input]) =>
           input.instruments.length <= 20 &&
+          input.max_output_candles === 20_000 &&
+          input.max_received_events === 20_000 &&
+          input.max_buffer_bytes === 32 * 1024 * 1024 &&
           Date.parse(input.end_time) <= Date.parse(REQUEST.as_of),
       ),
     ).toBe(true);

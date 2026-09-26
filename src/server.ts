@@ -643,8 +643,48 @@ const HISTORICAL_CANDLES_SCHEMA = {
         start_time: RFC3339_SCHEMA,
         end_time: RFC3339_SCHEMA,
         session: CANDLE_SESSION_SCHEMA,
-        timeout_ms: { type: "integer", minimum: 1, maximum: 60000 },
-        max_candles: { type: "integer", minimum: 1, maximum: 20000 },
+        deadline_ms: {
+          type: "integer",
+          minimum: 1,
+          maximum: 60000,
+          description:
+            "DXLink snapshot deadline for the whole request. Cannot be combined with deprecated timeout_ms.",
+        },
+        max_output_candles: {
+          type: "integer",
+          minimum: 1,
+          maximum: 250000,
+          description:
+            "Maximum retained and returned candle rows per symbol after indexed-event deduplication.",
+        },
+        max_received_events: {
+          type: "integer",
+          minimum: 1,
+          maximum: 1000000,
+          description:
+            "Maximum aggregate Candle protocol rows received across all symbols in this request.",
+        },
+        max_buffer_bytes: {
+          type: "integer",
+          minimum: 1,
+          maximum: 134217728,
+          description:
+            "Maximum aggregate accounted bytes for queued wire messages and retained indexed candle state.",
+        },
+        timeout_ms: {
+          type: "integer",
+          minimum: 1,
+          maximum: 60000,
+          description:
+            "Deprecated compatibility alias for deadline_ms.",
+        },
+        max_candles: {
+          type: "integer",
+          minimum: 1,
+          maximum: 20000,
+          description:
+            "Deprecated compatibility shorthand that applies the same limit to max_output_candles per symbol and max_received_events per request. Cannot be combined with either explicit field.",
+        },
       },
       required: [
         "symbol",
@@ -802,7 +842,7 @@ export const TOOLS: Tool[] = [
   {
     name: "tastytrade_get_historical_candles",
     description:
-      "Retrieve normalized historical OHLCV candles from tastytrade DXLink for an exact UTC and session window, with source timestamps and explicit gap warnings. No resampling is performed.",
+      "Retrieve normalized historical OHLCV candles from tastytrade DXLink for an exact UTC and session window, with independent receive/output/buffer/deadline budgets, per-symbol diagnostics, and no resampling.",
     inputSchema: HISTORICAL_CANDLES_SCHEMA,
   },
 ];

@@ -40,6 +40,10 @@ export type HistoricalCandlesInput = {
   start_time: string;
   end_time: string;
   session?: CandleSession;
+  deadline_ms?: number;
+  max_output_candles?: number;
+  max_received_events?: number;
+  max_buffer_bytes?: number;
   timeout_ms?: number;
   max_candles?: number;
 };
@@ -56,6 +60,10 @@ export type HistoricalCandlesBatchInput = {
   start_time: string;
   end_time: string;
   session?: CandleSession;
+  deadline_ms?: number;
+  max_output_candles?: number;
+  max_received_events?: number;
+  max_buffer_bytes?: number;
   timeout_ms?: number;
   max_candles?: number;
 };
@@ -74,8 +82,27 @@ export type HistoricalCandle = {
   open_interest: string | null;
 };
 
+export type HistoricalCandlesFailureReason =
+  | "LOCAL_RECEIVE_BUDGET_EXCEEDED"
+  | "LOCAL_BUFFER_BUDGET_EXCEEDED"
+  | "LOCAL_OUTPUT_BUDGET_EXCEEDED"
+  | "PROVIDER_SNAPSHOT_SNIPPED"
+  | "REQUESTED_WINDOW_NOT_COVERED"
+  | "SNAPSHOT_TIMEOUT"
+  | "MISSING_CONTRACT_EVIDENCE";
+
+export type HistoricalCandlesResourceCounters = {
+  received_events: number;
+  valid_candle_events: number;
+  unique_observations: number;
+  retained_rows: number;
+  retained_bytes: number;
+  returned_rows: number;
+};
+
 export type HistoricalCandlesResult = {
   contract_version: "1.0.0";
+  status: "AVAILABLE" | "PARTIAL" | "NOT_AVAILABLE";
   symbol: string;
   streamer_symbol: string;
   instrument_type: InstrumentType;
@@ -94,6 +121,28 @@ export type HistoricalCandlesResult = {
   source_timestamp_unit: "epoch_milliseconds";
   snapshot_complete: boolean;
   snapshot_truncated: boolean;
+  provider_snapshot_complete: boolean;
+  failure_reasons: HistoricalCandlesFailureReason[];
+  resource_usage: {
+    limits: {
+      max_output_candles_per_symbol: number;
+      max_received_events_per_request: number;
+      max_buffer_bytes_per_request: number;
+      deadline_ms_per_request: number;
+      max_candles_compatibility_applied: boolean;
+      timeout_ms_compatibility_applied: boolean;
+    };
+    request: HistoricalCandlesResourceCounters & {
+      unmatched_received_events: number;
+      peak_buffer_bytes: number;
+    };
+    symbol: HistoricalCandlesResourceCounters;
+  };
+  advisory: {
+    requested_window_candle_slots_per_symbol: number;
+    continuous_calendar_replay_slots_per_symbol: number;
+    continuous_calendar_replay_is_provider_fact: false;
+  };
   resampled: false;
   candles: HistoricalCandle[];
   warnings: string[];
@@ -140,12 +189,60 @@ type RawCandle = {
   openInterest: string | null;
 };
 
+type ParsedCandleEvent = {
+  eventSymbol: string;
+  index: string;
+  flags: number | null;
+  candle: RawCandle | null;
+};
+
+type RetainedCandle = {
+  candle: RawCandle;
+  bytes: number;
+};
+
+type SnapshotSymbolState = {
+  candleSymbol: string;
+  candlesByIndex: Map<string, RetainedCandle>;
+  seenIndices: Set<string>;
+  providerComplete: boolean;
+  providerSnipped: boolean;
+  localFailureReason: HistoricalCandlesFailureReason | null;
+  counters: HistoricalCandlesResourceCounters;
+};
+
+type SnapshotReadResult = {
+  symbolStates: Map<string, SnapshotSymbolState>;
+  requestFailureReason: HistoricalCandlesFailureReason | null;
+  requestCounters: HistoricalCandlesResourceCounters & {
+    unmatched_received_events: number;
+    peak_buffer_bytes: number;
+  };
+};
+
+type HistoricalCandleBudgets = {
+  deadlineMs: number;
+  maxOutputCandles: number;
+  maxReceivedEvents: number;
+  maxBufferBytes: number;
+  maxCandlesCompatibilityApplied: boolean;
+  timeoutMsCompatibilityApplied: boolean;
+};
+
 const DXLINK_OPEN = 1;
 const REMOVE_EVENT = 2;
 const SNAPSHOT_END = 8;
 const SNAPSHOT_SNIP = 16;
-const DEFAULT_TIMEOUT_MS = 15_000;
-const DEFAULT_MAX_CANDLES = 10_000;
+const DEFAULT_DEADLINE_MS = 15_000;
+const DEFAULT_MAX_OUTPUT_CANDLES = 10_000;
+const DEFAULT_MAX_RECEIVED_EVENTS = 10_000;
+const DEFAULT_MAX_BUFFER_BYTES = 16 * 1024 * 1024;
+const MAX_OUTPUT_CANDLES = 250_000;
+const MAX_RECEIVED_EVENTS = 1_000_000;
+const MAX_BUFFER_BYTES = 128 * 1024 * 1024;
+const LEGACY_MAX_CANDLES = 20_000;
+const RETAINED_CANDLE_OVERHEAD_BYTES = 256;
+const RETAINED_INDEX_OVERHEAD_BYTES = 64;
 const QUOTE_TOKEN_TTL_MS = 23 * 60 * 60_000;
 const CANDLE_FIELDS = [
   "eventType",
@@ -182,6 +279,75 @@ function normalizeDuration(
     throw new Error(`${field} must be a positive integer <= ${maximum}.`);
   }
   return value;
+}
+
+function normalizeBudgets(
+  input: Pick<
+    HistoricalCandlesBatchInput,
+    | "deadline_ms"
+    | "max_output_candles"
+    | "max_received_events"
+    | "max_buffer_bytes"
+    | "timeout_ms"
+    | "max_candles"
+  >,
+): HistoricalCandleBudgets {
+  if (
+    input.max_candles !== undefined &&
+    (input.max_output_candles !== undefined ||
+      input.max_received_events !== undefined)
+  ) {
+    throw new Error(
+      "max_candles cannot be combined with max_output_candles or max_received_events; migrate to the explicit budgets.",
+    );
+  }
+  if (input.deadline_ms !== undefined && input.timeout_ms !== undefined) {
+    throw new Error(
+      "deadline_ms cannot be combined with deprecated timeout_ms.",
+    );
+  }
+
+  const legacyMaxCandles =
+    input.max_candles === undefined
+      ? undefined
+      : normalizeDuration(
+          input.max_candles,
+          DEFAULT_MAX_OUTPUT_CANDLES,
+          "max_candles",
+          LEGACY_MAX_CANDLES,
+        );
+  return {
+    deadlineMs: normalizeDuration(
+      input.deadline_ms ?? input.timeout_ms,
+      DEFAULT_DEADLINE_MS,
+      input.deadline_ms === undefined ? "timeout_ms" : "deadline_ms",
+      60_000,
+    ),
+    maxOutputCandles:
+      legacyMaxCandles ??
+      normalizeDuration(
+        input.max_output_candles,
+        DEFAULT_MAX_OUTPUT_CANDLES,
+        "max_output_candles",
+        MAX_OUTPUT_CANDLES,
+      ),
+    maxReceivedEvents:
+      legacyMaxCandles ??
+      normalizeDuration(
+        input.max_received_events,
+        DEFAULT_MAX_RECEIVED_EVENTS,
+        "max_received_events",
+        MAX_RECEIVED_EVENTS,
+      ),
+    maxBufferBytes: normalizeDuration(
+      input.max_buffer_bytes,
+      DEFAULT_MAX_BUFFER_BYTES,
+      "max_buffer_bytes",
+      MAX_BUFFER_BYTES,
+    ),
+    maxCandlesCompatibilityApplied: input.max_candles !== undefined,
+    timeoutMsCompatibilityApplied: input.timeout_ms !== undefined,
+  };
 }
 
 function intervalMilliseconds(interval: string): number {
@@ -318,6 +484,7 @@ function parseRows(payload: unknown): unknown[][] {
 }
 
 export function parseDxlinkCandleData(data: unknown): {
+  events: ParsedCandleEvent[];
   candles: RawCandle[];
   snapshotComplete: boolean;
   snapshotTruncated: boolean;
@@ -326,6 +493,7 @@ export function parseDxlinkCandleData(data: unknown): {
 } {
   if (!Array.isArray(data)) {
     return {
+      events: [],
       candles: [],
       snapshotComplete: false,
       snapshotTruncated: false,
@@ -333,6 +501,7 @@ export function parseDxlinkCandleData(data: unknown): {
       truncatedSymbols: [],
     };
   }
+  const events: ParsedCandleEvent[] = [];
   const candles: RawCandle[] = [];
   let snapshotComplete = false;
   let snapshotTruncated = false;
@@ -343,8 +512,17 @@ export function parseDxlinkCandleData(data: unknown): {
     if (data[index] !== "Candle") continue;
     for (const row of parseRows(data[index + 1])) {
       const eventSymbol = typeof row[1] === "string" ? row[1] : "";
+      const eventIndex = String(row[3]);
       const flags = Number(row[2]);
-      if (!Number.isFinite(flags)) continue;
+      if (!Number.isFinite(flags)) {
+        events.push({
+          eventSymbol,
+          index: eventIndex,
+          flags: null,
+          candle: null,
+        });
+        continue;
+      }
       if ((flags & SNAPSHOT_END) !== 0) {
         snapshotComplete = true;
         if (eventSymbol) completedSymbols.add(eventSymbol);
@@ -353,7 +531,15 @@ export function parseDxlinkCandleData(data: unknown): {
         snapshotTruncated = true;
         if (eventSymbol) truncatedSymbols.add(eventSymbol);
       }
-      if ((flags & REMOVE_EVENT) !== 0) continue;
+      if ((flags & REMOVE_EVENT) !== 0) {
+        events.push({
+          eventSymbol,
+          index: eventIndex,
+          flags,
+          candle: null,
+        });
+        continue;
+      }
 
       const timestamp = Number(row[4]);
       const open = decimalOrNull(row[7]);
@@ -367,11 +553,17 @@ export function parseDxlinkCandleData(data: unknown): {
         !low ||
         !close
       ) {
+        events.push({
+          eventSymbol,
+          index: eventIndex,
+          flags,
+          candle: null,
+        });
         continue;
       }
-      candles.push({
+      const candle = {
         eventSymbol,
-        index: String(row[3]),
+        index: eventIndex,
         timestamp,
         flags,
         open,
@@ -384,11 +576,19 @@ export function parseDxlinkCandleData(data: unknown): {
         askVolume: decimalOrNull(row[14]),
         impliedVolatility: decimalOrNull(row[15]),
         openInterest: decimalOrNull(row[16]),
+      };
+      candles.push(candle);
+      events.push({
+        eventSymbol,
+        index: eventIndex,
+        flags,
+        candle,
       });
     }
   }
 
   return {
+    events,
     candles,
     snapshotComplete,
     snapshotTruncated,
@@ -416,6 +616,38 @@ function decodeMessageData(data: unknown): Promise<string> {
     return data.text();
   }
   return Promise.resolve(String(data));
+}
+
+function messageDataByteLength(data: unknown): number {
+  if (typeof data === "string") return Buffer.byteLength(data, "utf8");
+  if (data instanceof ArrayBuffer) return data.byteLength;
+  if (ArrayBuffer.isView(data)) return data.byteLength;
+  if (typeof Blob !== "undefined" && data instanceof Blob) return data.size;
+  return Buffer.byteLength(String(data), "utf8");
+}
+
+function retainedCandleBytes(candle: RawCandle): number {
+  return (
+    RETAINED_CANDLE_OVERHEAD_BYTES +
+    Buffer.byteLength(JSON.stringify(candle), "utf8")
+  );
+}
+
+function retainedIndexBytes(index: string): number {
+  return (
+    RETAINED_INDEX_OVERHEAD_BYTES + Buffer.byteLength(index, "utf8")
+  );
+}
+
+function emptyResourceCounters(): HistoricalCandlesResourceCounters {
+  return {
+    received_events: 0,
+    valid_candle_events: 0,
+    unique_observations: 0,
+    retained_rows: 0,
+    retained_bytes: 0,
+    returned_rows: 0,
+  };
 }
 
 function isRetryable(error: unknown): boolean {
@@ -594,6 +826,10 @@ export class TastytradeHistoricalCandlesClient {
       start_time: input.start_time,
       end_time: input.end_time,
       session: input.session,
+      deadline_ms: input.deadline_ms,
+      max_output_candles: input.max_output_candles,
+      max_received_events: input.max_received_events,
+      max_buffer_bytes: input.max_buffer_bytes,
       timeout_ms: input.timeout_ms,
       max_candles: input.max_candles,
     });
@@ -639,31 +875,13 @@ export class TastytradeHistoricalCandlesClient {
     const endMs = Date.parse(end);
     if (endMs <= startMs) throw new Error("end_time must be later than start_time.");
 
-    const timeoutMs = normalizeDuration(
-      input.timeout_ms,
-      DEFAULT_TIMEOUT_MS,
-      "timeout_ms",
-      60_000,
+    const budgets = normalizeBudgets(input);
+    const requestedWindowCandleSlots =
+      Math.ceil((endMs - startMs) / intervalMs) + 1;
+    const continuousCalendarReplaySlots = Math.max(
+      0,
+      Math.ceil((this.clock() - startMs) / intervalMs) + 1,
     );
-    const maxCandles = normalizeDuration(
-      input.max_candles,
-      DEFAULT_MAX_CANDLES,
-      "max_candles",
-      20_000,
-    );
-    const estimatedCandles = Math.ceil((endMs - startMs) / intervalMs) + 1;
-    if (estimatedCandles > maxCandles) {
-      throw new Error(
-        `Requested range may contain ${estimatedCandles} candles; reduce the range or raise max_candles up to 20000.`,
-      );
-    }
-    const estimatedSnapshotEvents =
-      Math.ceil((this.clock() - startMs) / intervalMs) + 1;
-    if (estimatedSnapshotEvents > maxCandles) {
-      throw new Error(
-        `DXLink replays from start_time through the present and does not honor toTime; this request may require ${estimatedSnapshotEvents} snapshot events, exceeding max_candles=${maxCandles}. Use a coarser interval or a more recent start_time.`,
-      );
-    }
     const session = sessionConfiguration(input.session);
     const candleSymbols = instruments.map((instrument) =>
       session.kind === "REGULAR"
@@ -678,27 +896,16 @@ export class TastytradeHistoricalCandlesClient {
       quoteToken,
       candleSymbols,
       startMs,
-      timeoutMs,
-      maxCandles,
+      endMs,
+      session,
+      budgets,
     });
 
-    const completedSymbols = new Set(snapshot.completedSymbols);
-    const truncatedSymbols = new Set(snapshot.truncatedSymbols);
-    return instruments.map((instrument, instrumentIndex) => {
+    const prepared = instruments.map((instrument, instrumentIndex) => {
       const candleSymbol = candleSymbols[instrumentIndex];
-      const byIndex = new Map<string, RawCandle>();
-      for (const candle of snapshot.candles) {
-        if (candle.eventSymbol === candleSymbol) {
-          byIndex.set(candle.index, candle);
-        }
-      }
-      const filtered = [...byIndex.values()]
-        .filter(
-          (candle) =>
-            candle.timestamp >= startMs &&
-            candle.timestamp <= endMs &&
-            isWithinSession(candle.timestamp, session),
-        )
+      const state = snapshot.symbolStates.get(candleSymbol)!;
+      const filtered = [...state.candlesByIndex.values()]
+        .map((retained) => retained.candle)
         .sort((left, right) => left.timestamp - right.timestamp);
       const candles: HistoricalCandle[] = filtered.map((candle) => ({
         source_time: new Date(candle.timestamp).toISOString(),
@@ -713,27 +920,79 @@ export class TastytradeHistoricalCandlesClient {
         implied_volatility: candle.impliedVolatility,
         open_interest: candle.openInterest,
       }));
+      const coverageWarnings = edgeCoverageWarnings(
+        candles,
+        startMs,
+        endMs,
+        intervalMs,
+      );
       const warnings = [
         ...gapWarnings(candles, intervalMs, session),
-        ...edgeCoverageWarnings(candles, startMs, endMs, intervalMs),
+        ...coverageWarnings,
       ];
+      const failureReasons: HistoricalCandlesFailureReason[] = [];
+      const addFailureReason = (reason: HistoricalCandlesFailureReason) => {
+        if (!failureReasons.includes(reason)) failureReasons.push(reason);
+      };
+      if (state.localFailureReason) {
+        addFailureReason(state.localFailureReason);
+      }
+      const requestFailureApplied = Boolean(
+        snapshot.requestFailureReason &&
+          !state.providerComplete &&
+          !state.providerSnipped &&
+          !state.localFailureReason,
+      );
+      if (requestFailureApplied) {
+        addFailureReason(snapshot.requestFailureReason!);
+      }
+      if (state.providerSnipped) {
+        addFailureReason("PROVIDER_SNAPSHOT_SNIPPED");
+      }
+      if (coverageWarnings.length > 0) {
+        addFailureReason("REQUESTED_WINDOW_NOT_COVERED");
+      }
+      if (candles.length === 0) {
+        addFailureReason("MISSING_CONTRACT_EVIDENCE");
+      }
       if (session.kind === "CUSTOM") {
         warnings.push(
           "CUSTOM_SESSION_FILTERS_COMPLETE_SOURCE_BARS_WITHOUT_REAGGREGATION",
         );
       }
-      if (truncatedSymbols.has(candleSymbol)) {
+      if (state.providerSnipped) {
         warnings.push("DXLINK_SNAPSHOT_SNIPPED_NARROW_TIME_RANGE");
       }
-      if (!completedSymbols.has(candleSymbol)) {
+      if (!state.providerComplete) {
         warnings.push("DXLINK_SNAPSHOT_END_NOT_OBSERVED");
       }
       if (candles.length === 0) {
         warnings.push("NO_CANDLES_IN_REQUESTED_RANGE_AND_SESSION");
       }
+      if (budgets.maxCandlesCompatibilityApplied) {
+        warnings.push("MAX_CANDLES_DEPRECATED_USE_EXPLICIT_BUDGETS");
+      }
+      if (budgets.timeoutMsCompatibilityApplied) {
+        warnings.push("TIMEOUT_MS_DEPRECATED_USE_DEADLINE_MS");
+      }
+      for (const reason of failureReasons) {
+        if (!warnings.includes(reason)) warnings.push(reason);
+      }
+
+      state.counters.returned_rows = candles.length;
+      const snapshotComplete =
+        state.providerComplete &&
+        !state.providerSnipped &&
+        !state.localFailureReason &&
+        !requestFailureApplied;
 
       return {
-        contract_version: "1.0.0",
+        contract_version: "1.0.0" as const,
+        status: snapshotComplete && failureReasons.length === 0
+          ? ("AVAILABLE" as const)
+          : candles.length > 0
+            ? ("PARTIAL" as const)
+            : ("NOT_AVAILABLE" as const),
         symbol: instrument.symbol,
         streamer_symbol: instrument.streamerSymbol,
         instrument_type: instrument.instrumentType,
@@ -748,60 +1007,127 @@ export class TastytradeHistoricalCandlesClient {
               },
         timezone: session.timezone,
         session: session.kind,
-        source: "tastytrade-dxlink",
-        source_timestamp_unit: "epoch_milliseconds",
-        snapshot_complete: completedSymbols.has(candleSymbol),
-        snapshot_truncated: truncatedSymbols.has(candleSymbol),
-        resampled: false,
+        source: "tastytrade-dxlink" as const,
+        source_timestamp_unit: "epoch_milliseconds" as const,
+        snapshot_complete: snapshotComplete,
+        snapshot_truncated: state.providerSnipped,
+        provider_snapshot_complete: state.providerComplete,
+        failure_reasons: failureReasons,
+        symbol_resource_usage: { ...state.counters },
+        resampled: false as const,
         candles,
         warnings,
       };
     });
+
+    const requestCounters = {
+      ...snapshot.requestCounters,
+      returned_rows: prepared.reduce(
+        (total, result) => total + result.candles.length,
+        0,
+      ),
+    };
+    return prepared.map(({ symbol_resource_usage, ...result }) => ({
+      ...result,
+      resource_usage: {
+        limits: {
+          max_output_candles_per_symbol: budgets.maxOutputCandles,
+          max_received_events_per_request: budgets.maxReceivedEvents,
+          max_buffer_bytes_per_request: budgets.maxBufferBytes,
+          deadline_ms_per_request: budgets.deadlineMs,
+          max_candles_compatibility_applied:
+            budgets.maxCandlesCompatibilityApplied,
+          timeout_ms_compatibility_applied:
+            budgets.timeoutMsCompatibilityApplied,
+        },
+        request: requestCounters,
+        symbol: symbol_resource_usage,
+      },
+      advisory: {
+        requested_window_candle_slots_per_symbol:
+          requestedWindowCandleSlots,
+        continuous_calendar_replay_slots_per_symbol:
+          continuousCalendarReplaySlots,
+        continuous_calendar_replay_is_provider_fact: false as const,
+      },
+    }));
   }
 
   private readSnapshot(input: {
     quoteToken: QuoteToken;
     candleSymbols: string[];
     startMs: number;
-    timeoutMs: number;
-    maxCandles: number;
-  }): Promise<{
-    candles: RawCandle[];
-    snapshotComplete: boolean;
-    snapshotTruncated: boolean;
-    completedSymbols: string[];
-    truncatedSymbols: string[];
-  }> {
+    endMs: number;
+    session: ReturnType<typeof sessionConfiguration>;
+    budgets: HistoricalCandleBudgets;
+  }): Promise<SnapshotReadResult> {
     return new Promise((resolve, reject) => {
       const socket = this.socketFactory(input.quoteToken.url);
-      const candles: RawCandle[] = [];
-      const completedSymbols = new Set<string>();
-      const truncatedSymbols = new Set<string>();
+      const symbolStates = new Map<string, SnapshotSymbolState>(
+        input.candleSymbols.map((candleSymbol) => [
+          candleSymbol,
+          {
+            candleSymbol,
+            candlesByIndex: new Map(),
+            seenIndices: new Set(),
+            providerComplete: false,
+            providerSnipped: false,
+            localFailureReason: null,
+            counters: emptyResourceCounters(),
+          },
+        ]),
+      );
+      const requestCounters = {
+        ...emptyResourceCounters(),
+        unmatched_received_events: 0,
+        peak_buffer_bytes: 0,
+      };
+      const activeSymbols = new Set(input.candleSymbols);
       let subscribed = false;
       let settled = false;
+      let retainedBytes = 0;
+      let pendingMessageBytes = 0;
       let keepalive: ReturnType<typeof setInterval> | null = null;
+      let deadline: ReturnType<typeof setTimeout> | null = null;
+      let messageQueue = Promise.resolve();
 
+      const send = (message: Record<string, unknown>) => {
+        socket.send(JSON.stringify(message));
+      };
+      const unsubscribe = (symbols: string[]) => {
+        if (!subscribed || socket.readyState !== DXLINK_OPEN) return;
+        const removable = symbols.filter((symbol) =>
+          activeSymbols.has(symbol),
+        );
+        if (removable.length === 0) return;
+        send({
+          type: "FEED_SUBSCRIPTION",
+          channel: 3,
+          remove: removable.map((symbol) => ({
+            type: "Candle",
+            symbol,
+          })),
+        });
+        for (const symbol of removable) activeSymbols.delete(symbol);
+      };
       const cleanup = () => {
-        clearTimeout(timeout);
+        if (deadline) clearTimeout(deadline);
         if (keepalive) clearInterval(keepalive);
+        unsubscribe([...activeSymbols]);
         if (socket.readyState === DXLINK_OPEN) {
-          socket.close(1000, "historical snapshot complete");
+          socket.close(1000, "historical snapshot stopped");
         }
       };
       const finish = (
-        result: {
-          snapshotComplete: boolean;
-          snapshotTruncated: boolean;
-        },
+        requestFailureReason: HistoricalCandlesFailureReason | null,
       ) => {
         if (settled) return;
         settled = true;
         cleanup();
         resolve({
-          candles,
-          completedSymbols: [...completedSymbols],
-          truncatedSymbols: [...truncatedSymbols],
-          ...result,
+          symbolStates,
+          requestFailureReason,
+          requestCounters,
         });
       };
       const fail = (error: Error) => {
@@ -810,17 +1136,210 @@ export class TastytradeHistoricalCandlesClient {
         cleanup();
         reject(error);
       };
-      const send = (message: Record<string, unknown>) => {
-        socket.send(JSON.stringify(message));
+      const isTerminal = (state: SnapshotSymbolState) =>
+        state.providerComplete ||
+        state.providerSnipped ||
+        state.localFailureReason !== null;
+      const finishIfTerminal = () => {
+        if ([...symbolStates.values()].every(isTerminal)) {
+          finish(null);
+        }
       };
-      const timeout = setTimeout(
-        () =>
+      const recordPeakBuffer = (bytes: number) => {
+        requestCounters.peak_buffer_bytes = Math.max(
+          requestCounters.peak_buffer_bytes,
+          bytes,
+        );
+      };
+      const removeRetainedCandle = (
+        state: SnapshotSymbolState,
+        index: string,
+      ) => {
+        const retained = state.candlesByIndex.get(index);
+        if (!retained) return;
+        state.candlesByIndex.delete(index);
+        state.counters.retained_rows -= 1;
+        state.counters.retained_bytes -= retained.bytes;
+        requestCounters.retained_rows -= 1;
+        requestCounters.retained_bytes -= retained.bytes;
+        retainedBytes -= retained.bytes;
+      };
+      const processCandleEvent = (event: ParsedCandleEvent) => {
+        requestCounters.received_events += 1;
+        const state = symbolStates.get(event.eventSymbol);
+        if (!state) {
+          requestCounters.unmatched_received_events += 1;
+        } else {
+          state.counters.received_events += 1;
+        }
+        if (
+          requestCounters.received_events >
+          input.budgets.maxReceivedEvents
+        ) {
+          finish("LOCAL_RECEIVE_BUDGET_EXCEEDED");
+          return;
+        }
+        if (event.candle) {
+          requestCounters.valid_candle_events += 1;
+          if (state) state.counters.valid_candle_events += 1;
+        }
+        if (!state) return;
+        const protocolAlreadyTerminal =
+          state.providerComplete || state.providerSnipped;
+
+        if (event.flags !== null) {
+          if ((event.flags & SNAPSHOT_END) !== 0) {
+            state.providerComplete = true;
+          }
+          if ((event.flags & SNAPSHOT_SNIP) !== 0) {
+            state.providerSnipped = true;
+          }
+          if ((event.flags & REMOVE_EVENT) !== 0) {
+            removeRetainedCandle(state, event.index);
+          }
+        }
+        if (protocolAlreadyTerminal || state.localFailureReason) {
+          if (isTerminal(state)) {
+            unsubscribe([state.candleSymbol]);
+          }
+          return;
+        }
+
+        const candle = event.candle;
+        if (
+          candle &&
+          candle.timestamp >= input.startMs &&
+          candle.timestamp <= input.endMs &&
+          isWithinSession(candle.timestamp, input.session)
+        ) {
+          const existing = state.candlesByIndex.get(candle.index);
+          if (
+            !existing &&
+            state.candlesByIndex.size >=
+              input.budgets.maxOutputCandles
+          ) {
+            state.localFailureReason =
+              "LOCAL_OUTPUT_BUDGET_EXCEEDED";
+          } else {
+            const candleBytes = retainedCandleBytes(candle);
+            const newIndex = !state.seenIndices.has(candle.index);
+            const indexBytes = newIndex
+              ? retainedIndexBytes(candle.index)
+              : 0;
+            const candleByteDelta = candleBytes - (existing?.bytes ?? 0);
+            const additionalBytes =
+              indexBytes + Math.max(0, candleByteDelta);
+            const attemptedBufferBytes =
+              retainedBytes + pendingMessageBytes + additionalBytes;
+            recordPeakBuffer(attemptedBufferBytes);
+            if (
+              attemptedBufferBytes > input.budgets.maxBufferBytes
+            ) {
+              finish("LOCAL_BUFFER_BUDGET_EXCEEDED");
+              return;
+            }
+
+            if (newIndex) {
+              state.seenIndices.add(candle.index);
+              state.counters.unique_observations += 1;
+              state.counters.retained_bytes += indexBytes;
+              requestCounters.unique_observations += 1;
+              requestCounters.retained_bytes += indexBytes;
+              retainedBytes += indexBytes;
+            }
+            state.candlesByIndex.set(candle.index, {
+              candle,
+              bytes: candleBytes,
+            });
+            if (!existing) {
+              state.counters.retained_rows += 1;
+              requestCounters.retained_rows += 1;
+            }
+            state.counters.retained_bytes += candleByteDelta;
+            requestCounters.retained_bytes += candleByteDelta;
+            retainedBytes += candleByteDelta;
+            recordPeakBuffer(retainedBytes + pendingMessageBytes);
+          }
+        }
+
+        if (isTerminal(state)) {
+          unsubscribe([state.candleSymbol]);
+        }
+      };
+      const processMessage = (message: Record<string, unknown>) => {
+        if (
+          message.type === "AUTH_STATE" &&
+          message.state === "UNAUTHORIZED"
+        ) {
+          send({
+            type: "AUTH",
+            channel: 0,
+            token: input.quoteToken.token,
+          });
+        } else if (
+          message.type === "AUTH_STATE" &&
+          message.state === "AUTHORIZED"
+        ) {
+          send({
+            type: "CHANNEL_REQUEST",
+            channel: 3,
+            service: "FEED",
+            parameters: { contract: "AUTO" },
+          });
+        } else if (
+          message.type === "CHANNEL_OPENED" &&
+          message.channel === 3
+        ) {
+          send({
+            type: "FEED_SETUP",
+            channel: 3,
+            acceptAggregationPeriod: 0.1,
+            acceptDataFormat: "COMPACT",
+            acceptEventFields: { Candle: CANDLE_FIELDS },
+          });
+        } else if (
+          message.type === "FEED_CONFIG" &&
+          message.channel === 3 &&
+          !subscribed
+        ) {
+          subscribed = true;
+          send({
+            type: "FEED_SUBSCRIPTION",
+            channel: 3,
+            reset: true,
+            add: input.candleSymbols.map((symbol) => ({
+              type: "Candle",
+              symbol,
+              // Production DXLink expects milliseconds despite the
+              // published AsyncAPI description saying seconds.
+              fromTime: input.startMs,
+            })),
+          });
+        } else if (
+          message.type === "FEED_DATA" &&
+          message.channel === 3
+        ) {
+          const parsed = parseDxlinkCandleData(message.data);
+          for (const event of parsed.events) {
+            if (settled) return;
+            processCandleEvent(event);
+          }
+          finishIfTerminal();
+        } else if (
+          message.type === "ERROR" ||
+          message.type === "CHANNEL_CLOSED"
+        ) {
           fail(
             new Error(
-              `DXLink candle snapshot timed out after ${input.timeoutMs}ms.`,
+              `DXLink rejected the candle request: ${JSON.stringify(message)}`,
             ),
-          ),
-        input.timeoutMs,
+          );
+        }
+      };
+
+      deadline = setTimeout(
+        () => finish("SNAPSHOT_TIMEOUT"),
+        input.budgets.deadlineMs,
       );
 
       socket.onopen = () => {
@@ -848,9 +1367,23 @@ export class TastytradeHistoricalCandlesClient {
         }
       };
       socket.onmessage = (event) => {
-        void decodeMessageData(event.data)
-          .then((text) => {
+        if (settled) return;
+        const bytes = messageDataByteLength(event.data);
+        const attemptedBufferBytes =
+          retainedBytes + pendingMessageBytes + bytes;
+        recordPeakBuffer(attemptedBufferBytes);
+        if (attemptedBufferBytes > input.budgets.maxBufferBytes) {
+          finish("LOCAL_BUFFER_BUDGET_EXCEEDED");
+          return;
+        }
+        pendingMessageBytes += bytes;
+        messageQueue = messageQueue
+          .then(async () => {
+            if (settled) return;
+            const text = await decodeMessageData(event.data);
+            if (settled) return;
             for (const line of text.split(/\n+/).filter(Boolean)) {
+              if (settled) return;
               let message: Record<string, unknown>;
               try {
                 message = JSON.parse(line) as Record<string, unknown>;
@@ -858,116 +1391,15 @@ export class TastytradeHistoricalCandlesClient {
                 fail(new Error("DXLink returned invalid JSON."));
                 return;
               }
-
-              if (
-                message.type === "AUTH_STATE" &&
-                message.state === "UNAUTHORIZED"
-              ) {
-                send({
-                  type: "AUTH",
-                  channel: 0,
-                  token: input.quoteToken.token,
-                });
-              } else if (
-                message.type === "AUTH_STATE" &&
-                message.state === "AUTHORIZED"
-              ) {
-                send({
-                  type: "CHANNEL_REQUEST",
-                  channel: 3,
-                  service: "FEED",
-                  parameters: { contract: "AUTO" },
-                });
-              } else if (
-                message.type === "CHANNEL_OPENED" &&
-                message.channel === 3
-              ) {
-                send({
-                  type: "FEED_SETUP",
-                  channel: 3,
-                  acceptAggregationPeriod: 0.1,
-                  acceptDataFormat: "COMPACT",
-                  acceptEventFields: { Candle: CANDLE_FIELDS },
-                });
-              } else if (
-                message.type === "FEED_CONFIG" &&
-                message.channel === 3 &&
-                !subscribed
-              ) {
-                subscribed = true;
-                send({
-                  type: "FEED_SUBSCRIPTION",
-                  channel: 3,
-                  reset: true,
-                  add: input.candleSymbols.map((symbol) => ({
-                    type: "Candle",
-                    symbol,
-                    // Production DXLink expects milliseconds despite the
-                    // published AsyncAPI description saying seconds.
-                    fromTime: input.startMs,
-                  })),
-                });
-              } else if (
-                message.type === "FEED_DATA" &&
-                message.channel === 3
-              ) {
-                const parsed = parseDxlinkCandleData(message.data);
-                if (
-                  candles.length + parsed.candles.length >
-                  input.maxCandles
-                ) {
-                  fail(
-                    new Error(
-                      `DXLink snapshot exceeded max_candles=${input.maxCandles}; use a coarser interval or a more recent start_time.`,
-                    ),
-                  );
-                  return;
-                }
-                candles.push(...parsed.candles);
-                for (const symbol of parsed.completedSymbols) {
-                  completedSymbols.add(symbol);
-                }
-                for (const symbol of parsed.truncatedSymbols) {
-                  truncatedSymbols.add(symbol);
-                }
-                const finished = input.candleSymbols.every(
-                  (symbol) =>
-                    completedSymbols.has(symbol) ||
-                    truncatedSymbols.has(symbol),
-                );
-                if (finished) {
-                  if (socket.readyState === DXLINK_OPEN) {
-                    send({
-                      type: "FEED_SUBSCRIPTION",
-                      channel: 3,
-                      remove: input.candleSymbols.map((symbol) => ({
-                        type: "Candle",
-                        symbol,
-                      })),
-                    });
-                  }
-                  finish({
-                    snapshotComplete: input.candleSymbols.every((symbol) =>
-                      completedSymbols.has(symbol),
-                    ),
-                    snapshotTruncated: truncatedSymbols.size > 0,
-                  });
-                }
-              } else if (
-                message.type === "ERROR" ||
-                message.type === "CHANNEL_CLOSED"
-              ) {
-                fail(
-                  new Error(
-                    `DXLink rejected the candle request: ${JSON.stringify(message)}`,
-                  ),
-                );
-              }
+              processMessage(message);
             }
           })
           .catch((error: unknown) =>
             fail(error instanceof Error ? error : new Error(String(error))),
-          );
+          )
+          .finally(() => {
+            pendingMessageBytes -= bytes;
+          });
       };
     });
   }

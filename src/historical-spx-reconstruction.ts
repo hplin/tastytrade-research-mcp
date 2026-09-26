@@ -190,6 +190,9 @@ type UniverseDeltaForward = DeltaForwardObservation & {
 
 const CANDLE_INTERVAL = "5m";
 const CANDLE_INTERVAL_MS = 5 * 60_000;
+const CANDLE_MAX_OUTPUT = 20_000;
+const CANDLE_MAX_RECEIVED_EVENTS = 20_000;
+const CANDLE_MAX_BUFFER_BYTES = 32 * 1024 * 1024;
 const MAX_OBSERVATION_AGE_MS = 60 * 60_000;
 const OPTION_BATCH_SIZE = 20;
 const STRIKE_INCREMENT = 5;
@@ -842,7 +845,9 @@ export async function reconstructHistoricalSpxCandidates(
     start_time: new Date(asOfMs - 2 * CANDLE_INTERVAL_MS).toISOString(),
     end_time: plan.as_of,
     session: { kind: "ALL", timezone: "UTC" },
-    max_candles: 20_000,
+    max_output_candles: CANDLE_MAX_OUTPUT,
+    max_received_events: CANDLE_MAX_RECEIVED_EVENTS,
+    max_buffer_bytes: CANDLE_MAX_BUFFER_BYTES,
   });
   const underlyingContract = contractSpec(
     plan.session_date,
@@ -971,7 +976,9 @@ export async function reconstructHistoricalSpxCandidates(
       start_time: optionStart,
       end_time: plan.as_of,
       session: { kind: "ALL", timezone: "UTC" },
-      max_candles: 20_000,
+      max_output_candles: CANDLE_MAX_OUTPUT,
+      max_received_events: CANDLE_MAX_RECEIVED_EVENTS,
+      max_buffer_bytes: CANDLE_MAX_BUFFER_BYTES,
     });
     if (results.length !== batch.length) {
       throw new Error(
@@ -1541,7 +1548,9 @@ export async function getHistoricalSpxCandidateUniverse(
       start_time: new Date(asOfMs - 2 * CANDLE_INTERVAL_MS).toISOString(),
       end_time: plan.as_of,
       session: { kind: "ALL", timezone: "UTC" },
-      max_candles: 20_000,
+      max_output_candles: CANDLE_MAX_OUTPUT,
+      max_received_events: CANDLE_MAX_RECEIVED_EVENTS,
+      max_buffer_bytes: CANDLE_MAX_BUFFER_BYTES,
     });
   } catch (error) {
     const message = errorMessage(error);
@@ -1639,7 +1648,9 @@ export async function getHistoricalSpxCandidateUniverse(
         start_time: optionStart,
         end_time: plan.as_of,
         session: { kind: "ALL", timezone: "UTC" },
-        max_candles: 20_000,
+        max_output_candles: CANDLE_MAX_OUTPUT,
+        max_received_events: CANDLE_MAX_RECEIVED_EVENTS,
+        max_buffer_bytes: CANDLE_MAX_BUFFER_BYTES,
       });
       if (results.length !== batch.length) {
         throw new Error(

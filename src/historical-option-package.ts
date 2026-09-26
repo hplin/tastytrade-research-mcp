@@ -85,7 +85,7 @@ export type HistoricalPackageResolutionAttempt = {
   resolution: HistoricalPackageResolution;
   status: "SELECTED" | "UNAVAILABLE";
   reason:
-    | "DXLINK_SNAPSHOT_LIMIT"
+    | "LOCAL_CANDLE_BUDGET_EXCEEDED"
     | "DXLINK_SNAPSHOT_INCOMPLETE"
     | "DXLINK_SNAPSHOT_TRUNCATED"
     | null;
@@ -225,7 +225,9 @@ const PATH_RESOLUTIONS: HistoricalPackageResolution[] = [
 const DEFAULT_MAX_OBSERVATION_AGE_MINUTES = 30;
 const DEFAULT_MAX_TEMPORAL_SKEW_MINUTES = 10;
 const MAX_RESEARCH_WINDOW_MS = 24 * 60 * 60_000;
-const MAX_CANDLES = 20_000;
+const CANDLE_MAX_OUTPUT = 20_000;
+const CANDLE_MAX_RECEIVED_EVENTS = 20_000;
+const CANDLE_MAX_BUFFER_BYTES = 32 * 1024 * 1024;
 
 function resolutionMilliseconds(resolution: HistoricalPackageResolution): number {
   const amount = Number.parseInt(resolution, 10);
@@ -426,11 +428,14 @@ function packageReferenceValue(
   };
 }
 
-function isSnapshotLimitError(error: unknown): boolean {
+function isLegacyLocalBudgetError(error: unknown): boolean {
   return (
     error instanceof Error &&
     (error.message.includes("exceeding max_candles=") ||
-      error.message.startsWith("Requested range may contain "))
+      error.message.startsWith("Requested range may contain ") ||
+      error.message.includes("LOCAL_RECEIVE_BUDGET_EXCEEDED") ||
+      error.message.includes("LOCAL_BUFFER_BUDGET_EXCEEDED") ||
+      error.message.includes("LOCAL_OUTPUT_BUDGET_EXCEEDED"))
   );
 }
 
@@ -457,7 +462,9 @@ async function retrieveWithFallback(
         start_time: requestedRange.start,
         end_time: requestedRange.end,
         session: { kind: "ALL", timezone: "UTC" },
-        max_candles: MAX_CANDLES,
+        max_output_candles: CANDLE_MAX_OUTPUT,
+        max_received_events: CANDLE_MAX_RECEIVED_EVENTS,
+        max_buffer_bytes: CANDLE_MAX_BUFFER_BYTES,
       });
       if (!Array.isArray(results)) {
         throw new Error(
@@ -468,12 +475,19 @@ async function retrieveWithFallback(
         (result) => !result.snapshot_complete || result.snapshot_truncated,
       );
       if (snapshotFailure) {
+        const localBudgetFailure = results.some((result) =>
+          (result.failure_reasons ?? []).some((reason) =>
+            reason.startsWith("LOCAL_"),
+          ),
+        );
         attempts.push({
           resolution,
           status: "UNAVAILABLE",
-          reason: results.some((result) => result.snapshot_truncated)
-            ? "DXLINK_SNAPSHOT_TRUNCATED"
-            : "DXLINK_SNAPSHOT_INCOMPLETE",
+          reason: localBudgetFailure
+            ? "LOCAL_CANDLE_BUDGET_EXCEEDED"
+            : results.some((result) => result.snapshot_truncated)
+              ? "DXLINK_SNAPSHOT_TRUNCATED"
+              : "DXLINK_SNAPSHOT_INCOMPLETE",
         });
         continue;
       }
@@ -484,11 +498,11 @@ async function retrieveWithFallback(
       });
       return { resolution, results, attempts };
     } catch (error) {
-      if (!isSnapshotLimitError(error)) throw error;
+      if (!isLegacyLocalBudgetError(error)) throw error;
       attempts.push({
         resolution,
         status: "UNAVAILABLE",
-        reason: "DXLINK_SNAPSHOT_LIMIT",
+        reason: "LOCAL_CANDLE_BUDGET_EXCEEDED",
       });
     }
   }
