@@ -19,6 +19,12 @@ export type DdIvDeltaConvention =
   | "SIGNED_FORWARD_DELTA_PERCENT"
   | "ABSOLUTE_FORWARD_DELTA_PERCENT";
 
+export type DdIvMoneynessConvention = "LN_STRIKE_OVER_FORWARD";
+
+export type DdIvCoordinateDefinition =
+  | DdIvDeltaConvention
+  | DdIvMoneynessConvention;
+
 export type DdIvValueOrigin = "PROVIDER_OBSERVATION" | "DERIVED";
 
 export type DdIvSelectedLegReferenceInput = {
@@ -29,26 +35,53 @@ export type DdIvSelectedLegReferenceInput = {
   strike: DecimalInput;
 };
 
-export type DdIvInterpolationProfileInput = {
+export type DdIvDeltaInterpolationProfileInput = {
   allowed: true;
   method: "LINEAR_BY_DELTA";
   max_bracket_width: DecimalInput;
   max_bracket_skew_ms: number;
 };
 
-export type DdIvMatchedCoordinateProfileInput = {
+export type DdIvForwardMoneynessInterpolationProfileInput = {
+  allowed: true;
+  method: "LINEAR_BY_LOG_MONEYNESS";
+  max_bracket_width: DecimalInput;
+  max_bracket_skew_ms: number;
+};
+
+export type DdIvInterpolationProfileInput =
+  | DdIvDeltaInterpolationProfileInput
+  | DdIvForwardMoneynessInterpolationProfileInput;
+
+type DdIvMatchedCoordinateProfileBaseInput = {
   measurement_id: string;
-  measurement_basis: "MATCHED_DELTA";
   front_expiration: string;
   back_expiration: string;
   option_side: DdIvOptionSide;
-  target_delta: DecimalInput;
-  delta_convention: DdIvDeltaConvention;
   tolerance: DecimalInput;
   missing_policy: "NOT_AVAILABLE";
   max_front_back_skew_ms: number;
-  interpolation?: DdIvInterpolationProfileInput | null;
 };
+
+export type DdIvMatchedDeltaCoordinateProfileInput =
+  DdIvMatchedCoordinateProfileBaseInput & {
+    measurement_basis: "MATCHED_DELTA";
+    target_delta: DecimalInput;
+    delta_convention: DdIvDeltaConvention;
+    interpolation?: DdIvDeltaInterpolationProfileInput | null;
+  };
+
+export type DdIvMatchedForwardMoneynessCoordinateProfileInput =
+  DdIvMatchedCoordinateProfileBaseInput & {
+    measurement_basis: "MATCHED_FORWARD_MONEYNESS";
+    target_log_moneyness: DecimalInput;
+    moneyness_convention: DdIvMoneynessConvention;
+    interpolation?: DdIvForwardMoneynessInterpolationProfileInput | null;
+  };
+
+export type DdIvMatchedCoordinateProfileInput =
+  | DdIvMatchedDeltaCoordinateProfileInput
+  | DdIvMatchedForwardMoneynessCoordinateProfileInput;
 
 export type DdIvMeasurementProfileInput = {
   profile_version: typeof DD_IV_MEASUREMENT_PROFILE_VERSION;
@@ -119,6 +152,21 @@ export type DdIvMeasurementNormalizerInput = {
   checkpoint: string;
   request: DdIvMeasurementRequestInput | DdIvMeasurementRequest;
   observations: DdIvObservationInput[];
+  source_evidence?: DdIvSourceEvidenceInput;
+};
+
+export type DdIvSourceEvidenceInput = {
+  manifest_contract_version: string;
+  manifest_ids: string[];
+  normalized_content_ids: string[];
+  provider_payload_content_ids: string[];
+};
+
+export type DdIvSourceEvidence = {
+  manifest_contract_version: string;
+  manifest_ids: string[];
+  normalized_content_ids: string[];
+  provider_payload_content_ids: string[];
 };
 
 export type DdIvSelectedLegReference = {
@@ -129,26 +177,53 @@ export type DdIvSelectedLegReference = {
   strike: string;
 };
 
-export type DdIvInterpolationProfile = {
+export type DdIvDeltaInterpolationProfile = {
   allowed: true;
   method: "LINEAR_BY_DELTA";
   max_bracket_width: string;
   max_bracket_skew_ms: number;
 };
 
-export type DdIvMatchedCoordinateProfile = {
+export type DdIvForwardMoneynessInterpolationProfile = {
+  allowed: true;
+  method: "LINEAR_BY_LOG_MONEYNESS";
+  max_bracket_width: string;
+  max_bracket_skew_ms: number;
+};
+
+export type DdIvInterpolationProfile =
+  | DdIvDeltaInterpolationProfile
+  | DdIvForwardMoneynessInterpolationProfile;
+
+type DdIvMatchedCoordinateProfileBase = {
   measurement_id: string;
-  measurement_basis: "MATCHED_DELTA";
   front_expiration: string;
   back_expiration: string;
   option_side: DdIvOptionSide;
-  target_delta: string;
-  delta_convention: DdIvDeltaConvention;
   tolerance: string;
   missing_policy: "NOT_AVAILABLE";
   max_front_back_skew_ms: number;
-  interpolation: DdIvInterpolationProfile | null;
 };
+
+export type DdIvMatchedDeltaCoordinateProfile =
+  DdIvMatchedCoordinateProfileBase & {
+    measurement_basis: "MATCHED_DELTA";
+    target_delta: string;
+    delta_convention: DdIvDeltaConvention;
+    interpolation: DdIvDeltaInterpolationProfile | null;
+  };
+
+export type DdIvMatchedForwardMoneynessCoordinateProfile =
+  DdIvMatchedCoordinateProfileBase & {
+    measurement_basis: "MATCHED_FORWARD_MONEYNESS";
+    target_log_moneyness: string;
+    moneyness_convention: DdIvMoneynessConvention;
+    interpolation: DdIvForwardMoneynessInterpolationProfile | null;
+  };
+
+export type DdIvMatchedCoordinateProfile =
+  | DdIvMatchedDeltaCoordinateProfile
+  | DdIvMatchedForwardMoneynessCoordinateProfile;
 
 export type DdIvMeasurementProfile = {
   profile_version: typeof DD_IV_MEASUREMENT_PROFILE_VERSION;
@@ -264,9 +339,10 @@ export type DdIvMatchInput = {
   source_symbol: string;
   strike: string;
   coordinate: string;
-  delta: string;
-  delta_convention: "SIGNED_FORWARD_DELTA_PERCENT";
-  delta_origin: DdIvValueOrigin;
+  coordinate_definition: DdIvCoordinateDefinition;
+  delta: string | null;
+  delta_convention: "SIGNED_FORWARD_DELTA_PERCENT" | null;
+  delta_origin: DdIvValueOrigin | null;
   iv_decimal: string;
   weight: string;
   available_at: string;
@@ -282,18 +358,25 @@ export type DdIvCoordinateMatch = {
   option_side: DdIvOptionSide;
   target_coordinate: string;
   achieved_coordinate: string | null;
-  delta_error: string | null;
+  coordinate_definition: DdIvCoordinateDefinition;
+  coordinate_error: string | null;
+  delta_error?: string | null;
+  moneyness_error?: string | null;
   coverage_gap: string | null;
   iv_decimal: string | null;
   iv_unit: "DECIMAL";
   value_origin: DdIvValueOrigin | null;
-  method: "DIRECT_WITHIN_TOLERANCE" | "LINEAR_BY_DELTA" | null;
+  method:
+    | "DIRECT_WITHIN_TOLERANCE"
+    | "LINEAR_BY_DELTA"
+    | "LINEAR_BY_LOG_MONEYNESS"
+    | null;
   source_symbols: string[];
   source_strikes: string[];
   source_cohort_ids: string[];
   effective_available_at: string | null;
   interpolation: {
-    method: "LINEAR_BY_DELTA";
+    method: "LINEAR_BY_DELTA" | "LINEAR_BY_LOG_MONEYNESS";
     lower_coordinate: string;
     upper_coordinate: string;
     lower_weight: string;
@@ -307,7 +390,7 @@ export type DdIvCoordinateMatch = {
 
 export type DdIvMatchedMeasurement = {
   contract_version: typeof DD_IV_MEASUREMENT_CONTRACT_VERSION;
-  measurement_basis: "MATCHED_DELTA";
+  measurement_basis: "MATCHED_DELTA" | "MATCHED_FORWARD_MONEYNESS";
   measurement_id: string;
   measurement_profile_version: typeof DD_IV_MEASUREMENT_PROFILE_VERSION;
   grading_role: "RESEARCH_ONLY";
@@ -315,8 +398,12 @@ export type DdIvMatchedMeasurement = {
   option_side: DdIvOptionSide;
   front_expiration: string;
   back_expiration: string;
-  target_delta: string;
-  delta_convention: DdIvDeltaConvention;
+  coordinate_definition: DdIvCoordinateDefinition;
+  target_coordinate: string;
+  target_delta?: string;
+  delta_convention?: DdIvDeltaConvention;
+  target_log_moneyness?: string;
+  moneyness_convention?: DdIvMoneynessConvention;
   tolerance: string;
   missing_policy: "NOT_AVAILABLE";
   status: "AVAILABLE" | "NOT_AVAILABLE";
@@ -348,6 +435,7 @@ export type DdIvMeasurementHandoff = {
     matched: string[];
     source_cohort_ids: string[];
   };
+  source_evidence?: DdIvSourceEvidence;
   quality: "COMPLETE" | "PARTIAL" | "NOT_AVAILABLE";
   warnings: string[];
 };
@@ -361,6 +449,7 @@ const SELECTED_ROLES: DdIvSelectedLegRole[] = [
 
 const MAX_SKEW_MS = 7 * 24 * 60 * 60_000;
 const ONE_HUNDRED = ExactDecimal.parse("100");
+const CONTENT_ID_PATTERN = /^sha256:[a-f0-9]{64}$/;
 
 function stableId(value: unknown): string {
   return createHash("sha256").update(JSON.stringify(value)).digest("hex");
@@ -368,6 +457,51 @@ function stableId(value: unknown): string {
 
 function unique(values: string[]): string[] {
   return [...new Set(values)];
+}
+
+function normalizedContentIds(
+  values: string[],
+  field: string,
+): string[] {
+  if (!Array.isArray(values) || values.length === 0) {
+    throw new Error(`${field} must contain at least one content ID.`);
+  }
+  const normalized = unique(
+    values.map((value, index) => {
+      if (typeof value !== "string" || !CONTENT_ID_PATTERN.test(value)) {
+        throw new Error(
+          `${field}[${index}] must be a sha256 content ID.`,
+        );
+      }
+      return value;
+    }),
+  );
+  return normalized.sort();
+}
+
+function normalizeSourceEvidence(
+  input: DdIvSourceEvidenceInput | undefined,
+): DdIvSourceEvidence | undefined {
+  if (input === undefined) return undefined;
+  return {
+    manifest_contract_version: normalizedText(
+      input.manifest_contract_version,
+      "source_evidence.manifest_contract_version",
+      50,
+    ),
+    manifest_ids: normalizedContentIds(
+      input.manifest_ids,
+      "source_evidence.manifest_ids",
+    ),
+    normalized_content_ids: normalizedContentIds(
+      input.normalized_content_ids,
+      "source_evidence.normalized_content_ids",
+    ),
+    provider_payload_content_ids: normalizedContentIds(
+      input.provider_payload_content_ids,
+      "source_evidence.provider_payload_content_ids",
+    ),
+  };
 }
 
 function normalizedText(value: string, field: string, maximum = 200): string {
@@ -458,9 +592,12 @@ function normalizeMatchedProfile(
   input: DdIvMatchedCoordinateProfileInput,
   index: number,
 ): DdIvMatchedCoordinateProfile {
-  if (input.measurement_basis !== "MATCHED_DELTA") {
+  if (
+    input.measurement_basis !== "MATCHED_DELTA" &&
+    input.measurement_basis !== "MATCHED_FORWARD_MONEYNESS"
+  ) {
     throw new Error(
-      `measurement_profile.matched_coordinates[${index}].measurement_basis must be MATCHED_DELTA.`,
+      `measurement_profile.matched_coordinates[${index}].measurement_basis must be MATCHED_DELTA or MATCHED_FORWARD_MONEYNESS.`,
     );
   }
   if (input.missing_policy !== "NOT_AVAILABLE") {
@@ -481,77 +618,135 @@ function normalizeMatchedProfile(
       `measurement_profile.matched_coordinates[${index}] requires front_expiration before back_expiration.`,
     );
   }
-  const target = requiredDecimal(
-    input.target_delta,
-    `measurement_profile.matched_coordinates[${index}].target_delta`,
-  );
-  if (
-    input.delta_convention === "ABSOLUTE_FORWARD_DELTA_PERCENT" &&
-    (target.compare(ExactDecimal.zero()) <= 0 ||
-      target.compare(ONE_HUNDRED) >= 0)
-  ) {
-    throw new Error(
-      `measurement_profile.matched_coordinates[${index}].target_delta must be between 0 and 100 for absolute delta.`,
-    );
-  }
-  if (
-    input.delta_convention === "SIGNED_FORWARD_DELTA_PERCENT" &&
-    (target.compare(ONE_HUNDRED.negate()) <= 0 ||
-      target.compare(ONE_HUNDRED) >= 0 ||
-      target.isZero())
-  ) {
-    throw new Error(
-      `measurement_profile.matched_coordinates[${index}].target_delta must be between -100 and 100 and non-zero for signed delta.`,
-    );
-  }
-  if (
-    input.delta_convention === "SIGNED_FORWARD_DELTA_PERCENT" &&
-    ((input.option_side === "PUT" &&
-      target.compare(ExactDecimal.zero()) >= 0) ||
-      (input.option_side === "CALL" &&
-        target.compare(ExactDecimal.zero()) <= 0))
-  ) {
-    throw new Error(
-      `measurement_profile.matched_coordinates[${index}].target_delta sign must match option_side for signed delta.`,
-    );
-  }
   const tolerance = nonnegativeDecimal(
     input.tolerance,
     `measurement_profile.matched_coordinates[${index}].tolerance`,
   );
-  const interpolation =
-    input.interpolation == null
-      ? null
-      : {
-          allowed: true as const,
-          method: "LINEAR_BY_DELTA" as const,
-          max_bracket_width: positiveDecimal(
-            input.interpolation.max_bracket_width,
-            `measurement_profile.matched_coordinates[${index}].interpolation.max_bracket_width`,
-          ),
-          max_bracket_skew_ms: normalizedSkew(
-            input.interpolation.max_bracket_skew_ms,
-            `measurement_profile.matched_coordinates[${index}].interpolation.max_bracket_skew_ms`,
-          ),
-        };
-  return {
+  const common = {
     measurement_id: normalizedText(
       input.measurement_id,
       `measurement_profile.matched_coordinates[${index}].measurement_id`,
     ),
-    measurement_basis: "MATCHED_DELTA",
     front_expiration: frontExpiration,
     back_expiration: backExpiration,
     option_side: input.option_side,
-    target_delta: target.toString(),
-    delta_convention: input.delta_convention,
     tolerance,
-    missing_policy: "NOT_AVAILABLE",
+    missing_policy: "NOT_AVAILABLE" as const,
     max_front_back_skew_ms: normalizedSkew(
       input.max_front_back_skew_ms,
       `measurement_profile.matched_coordinates[${index}].max_front_back_skew_ms`,
     ),
-    interpolation,
+  };
+  if (input.measurement_basis === "MATCHED_DELTA") {
+    if (
+      input.delta_convention !== "SIGNED_FORWARD_DELTA_PERCENT" &&
+      input.delta_convention !== "ABSOLUTE_FORWARD_DELTA_PERCENT"
+    ) {
+      throw new Error(
+        `measurement_profile.matched_coordinates[${index}].delta_convention is invalid.`,
+      );
+    }
+    const target = requiredDecimal(
+      input.target_delta,
+      `measurement_profile.matched_coordinates[${index}].target_delta`,
+    );
+    if (
+      input.delta_convention === "ABSOLUTE_FORWARD_DELTA_PERCENT" &&
+      (target.compare(ExactDecimal.zero()) <= 0 ||
+        target.compare(ONE_HUNDRED) >= 0)
+    ) {
+      throw new Error(
+        `measurement_profile.matched_coordinates[${index}].target_delta must be between 0 and 100 for absolute delta.`,
+      );
+    }
+    if (
+      input.delta_convention === "SIGNED_FORWARD_DELTA_PERCENT" &&
+      (target.compare(ONE_HUNDRED.negate()) <= 0 ||
+        target.compare(ONE_HUNDRED) >= 0 ||
+        target.isZero())
+    ) {
+      throw new Error(
+        `measurement_profile.matched_coordinates[${index}].target_delta must be between -100 and 100 and non-zero for signed delta.`,
+      );
+    }
+    if (
+      input.delta_convention === "SIGNED_FORWARD_DELTA_PERCENT" &&
+      ((input.option_side === "PUT" &&
+        target.compare(ExactDecimal.zero()) >= 0) ||
+        (input.option_side === "CALL" &&
+          target.compare(ExactDecimal.zero()) <= 0))
+    ) {
+      throw new Error(
+        `measurement_profile.matched_coordinates[${index}].target_delta sign must match option_side for signed delta.`,
+      );
+    }
+    if (
+      input.interpolation != null &&
+      input.interpolation.method !== "LINEAR_BY_DELTA"
+    ) {
+      throw new Error(
+        `measurement_profile.matched_coordinates[${index}].interpolation.method must be LINEAR_BY_DELTA for MATCHED_DELTA.`,
+      );
+    }
+    return {
+      ...common,
+      measurement_basis: "MATCHED_DELTA",
+      target_delta: target.toString(),
+      delta_convention: input.delta_convention,
+      interpolation:
+        input.interpolation == null
+          ? null
+          : {
+              allowed: true,
+              method: "LINEAR_BY_DELTA",
+              max_bracket_width: positiveDecimal(
+                input.interpolation.max_bracket_width,
+                `measurement_profile.matched_coordinates[${index}].interpolation.max_bracket_width`,
+              ),
+              max_bracket_skew_ms: normalizedSkew(
+                input.interpolation.max_bracket_skew_ms,
+                `measurement_profile.matched_coordinates[${index}].interpolation.max_bracket_skew_ms`,
+              ),
+            },
+    };
+  }
+
+  if (input.moneyness_convention !== "LN_STRIKE_OVER_FORWARD") {
+    throw new Error(
+      `measurement_profile.matched_coordinates[${index}].moneyness_convention must be LN_STRIKE_OVER_FORWARD.`,
+    );
+  }
+  if (
+    input.interpolation != null &&
+    input.interpolation.method !== "LINEAR_BY_LOG_MONEYNESS"
+  ) {
+    throw new Error(
+      `measurement_profile.matched_coordinates[${index}].interpolation.method must be LINEAR_BY_LOG_MONEYNESS for MATCHED_FORWARD_MONEYNESS.`,
+    );
+  }
+  return {
+    ...common,
+    measurement_basis: "MATCHED_FORWARD_MONEYNESS",
+    target_log_moneyness: requiredDecimal(
+      input.target_log_moneyness,
+      `measurement_profile.matched_coordinates[${index}].target_log_moneyness`,
+    ).toString(),
+    moneyness_convention: "LN_STRIKE_OVER_FORWARD",
+    interpolation:
+      input.interpolation == null
+        ? null
+        : {
+            allowed: true,
+            method: "LINEAR_BY_LOG_MONEYNESS",
+            max_bracket_width: positiveDecimal(
+              input.interpolation.max_bracket_width,
+              `measurement_profile.matched_coordinates[${index}].interpolation.max_bracket_width`,
+            ),
+            max_bracket_skew_ms: normalizedSkew(
+              input.interpolation.max_bracket_skew_ms,
+              `measurement_profile.matched_coordinates[${index}].interpolation.max_bracket_skew_ms`,
+            ),
+          },
   };
 }
 
@@ -880,12 +1075,23 @@ function eligibilityWarnings(
   observation: DdIvObservation,
   checkpoint: string,
   requireDelta: boolean,
+  requireForward = false,
 ): string[] {
   const warnings: string[] = [];
   const symbol = observation.source_symbol;
   if (observation.iv === null) warnings.push(`MISSING_IV:${symbol}`);
   if (requireDelta && observation.delta === null) {
     warnings.push(`MISSING_DELTA:${symbol}`);
+  }
+  if (requireForward && observation.forward === null) {
+    warnings.push(`MISSING_FORWARD:${symbol}`);
+  }
+  if (
+    requireForward &&
+    observation.forward !== null &&
+    observation.model.forward_model === null
+  ) {
+    warnings.push(`MISSING_FORWARD_MODEL:${symbol}`);
   }
   if (observation.bar_status === "INCOMPLETE") {
     warnings.push(`INCOMPLETE_BAR_EXCLUDED:${symbol}`);
@@ -1192,34 +1398,75 @@ type CoordinateCandidate = {
   error: ExactDecimal;
 };
 
+const LOG_MONEYNESS_DECIMAL_PLACES = 12;
+
+function targetCoordinate(
+  profile: DdIvMatchedCoordinateProfile,
+): ExactDecimal {
+  return ExactDecimal.parse(
+    profile.measurement_basis === "MATCHED_DELTA"
+      ? profile.target_delta
+      : profile.target_log_moneyness,
+  );
+}
+
+function coordinateDefinition(
+  profile: DdIvMatchedCoordinateProfile,
+): DdIvCoordinateDefinition {
+  return profile.measurement_basis === "MATCHED_DELTA"
+    ? profile.delta_convention
+    : profile.moneyness_convention;
+}
+
 function coordinateFor(
   observation: DdIvObservation,
-  convention: DdIvDeltaConvention,
+  profile: DdIvMatchedCoordinateProfile,
 ): ExactDecimal | null {
-  if (
-    observation.delta === null ||
-    observation.delta_convention !== "SIGNED_FORWARD_DELTA_PERCENT"
-  ) {
-    return null;
+  if (profile.measurement_basis === "MATCHED_DELTA") {
+    if (
+      observation.delta === null ||
+      observation.delta_convention !== "SIGNED_FORWARD_DELTA_PERCENT"
+    ) {
+      return null;
+    }
+    const delta = ExactDecimal.parse(observation.delta);
+    return profile.delta_convention === "ABSOLUTE_FORWARD_DELTA_PERCENT"
+      ? delta.abs()
+      : delta;
   }
-  const delta = ExactDecimal.parse(observation.delta);
-  return convention === "ABSOLUTE_FORWARD_DELTA_PERCENT"
-    ? delta.abs()
-    : delta;
+  if (observation.forward === null) return null;
+  const strike = Number(observation.strike);
+  const forward = Number(observation.forward.value);
+  const logMoneyness = Math.log(strike / forward);
+  if (!Number.isFinite(logMoneyness)) return null;
+  return ExactDecimal.parse(
+    logMoneyness.toFixed(LOG_MONEYNESS_DECIMAL_PLACES),
+  );
+}
+
+function coordinateErrorFields(
+  profile: DdIvMatchedCoordinateProfile,
+  error: string | null,
+): Pick<DdIvCoordinateMatch, "delta_error" | "moneyness_error"> {
+  return profile.measurement_basis === "MATCHED_DELTA"
+    ? { delta_error: error }
+    : { moneyness_error: error };
 }
 
 function matchInput(
   candidate: CoordinateCandidate,
   weight: string,
+  profile: DdIvMatchedCoordinateProfile,
 ): DdIvMatchInput {
   const observation = candidate.observation;
   return {
     source_symbol: observation.source_symbol,
     strike: observation.strike,
     coordinate: candidate.coordinate.toString(),
-    delta: observation.delta!,
-    delta_convention: observation.delta_convention!,
-    delta_origin: observation.delta_origin!,
+    coordinate_definition: coordinateDefinition(profile),
+    delta: observation.delta,
+    delta_convention: observation.delta_convention,
+    delta_origin: observation.delta_origin,
     iv_decimal: observation.iv!,
     weight,
     available_at: observation.available_at!,
@@ -1236,6 +1483,7 @@ function unavailableMatch(
   nearest: CoordinateCandidate | null,
   warnings: string[],
 ): DdIvCoordinateMatch {
+  const target = targetCoordinate(profile);
   const tolerance = ExactDecimal.parse(profile.tolerance);
   const coverageGap =
     nearest === null
@@ -1247,9 +1495,14 @@ function unavailableMatch(
     status: "NOT_AVAILABLE",
     expiration,
     option_side: profile.option_side,
-    target_coordinate: profile.target_delta,
+    target_coordinate: target.toString(),
     achieved_coordinate: nearest?.coordinate.toString() ?? null,
-    delta_error: nearest?.error.toString() ?? null,
+    coordinate_definition: coordinateDefinition(profile),
+    coordinate_error: nearest?.error.toString() ?? null,
+    ...coordinateErrorFields(
+      profile,
+      nearest?.error.toString() ?? null,
+    ),
     coverage_gap: coverageGap,
     iv_decimal: null,
     iv_unit: "DECIMAL",
@@ -1275,7 +1528,7 @@ function matchedCoordinate(
   checkpoint: string,
   observations: DdIvObservation[],
 ): DdIvCoordinateMatch {
-  const target = ExactDecimal.parse(profile.target_delta);
+  const target = targetCoordinate(profile);
   const tolerance = ExactDecimal.parse(profile.tolerance);
   const eligibility: string[] = [];
   const candidates = observations
@@ -1285,16 +1538,20 @@ function matchedCoordinate(
         observation.option_side === profile.option_side,
     )
     .map((observation) => {
-      const warnings = eligibilityWarnings(observation, checkpoint, true);
+      const warnings = eligibilityWarnings(
+        observation,
+        checkpoint,
+        profile.measurement_basis === "MATCHED_DELTA",
+        profile.measurement_basis === "MATCHED_FORWARD_MONEYNESS",
+      );
       eligibility.push(...observation.warnings, ...warnings);
       if (warnings.length > 0 || observation.iv === null) return null;
-      const coordinate = coordinateFor(
-        observation,
-        profile.delta_convention,
-      );
+      const coordinate = coordinateFor(observation, profile);
       if (coordinate === null) {
         eligibility.push(
-          `DELTA_CONVENTION_NOT_COMPARABLE:${observation.source_symbol}`,
+          profile.measurement_basis === "MATCHED_DELTA"
+            ? `DELTA_CONVENTION_NOT_COMPARABLE:${observation.source_symbol}`
+            : `FORWARD_MONEYNESS_NOT_AVAILABLE:${observation.source_symbol}`,
         );
         return null;
       }
@@ -1318,14 +1575,16 @@ function matchedCoordinate(
     (candidate) => candidate.error.compare(tolerance) <= 0,
   );
   if (direct) {
-    const input = matchInput(direct, "1");
+    const input = matchInput(direct, "1", profile);
     return {
       status: "AVAILABLE",
       expiration,
       option_side: profile.option_side,
-      target_coordinate: profile.target_delta,
+      target_coordinate: target.toString(),
       achieved_coordinate: direct.coordinate.toString(),
-      delta_error: direct.error.toString(),
+      coordinate_definition: coordinateDefinition(profile),
+      coordinate_error: direct.error.toString(),
+      ...coordinateErrorFields(profile, direct.error.toString()),
       coverage_gap: "0",
       iv_decimal: direct.observation.iv,
       iv_unit: "DECIMAL",
@@ -1398,21 +1657,27 @@ function matchedCoordinate(
     .multiply(lowerWeight)
     .add(ExactDecimal.parse(upper.observation.iv!).multiply(upperWeight));
   const inputs = [
-    matchInput(lower, lowerWeight.toString()),
-    matchInput(upper, upperWeight.toString()),
+    matchInput(lower, lowerWeight.toString(), profile),
+    matchInput(upper, upperWeight.toString(), profile),
   ];
+  const interpolationMethod =
+    profile.measurement_basis === "MATCHED_DELTA"
+      ? "LINEAR_BY_DELTA"
+      : "LINEAR_BY_LOG_MONEYNESS";
   return {
     status: "AVAILABLE",
     expiration,
     option_side: profile.option_side,
-    target_coordinate: profile.target_delta,
-    achieved_coordinate: profile.target_delta,
-    delta_error: "0",
+    target_coordinate: target.toString(),
+    achieved_coordinate: target.toString(),
+    coordinate_definition: coordinateDefinition(profile),
+    coordinate_error: "0",
+    ...coordinateErrorFields(profile, "0"),
     coverage_gap: "0",
     iv_decimal: interpolatedIv.toString(),
     iv_unit: "DECIMAL",
     value_origin: "DERIVED",
-    method: "LINEAR_BY_DELTA",
+    method: interpolationMethod,
     source_symbols: inputs.map((input) => input.source_symbol),
     source_strikes: inputs.map((input) => input.strike),
     source_cohort_ids: unique([
@@ -1423,7 +1688,7 @@ function matchedCoordinate(
       Math.max(lowerAvailable, upperAvailable),
     ).toISOString(),
     interpolation: {
-      method: "LINEAR_BY_DELTA",
+      method: interpolationMethod,
       lower_coordinate: lower.coordinate.toString(),
       upper_coordinate: upper.coordinate.toString(),
       lower_weight: lowerWeight.toString(),
@@ -1524,7 +1789,7 @@ function matchedMeasurement(
   });
   return {
     contract_version: DD_IV_MEASUREMENT_CONTRACT_VERSION,
-    measurement_basis: "MATCHED_DELTA",
+    measurement_basis: profile.measurement_basis,
     measurement_id: profile.measurement_id,
     measurement_profile_version: DD_IV_MEASUREMENT_PROFILE_VERSION,
     grading_role: "RESEARCH_ONLY",
@@ -1532,8 +1797,17 @@ function matchedMeasurement(
     option_side: profile.option_side,
     front_expiration: profile.front_expiration,
     back_expiration: profile.back_expiration,
-    target_delta: profile.target_delta,
-    delta_convention: profile.delta_convention,
+    coordinate_definition: coordinateDefinition(profile),
+    target_coordinate: targetCoordinate(profile).toString(),
+    ...(profile.measurement_basis === "MATCHED_DELTA"
+      ? {
+          target_delta: profile.target_delta,
+          delta_convention: profile.delta_convention,
+        }
+      : {
+          target_log_moneyness: profile.target_log_moneyness,
+          moneyness_convention: profile.moneyness_convention,
+        }),
     tolerance: profile.tolerance,
     missing_policy: "NOT_AVAILABLE",
     status: available ? "AVAILABLE" : "NOT_AVAILABLE",
@@ -1555,6 +1829,7 @@ export function normalizeDdIvMeasurements(
   const checkpoint = normalizeRfc3339(input.checkpoint, "checkpoint");
   const request = normalizeDdIvMeasurementRequest(input.request);
   const observations = input.observations.map(normalizeObservation);
+  const sourceEvidence = normalizeSourceEvidence(input.source_evidence);
   if (
     new Set(observations.map((observation) => observation.source_symbol)).size !==
     observations.length
@@ -1601,6 +1876,9 @@ export function normalizeDdIvMeasurements(
     checkpoint,
     request,
     observations,
+    ...(sourceEvidence === undefined
+      ? {}
+      : { source_evidence: sourceEvidence }),
   };
   return {
     contract_version: DD_IV_MEASUREMENT_CONTRACT_VERSION,
@@ -1619,6 +1897,9 @@ export function normalizeDdIvMeasurements(
       matched: matched.map((measurement) => measurement.cohort_id),
       source_cohort_ids: sourceCohortIds,
     },
+    ...(sourceEvidence === undefined
+      ? {}
+      : { source_evidence: sourceEvidence }),
     quality,
     warnings,
   };

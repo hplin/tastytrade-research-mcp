@@ -76,6 +76,60 @@ function interpolationInput(targetDelta = "25") {
   return input;
 }
 
+function moneynessInterpolationInput() {
+  const input = fixtureInput();
+  input.request.measurement_profile.matched_coordinates = [
+    {
+      measurement_id: "put-atm-log-moneyness-interpolated",
+      measurement_basis: "MATCHED_FORWARD_MONEYNESS",
+      front_expiration: "2026-09-15T20:00:00.000Z",
+      back_expiration: "2026-09-29T20:00:00.000Z",
+      option_side: "PUT",
+      target_log_moneyness: "0",
+      moneyness_convention: "LN_STRIKE_OVER_FORWARD",
+      tolerance: "0",
+      missing_policy: "NOT_AVAILABLE",
+      max_front_back_skew_ms: 600000,
+      interpolation: {
+        allowed: true,
+        method: "LINEAR_BY_LOG_MONEYNESS",
+        max_bracket_width: "0.02",
+        max_bracket_skew_ms: 600000,
+      },
+    },
+  ];
+  const additions = [
+    ["FRONT-PUT-7600", "2026-09-15T20:00:00.000Z", "7600", "0.2"],
+    ["FRONT-PUT-7700", "2026-09-15T20:00:00.000Z", "7700", "0.22"],
+    ["BACK-PUT-7600", "2026-09-29T20:00:00.000Z", "7600", "0.21"],
+    ["BACK-PUT-7700", "2026-09-29T20:00:00.000Z", "7700", "0.23"],
+  ].map(([sourceSymbol, expiration, strike, iv]) => {
+    const observation = structuredClone(
+      input.observations.find(
+        (item) =>
+          item.option_side === "PUT" && item.expiration === expiration,
+      ),
+    );
+    observation.source_symbol = sourceSymbol;
+    observation.strike = strike;
+    observation.iv = iv;
+    observation.delta = null;
+    observation.delta_convention = null;
+    observation.delta_origin = null;
+    observation.lineage = [
+      {
+        source: `fixture:${sourceSymbol}`,
+        source_timestamp: observation.available_at,
+        fields: ["iv", "forward", "strike"],
+        origin: "PROVIDER_OBSERVATION",
+      },
+    ];
+    return observation;
+  });
+  input.observations.push(...additions);
+  return input;
+}
+
 describe("Double Diagonal IV measurement contract", () => {
   test("reproduces the checked-in grading/regression handoff dataset", () => {
     const example = JSON.parse(
@@ -427,6 +481,119 @@ describe("Double Diagonal IV measurement contract", () => {
     );
   });
 
+  test("matches and interpolates by declared ln(K/F) without requiring delta", () => {
+    const direct = matched(
+      normalizeDdIvMeasurements(fixtureInput()),
+      "put-atm-log-moneyness",
+    );
+    const interpolated = matched(
+      normalizeDdIvMeasurements(moneynessInterpolationInput()),
+      "put-atm-log-moneyness-interpolated",
+    );
+
+    expect(direct).toMatchObject({
+      measurement_basis: "MATCHED_FORWARD_MONEYNESS",
+      coordinate_definition: "LN_STRIKE_OVER_FORWARD",
+      target_log_moneyness: "-0.025",
+      target_coordinate: "-0.025",
+      status: "AVAILABLE",
+      spread_decimal: "0",
+      front: {
+        achieved_coordinate: "-0.028450479932",
+        coordinate_error: "0.003450479932",
+        moneyness_error: "0.003450479932",
+        source_strikes: ["7450"],
+      },
+      back: {
+        achieved_coordinate: "-0.025100393047",
+        coordinate_error: "0.000100393047",
+        moneyness_error: "0.000100393047",
+        source_strikes: ["7475"],
+      },
+    });
+    expect(interpolated).toMatchObject({
+      measurement_basis: "MATCHED_FORWARD_MONEYNESS",
+      coordinate_definition: "LN_STRIKE_OVER_FORWARD",
+      target_log_moneyness: "0",
+      status: "AVAILABLE",
+      spread_decimal: "0.01",
+      spread_vol_points: "1.00",
+      front: {
+        achieved_coordinate: "0",
+        coordinate_error: "0",
+        moneyness_error: "0",
+        method: "LINEAR_BY_LOG_MONEYNESS",
+        source_strikes: ["7600", "7700"],
+        interpolation: {
+          method: "LINEAR_BY_LOG_MONEYNESS",
+        },
+      },
+      back: {
+        achieved_coordinate: "0",
+        method: "LINEAR_BY_LOG_MONEYNESS",
+        source_strikes: ["7600", "7700"],
+      },
+    });
+    expect(interpolated.front.inputs[0]).toMatchObject({
+      delta: null,
+      delta_convention: null,
+      delta_origin: null,
+      coordinate_definition: "LN_STRIKE_OVER_FORWARD",
+      forward: {
+        value: "7665",
+        origin: "DERIVED",
+      },
+    });
+  });
+
+  test("fails closed when forward-moneyness evidence lacks a forward", () => {
+    const input = fixtureInput();
+    input.request.measurement_profile.matched_coordinates = [
+      {
+        measurement_id: "put-missing-forward",
+        measurement_basis: "MATCHED_FORWARD_MONEYNESS",
+        front_expiration: "2026-09-15T20:00:00.000Z",
+        back_expiration: "2026-09-29T20:00:00.000Z",
+        option_side: "PUT",
+        target_log_moneyness: "0",
+        moneyness_convention: "LN_STRIKE_OVER_FORWARD",
+        tolerance: "0.1",
+        missing_policy: "NOT_AVAILABLE",
+        max_front_back_skew_ms: 600000,
+      },
+    ];
+    for (const observation of input.observations) {
+      if (
+        observation.option_side === "PUT" &&
+        observation.expiration === "2026-09-15T20:00:00.000Z"
+      ) {
+        observation.delta = null;
+        observation.delta_convention = null;
+        observation.delta_origin = null;
+        if (observation.source_symbol === "FRONT-PUT-20D") {
+          observation.forward = null;
+        } else {
+          observation.model.forward_model = null;
+        }
+      }
+    }
+
+    const measurement = matched(
+      normalizeDdIvMeasurements(input),
+      "put-missing-forward",
+    );
+
+    expect(measurement.status).toBe("NOT_AVAILABLE");
+    expect(measurement.front.status).toBe("NOT_AVAILABLE");
+    expect(measurement.front.achieved_coordinate).toBeNull();
+    expect(measurement.warnings).toEqual(
+      expect.arrayContaining([
+        "MISSING_FORWARD:FRONT-PUT-20D",
+        "MISSING_FORWARD_MODEL:FRONT-PUT-25D",
+      ]),
+    );
+  });
+
   test("preserves ambiguous legacy term-spread values and source files", () => {
     const record = {
       candidate_id: "legacy-dd-1",
@@ -470,4 +637,29 @@ describe("Double Diagonal IV measurement contract", () => {
       }).status,
     ).toBe("ALREADY_VERSIONED_PRESERVED");
   });
+});
+
+test("binds an optional immutable source manifest into the handoff identity", () => {
+  const input = fixtureInput();
+  const baseline = normalizeDdIvMeasurements(input);
+  const manifestId = `sha256:${"1".repeat(64)}`;
+  const normalizedContentId = `sha256:${"2".repeat(64)}`;
+  const providerContentId = `sha256:${"3".repeat(64)}`;
+  const linked = normalizeDdIvMeasurements({
+    ...input,
+    source_evidence: {
+      manifest_contract_version: "1.0.0",
+      manifest_ids: [manifestId],
+      normalized_content_ids: [normalizedContentId],
+      provider_payload_content_ids: [providerContentId],
+    },
+  });
+
+  expect(linked.source_evidence).toEqual({
+    manifest_contract_version: "1.0.0",
+    manifest_ids: [manifestId],
+    normalized_content_ids: [normalizedContentId],
+    provider_payload_content_ids: [providerContentId],
+  });
+  expect(linked.handoff_id).not.toBe(baseline.handoff_id);
 });

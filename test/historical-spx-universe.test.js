@@ -1,5 +1,6 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, jest, test } from "@jest/globals";
+import { EvidenceCacheError } from "../dist/evidence-cache.js";
 import {
   getHistoricalSpxCandidateUniverse,
   prepareHistoricalSpxCandidateUniverse,
@@ -33,6 +34,7 @@ function candleResult(
   candles,
   interval = "5m",
   session = "ALL",
+  evidenceCache = null,
 ) {
   return {
     contract_version: "1.0.0",
@@ -62,10 +64,13 @@ function candleResult(
     resampled: false,
     candles,
     warnings: [],
+    ...(evidenceCache === null
+      ? {}
+      : { evidence_cache: evidenceCache }),
   };
 }
 
-function fixtureCandles(source = fixture) {
+function fixtureCandles(source = fixture, evidenceCache = null) {
   const bySymbol = new Map(
     source.options.map((option) => [option.symbol, option]),
   );
@@ -77,6 +82,7 @@ function fixtureCandles(source = fixture) {
         [structuredClone(source.underlying.candle)],
         input.interval,
         input.session?.kind,
+        evidenceCache,
       ),
     ),
     getHistoricalCandlesBatch: jest.fn(async (input) =>
@@ -88,6 +94,7 @@ function fixtureCandles(source = fixture) {
           option ? [structuredClone(option.candle)] : [],
           input.interval,
           input.session?.kind,
+          evidenceCache,
         );
       }),
     ),
@@ -461,8 +468,22 @@ describe("historical SPX candidate universe", () => {
   });
 
   test("attaches a research-only DD IV handoff without replacing legacy term structure", async () => {
+    const evidenceRecord = {
+      contract_version: "1.0.0",
+      cache_status: "MISS",
+      manifest_id: `sha256:${"1".repeat(64)}`,
+      manifest_set_id: null,
+      request_fingerprint: `sha256:${"4".repeat(64)}`,
+      revision: 1,
+      evidence_role: "ENTRY",
+      provider_payload_content_id: `sha256:${"2".repeat(64)}`,
+      normalized_content_id: `sha256:${"3".repeat(64)}`,
+      bytes_read: 0,
+      bytes_written: 1,
+      provider_calls_avoided: 0,
+    };
     const result = await getHistoricalSpxCandidateUniverse(
-      fixtureCandles(),
+      fixtureCandles(fixture, evidenceRecord),
       {
         ...REQUEST,
         dd_iv_measurement: {
@@ -516,6 +537,18 @@ describe("historical SPX candidate universe", () => {
                 missing_policy: "NOT_AVAILABLE",
                 max_front_back_skew_ms: 900000,
               },
+              {
+                measurement_id: "put-atm-forward-moneyness",
+                measurement_basis: "MATCHED_FORWARD_MONEYNESS",
+                front_expiration: "2026-09-15T20:00:00.000Z",
+                back_expiration: "2026-09-29T20:00:00.000Z",
+                option_side: "PUT",
+                target_log_moneyness: "0",
+                moneyness_convention: "LN_STRIKE_OVER_FORWARD",
+                tolerance: "0.1",
+                missing_policy: "NOT_AVAILABLE",
+                max_front_back_skew_ms: 900000,
+              },
             ],
           },
         },
@@ -547,7 +580,31 @@ describe("historical SPX candidate universe", () => {
           measurement_id: "put-25d",
           status: "AVAILABLE",
         },
+        {
+          measurement_basis: "MATCHED_FORWARD_MONEYNESS",
+          measurement_id: "put-atm-forward-moneyness",
+          coordinate_definition: "LN_STRIKE_OVER_FORWARD",
+          status: "AVAILABLE",
+        },
       ],
+      source_evidence: {
+        manifest_contract_version: "1.0.0",
+        manifest_ids: [evidenceRecord.manifest_id],
+        normalized_content_ids: [
+          evidenceRecord.normalized_content_id,
+        ],
+        provider_payload_content_ids: [
+          evidenceRecord.provider_payload_content_id,
+        ],
+      },
+    });
+    expect(result.dd_iv_measurement_handoff.source_evidence).toEqual({
+      manifest_contract_version: result.evidence_cache.contract_version,
+      manifest_ids: result.evidence_cache.manifest_ids,
+      normalized_content_ids:
+        result.evidence_cache.normalized_content_ids,
+      provider_payload_content_ids:
+        result.evidence_cache.provider_payload_content_ids,
     });
     expect(
       result.dd_iv_measurement_handoff.selected_leg_measurement.cohort_id,
@@ -653,5 +710,29 @@ describe("historical SPX candidate universe", () => {
         message: "fixture underlying unavailable",
       }),
     ]);
+  });
+
+  test("propagates cache integrity failures instead of returning partial provider data", async () => {
+    const candles = fixtureCandles();
+    candles.getHistoricalCandles = jest.fn(async () => {
+      throw new EvidenceCacheError(
+        "EVIDENCE_CACHE_CHECKSUM_MISMATCH",
+        "synthetic corruption",
+      );
+    });
+
+    await expect(
+      getHistoricalSpxCandidateUniverse(candles, {
+        ...REQUEST,
+        evidence_cache: {
+          mode: "CACHE_ONLY",
+          manifest_ids: [`sha256:${"2".repeat(64)}`],
+          evidence_role: "ENTRY",
+        },
+      }),
+    ).rejects.toMatchObject({
+      code: "EVIDENCE_CACHE_CHECKSUM_MISMATCH",
+    });
+    expect(candles.getHistoricalCandlesBatch).not.toHaveBeenCalled();
   });
 });

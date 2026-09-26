@@ -1,6 +1,6 @@
 {
   "dataset_version": "dd-iv-measurement-input/1.0.0",
-  "description": "Deterministic Double Diagonal IV measurement input with distinct selected-leg and matched-delta outcomes.",
+  "description": "Deterministic Double Diagonal IV measurement input with distinct selected-leg, matched-delta, and matched-forward-moneyness outcomes.",
   "input": {
     "checkpoint": "2026-08-25T14:30:00.000Z",
     "request": {
@@ -68,6 +68,30 @@
             "target_delta": "25",
             "delta_convention": "ABSOLUTE_FORWARD_DELTA_PERCENT",
             "tolerance": "0.25",
+            "missing_policy": "NOT_AVAILABLE",
+            "max_front_back_skew_ms": 600000
+          },
+          {
+            "measurement_id": "put-atm-log-moneyness",
+            "measurement_basis": "MATCHED_FORWARD_MONEYNESS",
+            "front_expiration": "2026-09-15T20:00:00.000Z",
+            "back_expiration": "2026-09-29T20:00:00.000Z",
+            "option_side": "PUT",
+            "target_log_moneyness": "-0.025",
+            "moneyness_convention": "LN_STRIKE_OVER_FORWARD",
+            "tolerance": "0.004",
+            "missing_policy": "NOT_AVAILABLE",
+            "max_front_back_skew_ms": 600000
+          },
+          {
+            "measurement_id": "call-atm-log-moneyness",
+            "measurement_basis": "MATCHED_FORWARD_MONEYNESS",
+            "front_expiration": "2026-09-15T20:00:00.000Z",
+            "back_expiration": "2026-09-29T20:00:00.000Z",
+            "option_side": "CALL",
+            "target_log_moneyness": "0.025",
+            "moneyness_convention": "LN_STRIKE_OVER_FORWARD",
+            "tolerance": "0.003",
             "missing_policy": "NOT_AVAILABLE",
             "max_front_back_skew_ms": 600000
           }

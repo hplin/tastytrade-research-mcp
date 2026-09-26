@@ -64,10 +64,13 @@ does not grade contracts, assign Double Diagonal buckets, or choose final
 legs.
 
 An optional `dd_iv_measurement` object may freeze one exact four-leg Double
-Diagonal candidate plus a versioned matched-delta profile. Every selected leg
-must be inside the requested expiration/side/strike grid. The result then
-adds `dd_iv_measurement_handoff`; omitting the request returns that field as
-`null`. The tool count remains unchanged.
+Diagonal candidate plus versioned matched-delta and/or
+matched-forward-moneyness rules. Every selected leg must be inside the
+requested expiration/side/strike grid. The result then adds
+`dd_iv_measurement_handoff`; omitting the request returns that field as
+`null`. When evidence caching is active, the handoff includes the immutable
+manifest and content IDs used to construct it. The tool count remains
+unchanged.
 
 ## Evidence reconstruction
 
@@ -150,10 +153,11 @@ Identity semantics are explicit:
 This is a bounded candidate universe, not a historical full-chain claim.
 Historical bid/ask remains unavailable.
 
-The optional DD handoff keeps selected-leg and matched-delta cohorts
-independent. It never writes `term_structure`, grading buckets, router
-thresholds, fill assumptions, or P&L. Full measurement and migration rules
-are in [`dd-iv-measurements.md`](./dd-iv-measurements.md).
+The optional DD handoff keeps selected-leg, matched-delta, and
+matched-forward-moneyness cohorts independent. It never writes
+`term_structure`, grading buckets, router thresholds, fill assumptions, or
+P&L. Full measurement and migration rules are in
+[`dd-iv-measurements.md`](./dd-iv-measurements.md).
 
 ## Live checkpoint finding
 
@@ -223,3 +227,9 @@ fixture deterministically selects:
 The live 7300-8050 grid selected Sep-15 front short 7400P / 7825C and Sep-29
 back long 7500P / 7825C. Contracts such as the fixture's 7450P with missing
 IV remain null and are excluded from delta-based selection.
+
+When configured, `evidence_cache` freezes the underlying and option-batch
+source manifests used by the universe result. Cache-only replay requires the
+exact manifest IDs and preserves partial coverage, provider errors, bar
+timing, warnings, and resolution identity. See
+[`evidence-cache.md`](evidence-cache.md).

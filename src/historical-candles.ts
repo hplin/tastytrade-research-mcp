@@ -6,6 +6,10 @@ import {
   assertTrustedHosts,
 } from "./config.js";
 import { ExactDecimal } from "./decimal.js";
+import type {
+  EvidenceCacheRecord,
+  EvidenceCacheRequest,
+} from "./evidence-cache.js";
 import { TastytradeOAuthClient } from "./oauth-client.js";
 import {
   normalizeResolutionProfile,
@@ -55,6 +59,7 @@ export type HistoricalCandlesInput = {
   max_buffer_bytes?: number;
   timeout_ms?: number;
   max_candles?: number;
+  evidence_cache?: EvidenceCacheRequest;
 };
 
 export type HistoricalCandleInstrument = {
@@ -76,6 +81,7 @@ export type HistoricalCandlesBatchInput = {
   max_buffer_bytes?: number;
   timeout_ms?: number;
   max_candles?: number;
+  evidence_cache?: EvidenceCacheRequest;
 };
 
 export type HistoricalCandle = {
@@ -184,6 +190,7 @@ export type HistoricalCandlesResult = {
   resampled: false;
   candles: HistoricalCandle[];
   warnings: string[];
+  evidence_cache?: EvidenceCacheRecord | null;
 };
 
 type QuoteToken = {
@@ -1078,6 +1085,7 @@ export class TastytradeHistoricalCandlesClient {
       max_buffer_bytes: input.max_buffer_bytes,
       timeout_ms: input.timeout_ms,
       max_candles: input.max_candles,
+      evidence_cache: input.evidence_cache,
     });
     return result;
   }
@@ -1085,6 +1093,14 @@ export class TastytradeHistoricalCandlesClient {
   async getHistoricalCandlesBatch(
     input: HistoricalCandlesBatchInput,
   ): Promise<HistoricalCandlesResult[]> {
+    if (
+      input.evidence_cache &&
+      input.evidence_cache.mode !== "BYPASS"
+    ) {
+      throw new Error(
+        "Evidence cache modes require CachedHistoricalCandlesService.",
+      );
+    }
     if (
       !Array.isArray(input.instruments) ||
       input.instruments.length < 1 ||

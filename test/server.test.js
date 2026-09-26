@@ -85,6 +85,7 @@ describe("MCP research server", () => {
         candleTool.inputSchema.properties.request.properties,
       ).toMatchObject({
         resolution_profile: expect.any(Object),
+        evidence_cache: expect.any(Object),
         deadline_ms: { maximum: 60000 },
         max_output_candles: { maximum: 250000 },
         max_received_events: { maximum: 1000000 },
@@ -102,6 +103,7 @@ describe("MCP research server", () => {
         local_checkpoint: expect.any(Object),
         resolution_profile: expect.any(Object),
         candidate_construction_profile: expect.any(Object),
+        evidence_cache: expect.any(Object),
       });
       const universeTool = tools.tools.find(
         (tool) =>
@@ -111,7 +113,36 @@ describe("MCP research server", () => {
         universeTool.inputSchema.properties.request.properties,
       ).toMatchObject({
         dd_iv_measurement: expect.any(Object),
+        evidence_cache: expect.any(Object),
       });
+      const matchedCoordinateSchema =
+        universeTool.inputSchema.properties.request.properties
+          .dd_iv_measurement.properties.measurement_profile.properties
+          .matched_coordinates.items;
+      expect(
+        matchedCoordinateSchema.oneOf.map(
+          (variant) =>
+            variant.properties.measurement_basis.const,
+        ),
+      ).toEqual([
+        "MATCHED_DELTA",
+        "MATCHED_FORWARD_MONEYNESS",
+      ]);
+      expect(
+        tools.tools
+          .filter((tool) =>
+            [
+              "tastytrade_get_historical_spx_candidate_universe",
+              "tastytrade_get_historical_option_package_at_checkpoint",
+              "tastytrade_get_historical_option_package_path",
+            ].includes(tool.name),
+          )
+          .every(
+            (tool) =>
+              tool.inputSchema.properties.request.properties
+                .evidence_cache,
+          ),
+      ).toBe(true);
 
       const priced = textResult(
         await client.callTool({

@@ -8,6 +8,13 @@ import {
   type DdIvMeasurementRequestInput,
   type DdIvObservationInput,
 } from "./dd-iv-measurement.js";
+import {
+  EvidenceCacheError,
+  evidenceCacheWithContext,
+  summarizeEvidenceCacheRecords,
+  type EvidenceCacheRequest,
+  type EvidenceCacheSummary,
+} from "./evidence-cache.js";
 import type { ExecutionReferences } from "./execution-evidence.js";
 import type {
   HistoricalCandle,
@@ -53,6 +60,7 @@ export type HistoricalCandidateCandles = {
 export type HistoricalSpxReconstruction = {
   candidates: Array<HistoricalSpxCandidate | null>;
   warnings: string[];
+  evidence_cache: EvidenceCacheSummary | null;
 };
 
 export type HistoricalSpxCandidateUniverseInput = {
@@ -73,6 +81,7 @@ export type HistoricalSpxCandidateUniverseInput = {
   dd_iv_measurement?: DdIvMeasurementRequestInput;
   phase: "REGRESSION_RESEARCH";
   references?: ExecutionReferences;
+  evidence_cache?: EvidenceCacheRequest;
 };
 
 export type HistoricalSpxCandidateUniversePlan = {
@@ -95,6 +104,7 @@ export type HistoricalSpxCandidateUniversePlan = {
   candidate_construction_profile: CandidateConstructionProfile | null;
   dd_iv_measurement: DdIvMeasurementRequest | null;
   references: ExecutionReferences;
+  evidence_cache?: EvidenceCacheRequest;
 };
 
 export type HistoricalSpxUniverseContract = {
@@ -211,6 +221,7 @@ export type HistoricalSpxCandidateUniverseResult = {
   provenance: HistoricalCandidateProvenance[];
   references: ExecutionReferences;
   warnings: string[];
+  evidence_cache: EvidenceCacheSummary | null;
 };
 
 type ContractSpec = {
@@ -957,6 +968,7 @@ export async function reconstructHistoricalSpxCandidates(
   const candidates: Array<HistoricalSpxCandidate | null> = plan.items.map(
     () => null,
   );
+  const cacheResults: HistoricalCandlesResult[] = [];
 
   const underlyingResult = await candles.getHistoricalCandles({
     symbol: "SPX",
@@ -970,7 +982,9 @@ export async function reconstructHistoricalSpxCandidates(
     max_output_candles: CANDLE_MAX_OUTPUT,
     max_received_events: CANDLE_MAX_RECEIVED_EVENTS,
     max_buffer_bytes: CANDLE_MAX_BUFFER_BYTES,
+    evidence_cache: plan.evidence_cache,
   });
+  cacheResults.push(underlyingResult);
   const underlyingContract = contractSpec(
     plan.session_date,
     shiftDate(plan.session_date, plan.min_dte),
@@ -1000,7 +1014,11 @@ export async function reconstructHistoricalSpxCandidates(
     for (const item of plan.items) {
       warnings.push(`${itemKey(item)}:NO_TIMESTAMP_SAFE_RECONSTRUCTED_CANDIDATE`);
     }
-    return { candidates, warnings };
+    return {
+      candidates,
+      warnings,
+      evidence_cache: summarizeEvidenceCacheRecords(cacheResults),
+    };
   }
 
   const underlyingPrice = underlying.price;
@@ -1116,12 +1134,14 @@ export async function reconstructHistoricalSpxCandidates(
       max_output_candles: CANDLE_MAX_OUTPUT,
       max_received_events: CANDLE_MAX_RECEIVED_EVENTS,
       max_buffer_bytes: CANDLE_MAX_BUFFER_BYTES,
+      evidence_cache: plan.evidence_cache,
     });
     if (results.length !== batch.length) {
       throw new Error(
         `DXLink option batch returned ${results.length} results for ${batch.length} contracts.`,
       );
     }
+    cacheResults.push(...results);
     for (const [index, result] of results.entries()) {
       misalignedOptionBars += misalignedCandleCount(
         result,
@@ -1232,7 +1252,11 @@ export async function reconstructHistoricalSpxCandidates(
     );
   }
 
-  return { candidates, warnings };
+  return {
+    candidates,
+    warnings,
+    evidence_cache: summarizeEvidenceCacheRecords(cacheResults),
+  };
 }
 
 export function prepareHistoricalSpxCandidateUniverse(
@@ -1435,6 +1459,14 @@ export function prepareHistoricalSpxCandidateUniverse(
     );
   }
   const references = normalizeReferences(input.references);
+  const evidenceCache = evidenceCacheWithContext(
+    input.evidence_cache,
+    {
+      as_of: asOf,
+      default_role: "ENTRY",
+      references,
+    },
+  );
   const requestIdentity = {
     underlying: "SPX",
     as_of: asOf,
@@ -1473,6 +1505,7 @@ export function prepareHistoricalSpxCandidateUniverse(
     candidate_construction_profile: candidateConstructionProfile,
     dd_iv_measurement: ddIvMeasurement,
     references,
+    evidence_cache: evidenceCache,
   };
 }
 
@@ -1856,6 +1889,7 @@ function ddIvMeasurementHandoff(
   plan: HistoricalSpxCandidateUniversePlan,
   profile: ResolutionProfile,
   contracts: HistoricalSpxUniverseContract[],
+  evidenceCache: EvidenceCacheSummary | null,
 ): DdIvMeasurementHandoff | null {
   if (plan.dd_iv_measurement === null) return null;
   const observations = contracts.map((contract) =>
@@ -1873,6 +1907,18 @@ function ddIvMeasurementHandoff(
     checkpoint: plan.as_of,
     request: plan.dd_iv_measurement,
     observations,
+    source_evidence:
+      evidenceCache === null
+        ? undefined
+        : {
+            manifest_contract_version:
+              evidenceCache.contract_version,
+            manifest_ids: evidenceCache.manifest_ids,
+            normalized_content_ids:
+              evidenceCache.normalized_content_ids,
+            provider_payload_content_ids:
+              evidenceCache.provider_payload_content_ids,
+          },
   });
 }
 
@@ -1881,11 +1927,13 @@ function emptyUniverseResult(
   status: "NOT_AVAILABLE" | "PROVIDER_ERROR",
   warnings: string[],
   providerErrors: UniverseProviderError[],
+  cacheResults: HistoricalCandlesResult[] = [],
 ): HistoricalSpxCandidateUniverseResult {
   const effectiveProfile = withEffectiveAggregation(
     plan.resolution_profile,
     plan.resolution_profile.requested_aggregation,
   );
+  const evidenceCache = summarizeEvidenceCacheRecords(cacheResults);
   return {
     contract_version: "1.0.0",
     request_id: plan.request_id,
@@ -1914,6 +1962,7 @@ function emptyUniverseResult(
       plan,
       effectiveProfile,
       [],
+      evidenceCache,
     ),
     contracts: [],
     coverage: {
@@ -1942,6 +1991,7 @@ function emptyUniverseResult(
     provenance: [],
     references: plan.references,
     warnings,
+    evidence_cache: evidenceCache,
   };
 }
 
@@ -1963,6 +2013,7 @@ export async function getHistoricalSpxCandidateUniverse(
     "HISTORICAL_BID_ASK_NOT_AVAILABLE",
   ];
   const providerErrors: UniverseProviderError[] = [];
+  const cacheResults: HistoricalCandlesResult[] = [];
 
   let underlyingResult: HistoricalCandlesResult;
   try {
@@ -1978,8 +2029,11 @@ export async function getHistoricalSpxCandidateUniverse(
       max_output_candles: CANDLE_MAX_OUTPUT,
       max_received_events: CANDLE_MAX_RECEIVED_EVENTS,
       max_buffer_bytes: CANDLE_MAX_BUFFER_BYTES,
+      evidence_cache: plan.evidence_cache,
     });
+    cacheResults.push(underlyingResult);
   } catch (error) {
+    if (error instanceof EvidenceCacheError) throw error;
     const message = errorMessage(error);
     providerErrors.push({
       stage: "UNDERLYING",
@@ -2024,6 +2078,7 @@ export async function getHistoricalSpxCandidateUniverse(
       "NOT_AVAILABLE",
       [...warnings, "NO_COMPLETE_SPX_CANDLE_AT_OR_BEFORE_AS_OF"],
       providerErrors,
+      cacheResults,
     );
   }
 
@@ -2093,6 +2148,7 @@ export async function getHistoricalSpxCandidateUniverse(
         max_output_candles: CANDLE_MAX_OUTPUT,
         max_received_events: CANDLE_MAX_RECEIVED_EVENTS,
         max_buffer_bytes: CANDLE_MAX_BUFFER_BYTES,
+        evidence_cache: plan.evidence_cache,
       });
       if (results.length !== batch.length) {
         throw new Error(
@@ -2100,6 +2156,7 @@ export async function getHistoricalSpxCandidateUniverse(
         );
       }
     } catch (error) {
+      if (error instanceof EvidenceCacheError) throw error;
       providerErrors.push({
         stage: "OPTION_BATCH",
         batch_index: offset / OPTION_BATCH_SIZE,
@@ -2108,6 +2165,7 @@ export async function getHistoricalSpxCandidateUniverse(
       });
       continue;
     }
+    cacheResults.push(...results);
     for (const [index, result] of results.entries()) {
       misalignedOptionBars += misalignedCandleCount(
         result,
@@ -2220,6 +2278,7 @@ export async function getHistoricalSpxCandidateUniverse(
     resolutionProfile,
     interval,
   );
+  const evidenceCache = summarizeEvidenceCacheRecords(cacheResults);
   return {
     contract_version: "1.0.0",
     request_id: plan.request_id,
@@ -2253,6 +2312,7 @@ export async function getHistoricalSpxCandidateUniverse(
       plan,
       effectiveProfile,
       contracts,
+      evidenceCache,
     ),
     contracts,
     coverage: {
@@ -2309,5 +2369,6 @@ export async function getHistoricalSpxCandidateUniverse(
     ],
     references: plan.references,
     warnings,
+    evidence_cache: evidenceCache,
   };
 }

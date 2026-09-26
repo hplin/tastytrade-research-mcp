@@ -49,6 +49,31 @@ are documented in
 The separate Double Diagonal IV measurement contract, legacy-preserving
 migration, and reproducible grading/regression handoff are documented in
 [`docs/dd-iv-measurements.md`](docs/dd-iv-measurements.md).
+Private immutable source-cache configuration, exact offline replay, and
+migration guidance are documented in
+[`docs/evidence-cache.md`](docs/evidence-cache.md).
+
+## Private historical evidence cache
+
+The historical candle, SPX candidate/universe, and exact-package tools accept
+an opt-in `evidence_cache` policy without changing the 17-tool surface.
+`READ_WRITE` stores sanitized source observations and normalized results as
+separate content-addressed objects; `REFRESH` creates a new immutable revision
+and diff; `CACHE_ONLY` replays only caller-supplied exact manifest IDs and
+never contacts the provider.
+
+The filesystem backend is disabled until
+`TASTYTRADE_EVIDENCE_CACHE_DIR` points to a private volume. It uses atomic
+writes, read-back checksum verification, bounded provider concurrency,
+request deduplication, short-lived retryable-failure indexes, and a hard disk
+quota without evicting immutable evidence. Cache identity includes exact
+symbols, range/as-of, provider/dataset/license scope, aggregation/session/
+alignment/price type, the full resolution profile, resource policy, and
+normalization/model/source revisions. Retrieval time is frozen in each
+immutable manifest and never replaces bar availability time.
+Run `npm run report:evidence-cache` for a deterministic synthetic cache
+hit/miss, byte-count, normalized-hash, and provider-call-reduction report.
+hit/miss, byte-count, normalized-hash, and provider-call-reduction report.
 
 ## Execution evidence contract
 
@@ -190,9 +215,10 @@ does not duplicate grading, DD-bucket, or final-leg-selection rules.
 
 An optional `dd_iv_measurement` request freezes an exact four-leg Double
 Diagonal candidate and returns distinct `SELECTED_LEG_IV_DIFFERENCE` and
-`MATCHED_DELTA` cohorts. The handoff is always `RESEARCH_ONLY`, preserves
-provider/derived models and timestamp lineage, and explicitly does not
-replace legacy production `term_structure`.
+`MATCHED_DELTA` / `MATCHED_FORWARD_MONEYNESS` cohorts. The handoff is always
+`RESEARCH_ONLY`, preserves provider/derived models, timestamp lineage, and
+optional immutable evidence-manifest IDs, and explicitly does not replace
+legacy production `term_structure`.
 
 See
 [`docs/historical-spx-universe.md`](docs/historical-spx-universe.md)

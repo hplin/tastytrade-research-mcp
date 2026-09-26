@@ -19,6 +19,11 @@ import {
   type HistoricalCandlesResult,
 } from "./historical-candles.js";
 import {
+  CachedHistoricalCandlesService,
+  evidenceCacheFromEnv,
+  type FileEvidenceCache,
+} from "./evidence-cache.js";
+import {
   discoverHistoricalSpxCandidates,
   type HistoricalSpxCandidatesInput,
 } from "./historical-spx-candidates.js";
@@ -161,63 +166,119 @@ const DD_IV_SELECTED_LEG_SCHEMA = {
   additionalProperties: false,
 } as const;
 
+const DD_IV_MATCHED_COORDINATE_COMMON_PROPERTIES = {
+  measurement_id: { type: "string", minLength: 1, maxLength: 200 },
+  front_expiration: RFC3339_SCHEMA,
+  back_expiration: RFC3339_SCHEMA,
+  option_side: { type: "string", enum: ["CALL", "PUT"] },
+  tolerance: DECIMAL_SCHEMA,
+  missing_policy: { type: "string", const: "NOT_AVAILABLE" },
+  max_front_back_skew_ms: {
+    type: "integer",
+    minimum: 0,
+    maximum: 604800000,
+  },
+} as const;
+
+const DD_IV_MATCHED_COORDINATE_COMMON_REQUIRED = [
+  "measurement_id",
+  "measurement_basis",
+  "front_expiration",
+  "back_expiration",
+  "option_side",
+  "tolerance",
+  "missing_policy",
+  "max_front_back_skew_ms",
+] as const;
+
 const DD_IV_MATCHED_COORDINATE_SCHEMA = {
-  type: "object",
-  properties: {
-    measurement_id: { type: "string", minLength: 1, maxLength: 200 },
-    measurement_basis: { type: "string", const: "MATCHED_DELTA" },
-    front_expiration: RFC3339_SCHEMA,
-    back_expiration: RFC3339_SCHEMA,
-    option_side: { type: "string", enum: ["CALL", "PUT"] },
-    target_delta: DECIMAL_SCHEMA,
-    delta_convention: {
-      type: "string",
-      enum: [
-        "SIGNED_FORWARD_DELTA_PERCENT",
-        "ABSOLUTE_FORWARD_DELTA_PERCENT",
-      ],
-    },
-    tolerance: DECIMAL_SCHEMA,
-    missing_policy: { type: "string", const: "NOT_AVAILABLE" },
-    max_front_back_skew_ms: {
-      type: "integer",
-      minimum: 0,
-      maximum: 604800000,
-    },
-    interpolation: {
+  oneOf: [
+    {
       type: "object",
       properties: {
-        allowed: { type: "boolean", const: true },
-        method: { type: "string", const: "LINEAR_BY_DELTA" },
-        max_bracket_width: DECIMAL_SCHEMA,
-        max_bracket_skew_ms: {
-          type: "integer",
-          minimum: 0,
-          maximum: 604800000,
+        ...DD_IV_MATCHED_COORDINATE_COMMON_PROPERTIES,
+        measurement_basis: { type: "string", const: "MATCHED_DELTA" },
+        target_delta: DECIMAL_SCHEMA,
+        delta_convention: {
+          type: "string",
+          enum: [
+            "SIGNED_FORWARD_DELTA_PERCENT",
+            "ABSOLUTE_FORWARD_DELTA_PERCENT",
+          ],
+        },
+        interpolation: {
+          type: "object",
+          properties: {
+            allowed: { type: "boolean", const: true },
+            method: { type: "string", const: "LINEAR_BY_DELTA" },
+            max_bracket_width: DECIMAL_SCHEMA,
+            max_bracket_skew_ms: {
+              type: "integer",
+              minimum: 0,
+              maximum: 604800000,
+            },
+          },
+          required: [
+            "allowed",
+            "method",
+            "max_bracket_width",
+            "max_bracket_skew_ms",
+          ],
+          additionalProperties: false,
         },
       },
       required: [
-        "allowed",
-        "method",
-        "max_bracket_width",
-        "max_bracket_skew_ms",
+        ...DD_IV_MATCHED_COORDINATE_COMMON_REQUIRED,
+        "target_delta",
+        "delta_convention",
       ],
       additionalProperties: false,
     },
-  },
-  required: [
-    "measurement_id",
-    "measurement_basis",
-    "front_expiration",
-    "back_expiration",
-    "option_side",
-    "target_delta",
-    "delta_convention",
-    "tolerance",
-    "missing_policy",
-    "max_front_back_skew_ms",
+    {
+      type: "object",
+      properties: {
+        ...DD_IV_MATCHED_COORDINATE_COMMON_PROPERTIES,
+        measurement_basis: {
+          type: "string",
+          const: "MATCHED_FORWARD_MONEYNESS",
+        },
+        target_log_moneyness: DECIMAL_SCHEMA,
+        moneyness_convention: {
+          type: "string",
+          const: "LN_STRIKE_OVER_FORWARD",
+        },
+        interpolation: {
+          type: "object",
+          properties: {
+            allowed: { type: "boolean", const: true },
+            method: {
+              type: "string",
+              const: "LINEAR_BY_LOG_MONEYNESS",
+            },
+            max_bracket_width: DECIMAL_SCHEMA,
+            max_bracket_skew_ms: {
+              type: "integer",
+              minimum: 0,
+              maximum: 604800000,
+            },
+          },
+          required: [
+            "allowed",
+            "method",
+            "max_bracket_width",
+            "max_bracket_skew_ms",
+          ],
+          additionalProperties: false,
+        },
+      },
+      required: [
+        ...DD_IV_MATCHED_COORDINATE_COMMON_REQUIRED,
+        "target_log_moneyness",
+        "moneyness_convention",
+      ],
+      additionalProperties: false,
+    },
   ],
-  additionalProperties: false,
 } as const;
 
 const DD_IV_MEASUREMENT_SCHEMA = {
@@ -297,6 +358,67 @@ const REFERENCES_SCHEMA = {
     paper_order_id: { type: "string", minLength: 1, maxLength: 200 },
     position_id: { type: "string", minLength: 1, maxLength: 200 },
   },
+  additionalProperties: false,
+} as const;
+
+const EVIDENCE_CACHE_SCHEMA = {
+  type: "object",
+  properties: {
+    mode: {
+      type: "string",
+      enum: ["BYPASS", "READ_WRITE", "REFRESH", "CACHE_ONLY"],
+    },
+    manifest_ids: {
+      type: "array",
+      minItems: 1,
+      maxItems: 500,
+      uniqueItems: true,
+      items: {
+        type: "string",
+        pattern: "^sha256:[a-f0-9]{64}$",
+      },
+      description:
+        "Exact immutable source-manifest or manifest-set IDs. Required for CACHE_ONLY and never used to fetch current provider data.",
+    },
+    dataset_id: {
+      type: "string",
+      pattern: "^[A-Za-z0-9][A-Za-z0-9._:/-]*$",
+      maxLength: 200,
+    },
+    license_scope_id: {
+      type: "string",
+      pattern: "^[A-Za-z0-9][A-Za-z0-9._:/-]*$",
+      maxLength: 200,
+    },
+    normalization_version: {
+      type: "string",
+      pattern: "^[A-Za-z0-9][A-Za-z0-9._:/-]*$",
+      maxLength: 200,
+    },
+    model_version: {
+      type: "string",
+      pattern: "^[A-Za-z0-9][A-Za-z0-9._:/-]*$",
+      maxLength: 200,
+    },
+    source_revision: {
+      type: "string",
+      pattern: "^[A-Za-z0-9][A-Za-z0-9._:/-]*$",
+      maxLength: 200,
+    },
+    as_of: RFC3339_SCHEMA,
+    evidence_role: {
+      type: "string",
+      enum: [
+        "ENTRY",
+        "REFERENCE",
+        "REFERENCE_PATH",
+        "OUTCOME_3_TRADING_DAYS",
+        "OUTCOME_5_TRADING_DAYS",
+      ],
+    },
+    references: REFERENCES_SCHEMA,
+  },
+  required: ["mode"],
   additionalProperties: false,
 } as const;
 
@@ -432,6 +554,7 @@ const HISTORICAL_SPX_CANDIDATES_SCHEMA = {
         resolution_profile: RESOLUTION_PROFILE_SCHEMA,
         candidate_construction_profile:
           CANDIDATE_CONSTRUCTION_PROFILE_SCHEMA,
+        evidence_cache: EVIDENCE_CACHE_SCHEMA,
         phase: {
           type: "string",
           enum: ["REGRESSION_RESEARCH"],
@@ -496,6 +619,7 @@ const HISTORICAL_SPX_UNIVERSE_SCHEMA = {
         candidate_construction_profile:
           CANDIDATE_CONSTRUCTION_PROFILE_SCHEMA,
         dd_iv_measurement: DD_IV_MEASUREMENT_SCHEMA,
+        evidence_cache: EVIDENCE_CACHE_SCHEMA,
         phase: {
           type: "string",
           enum: ["REGRESSION_RESEARCH"],
@@ -747,6 +871,7 @@ const HISTORICAL_OPTION_PACKAGE_COMMON_PROPERTIES = {
   candidate_construction_profile:
     CANDIDATE_CONSTRUCTION_PROFILE_SCHEMA,
   references: REFERENCES_SCHEMA,
+  evidence_cache: EVIDENCE_CACHE_SCHEMA,
 } as const;
 
 const HISTORICAL_OPTION_PACKAGE_CHECKPOINT_SCHEMA = {
@@ -883,6 +1008,7 @@ const HISTORICAL_CANDLES_SCHEMA = {
         end_time: RFC3339_SCHEMA,
         session: CANDLE_SESSION_SCHEMA,
         resolution_profile: RESOLUTION_PROFILE_SCHEMA,
+        evidence_cache: EVIDENCE_CACHE_SCHEMA,
         deadline_ms: {
           type: "integer",
           minimum: 1,
@@ -1034,25 +1160,25 @@ export const TOOLS: Tool[] = [
   {
     name: "tastytrade_discover_historical_spx_candidates",
     description:
-      "Discover checkpoint-safe historical SPX contracts from a selector grid. Defaults to the versioned 5-minute cohort; native-hour RTH reconstruction is explicit via HOURLY_VALUATION_RESEARCH. Accepts RFC3339 or unambiguous IANA-local checkpoints and preserves an opaque candidate-construction profile without implementing grading or final leg selection.",
+      "Discover checkpoint-safe historical SPX contracts from a selector grid. Defaults to the versioned 5-minute cohort; native-hour RTH reconstruction is explicit via HOURLY_VALUATION_RESEARCH. Accepts RFC3339 or unambiguous IANA-local checkpoints, supports private exact-manifest source replay, and preserves an opaque candidate-construction profile without implementing grading or final leg selection.",
     inputSchema: HISTORICAL_SPX_CANDIDATES_SCHEMA,
   },
   {
     name: "tastytrade_get_historical_spx_candidate_universe",
     description:
-      "Return a bounded timestamp-safe SPXW contract universe with explicit versioned resolution/cohort metadata. An optional versioned DD IV request attaches separate RESEARCH_ONLY selected-leg and matched-delta handoff cohorts without changing production term_structure, grading, routing, fills, or P&L.",
+      "Return a bounded timestamp-safe SPXW contract universe with explicit versioned resolution/cohort metadata and optional private immutable source manifests. An optional versioned DD IV request attaches separate RESEARCH_ONLY selected-leg, matched-delta, and matched-forward-moneyness handoff cohorts without changing production term_structure, grading, routing, fills, or P&L.",
     inputSchema: HISTORICAL_SPX_UNIVERSE_SCHEMA,
   },
   {
     name: "tastytrade_get_historical_option_package_at_checkpoint",
     description:
-      "Reconstruct an exact-leg SPX option package reference from completed bars at an RFC3339 or unambiguous IANA-local checkpoint. Returns explicit requested/native/effective resolution, session, alignment, age/skew, fallback, and cohort metadata; candle closes remain valuation-only.",
+      "Reconstruct an exact-leg SPX option package reference from completed bars at an RFC3339 or unambiguous IANA-local checkpoint. Supports private exact-manifest replay and returns explicit requested/native/effective resolution, session, alignment, age/skew, fallback, and cohort metadata; candle closes remain valuation-only.",
     inputSchema: HISTORICAL_OPTION_PACKAGE_CHECKPOINT_SCHEMA,
   },
   {
     name: "tastytrade_get_historical_option_package_path",
     description:
-      "Reconstruct a short exact-leg SPX package reference path from aligned completed bars under a versioned resolution profile. Declared fallback order is explicit, cohorts remain distinct, and gaps are reported without interpolation or forward fill.",
+      "Reconstruct a short exact-leg SPX package reference path from aligned completed bars under a versioned resolution profile. Optional private manifests support cache-only replay; declared fallback order is explicit, cohorts remain distinct, and gaps are reported without interpolation or forward fill.",
     inputSchema: HISTORICAL_OPTION_PACKAGE_PATH_SCHEMA,
   },
   {
@@ -1082,7 +1208,7 @@ export const TOOLS: Tool[] = [
   {
     name: "tastytrade_get_historical_candles",
     description:
-      "Retrieve normalized historical OHLCV candles with explicit bar_start, bar_end, available_at, retrieved_at, and versioned resolution/cohort metadata. Supports exact UTC/session windows, canonical provider symbol matching, independent resource budgets, and no resampling.",
+      "Retrieve normalized historical OHLCV candles with explicit bar_start, bar_end, available_at, retrieved_at, and versioned resolution/cohort metadata. Supports private immutable cache/offline replay, exact UTC/session windows, canonical provider symbol matching, independent resource budgets, and no resampling.",
     inputSchema: HISTORICAL_CANDLES_SCHEMA,
   },
 ];
@@ -1120,6 +1246,7 @@ export type HistoricalCandlesService = {
 export type ResearchServices = {
   backtester?: BacktesterService;
   candles?: HistoricalCandlesService;
+  evidenceCache?: FileEvidenceCache | null;
 };
 
 function objectArg(value: unknown, field: string): JsonObject {
@@ -1157,9 +1284,17 @@ export function createResearchServer(
   services: ResearchServices = {},
 ): Server {
   const backtester = services.backtester ?? new TastytradeBacktesterClient();
-  const candles =
+  const sourceCandles =
     services.candles ?? new TastytradeHistoricalCandlesClient();
-  const reconstructionCandles = candles.getHistoricalCandlesBatch
+  const evidenceCache =
+    "evidenceCache" in services
+      ? services.evidenceCache ?? null
+      : evidenceCacheFromEnv();
+  const candles = new CachedHistoricalCandlesService(
+    sourceCandles,
+    evidenceCache,
+  );
+  const reconstructionCandles = sourceCandles.getHistoricalCandlesBatch
     ? {
         getHistoricalCandles: (request: HistoricalCandlesInput) =>
           candles.getHistoricalCandles(request),

@@ -252,3 +252,12 @@ P/L.
 checkpoint. Forward analysis must then use only future evidence in a separate
 phase and must preserve whether the provider path is exact checkpoint
 simulation or historical-candle evidence.
+
+## Source-cache boundary
+
+Candidate discovery may use the private immutable source cache only with the
+`ENTRY` evidence role. `OUTCOME_3_TRADING_DAYS` and
+`OUTCOME_5_TRADING_DAYS` are rejected at the selector boundary, so forward
+outcomes cannot influence entry reconstruction. Exact offline replay and
+manifest handling are documented in
+[`evidence-cache.md`](evidence-cache.md).
