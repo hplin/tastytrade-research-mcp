@@ -43,6 +43,50 @@ describe("research resolution profiles", () => {
     expect(profile.cohort_id).toMatch(/^[a-f0-9]{64}$/);
   });
 
+  test("keeps provider-clock hourly bars in a distinct research cohort", () => {
+    const defaults = {
+      default_requested_aggregation: "5m",
+      default_max_observation_age_minutes: 60,
+      default_max_temporal_skew_minutes: 0,
+      default_fallback_aggregations: [],
+    };
+    const providerAligned = withEffectiveAggregation(
+      normalizeResolutionProfile(
+        {
+          profile_id: "HOURLY_PROVIDER_ALIGNED_RESEARCH",
+          profile_version: "1.0.0",
+        },
+        defaults,
+      ),
+      "1h",
+    );
+    expect(providerAligned).toMatchObject({
+      profile_id: "HOURLY_PROVIDER_ALIGNED_RESEARCH",
+      requested_aggregation: "1h",
+      native_aggregation: "h",
+      effective_aggregation: "1h",
+      session: {
+        kind: "REGULAR",
+        timezone: "America/New_York",
+        start_time: "09:30",
+        end_time: "16:00",
+      },
+      alignment: "MIDNIGHT",
+      fallback_policy: { allowed: false, aggregations: [] },
+    });
+    const providerBar = resolveHistoricalBarTiming(
+      { source_time: "2026-08-27T13:00:00.000Z" },
+      "1h",
+    );
+    expect(
+      historicalBarMatchesResolutionProfile(
+        providerBar,
+        "1h",
+        providerAligned,
+      ),
+    ).toBe(true);
+  });
+
   test("requires explicit native-hour RTH opt-in and keeps cohorts distinct", () => {
     const defaults = {
       default_requested_aggregation: "5m",
