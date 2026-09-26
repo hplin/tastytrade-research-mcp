@@ -49,6 +49,11 @@ import {
   type HistoricalExecutionEvidenceInput,
 } from "./historical-execution-evidence.js";
 import {
+  HISTORICAL_EXECUTION_MODEL_INPUT_SCHEMA,
+  simulateHistoricalExecution,
+  type HistoricalExecutionSimulationInput,
+} from "./historical-execution-model.js";
+import {
   priceOptionPackage,
   type PackagePricingInput,
 } from "./package-pricing.js";
@@ -1193,6 +1198,12 @@ export const TOOLS: Tool[] = [
     inputSchema: HISTORICAL_EXECUTION_EVIDENCE_INPUT_SCHEMA,
   },
   {
+    name: "tastytrade_simulate_historical_execution",
+    description:
+      "Apply one caller-frozen, versioned historical execution profile to immutable exact-leg evidence. Supports quote limit-touch, quote cross, explicit midpoint-to-adverse price improvement, and low-evidence reference-cost scenarios; never verifies a broker fill or mutates live/paper state.",
+    inputSchema: HISTORICAL_EXECUTION_MODEL_INPUT_SCHEMA,
+  },
+  {
     name: "tastytrade_prepare_spx_spread",
     description:
       "Normalize an SPX debit vertical, credit vertical, iron condor, or double diagonal into deterministic Backtester and exact-leg simulation requests without submitting it.",
@@ -1424,6 +1435,12 @@ export function createResearchServer(
         return toolResult(
           normalizeHistoricalExecutionEvidence(
             requestArg<HistoricalExecutionEvidenceInput>(args),
+          ),
+        );
+      case "tastytrade_simulate_historical_execution":
+        return toolResult(
+          simulateHistoricalExecution(
+            requestArg<HistoricalExecutionSimulationInput>(args),
           ),
         );
       case "tastytrade_prepare_spx_spread":

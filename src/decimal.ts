@@ -128,6 +128,26 @@ export class ExactDecimal {
     return ExactDecimal.normalize(this.coefficient * 5n, this.scale + 1);
   }
 
+  floorToIncrement(increment: ExactDecimal): ExactDecimal {
+    const [value, step, scale] = this.align(increment);
+    if (step <= 0n) {
+      throw new Error("Decimal increment must be positive.");
+    }
+    let quotient = value / step;
+    if (value < 0n && value % step !== 0n) quotient -= 1n;
+    return ExactDecimal.normalize(quotient * step, scale);
+  }
+
+  ceilToIncrement(increment: ExactDecimal): ExactDecimal {
+    const [value, step, scale] = this.align(increment);
+    if (step <= 0n) {
+      throw new Error("Decimal increment must be positive.");
+    }
+    let quotient = value / step;
+    if (value > 0n && value % step !== 0n) quotient += 1n;
+    return ExactDecimal.normalize(quotient * step, scale);
+  }
+
   negate(): ExactDecimal {
     return new ExactDecimal(-this.coefficient, this.scale);
   }

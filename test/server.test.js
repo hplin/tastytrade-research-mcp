@@ -67,7 +67,7 @@ describe("MCP research server", () => {
     await client.connect(clientTransport);
     try {
       const tools = await client.listTools();
-      expect(tools.tools).toHaveLength(18);
+      expect(tools.tools).toHaveLength(19);
       expect(tools.tools.map((tool) => tool.name)).toEqual(
         expect.arrayContaining([
           "tastytrade_price_option_package",
@@ -76,6 +76,7 @@ describe("MCP research server", () => {
           "tastytrade_get_historical_option_package_at_checkpoint",
           "tastytrade_get_historical_option_package_path",
           "tastytrade_normalize_historical_execution_evidence",
+          "tastytrade_simulate_historical_execution",
           "tastytrade_verify_historical_fill",
           "tastytrade_get_historical_candles",
           "tastytrade_prepare_spx_spread",
@@ -148,6 +149,33 @@ describe("MCP research server", () => {
                 .evidence_cache,
           ),
       ).toBe(true);
+      const executionModelTool = tools.tools.find(
+        (tool) =>
+          tool.name === "tastytrade_simulate_historical_execution",
+      );
+      expect(
+        executionModelTool.inputSchema.properties.request.properties
+          .execution_profile.properties.model.enum,
+      ).toEqual([
+        "QUOTE_LIMIT_TOUCH",
+        "QUOTE_CROSS",
+        "QUOTE_PRICE_IMPROVEMENT",
+        "REFERENCE_COST",
+      ]);
+      expect(
+        executionModelTool.inputSchema.properties.request.properties
+          .execution_profile.required,
+      ).toEqual(
+        expect.arrayContaining([
+          "profile_hash",
+          "latency_ms",
+          "minimum_package_size",
+          "tick_size",
+          "queue_model",
+          "market_impact_model",
+          "atomic_package",
+        ]),
+      );
 
       const priced = textResult(
         await client.callTool({
@@ -310,6 +338,16 @@ describe("MCP research server", () => {
           },
         ],
       });
+      await expect(
+        client.callTool({
+          name: "tastytrade_simulate_historical_execution",
+          arguments: {
+            request: {
+              run_id: "incomplete-profile",
+            },
+          },
+        }),
+      ).rejects.toThrow("Invalid arguments");
 
       const candleResult = textResult(
         await client.callTool({
