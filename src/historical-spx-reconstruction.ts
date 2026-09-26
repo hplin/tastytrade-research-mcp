@@ -40,6 +40,7 @@ export type HistoricalSpxCandidateUniverseInput = {
   option_sides?: OptionSide[];
   expirations?: string[];
   max_contracts?: number;
+  max_observation_age_minutes?: number;
   phase: "REGRESSION_RESEARCH";
   references?: ExecutionReferences;
 };
@@ -57,6 +58,7 @@ export type HistoricalSpxCandidateUniversePlan = {
   strikes: number[];
   option_sides: OptionSide[];
   max_contracts: number;
+  max_observation_age_minutes: number;
   requested_contract_count: number;
   references: ExecutionReferences;
 };
@@ -78,8 +80,9 @@ export type HistoricalSpxUniverseContract = {
   historical_volume: string | null;
   underlying_price: string;
   observation_age_ms: number;
+  freshness: "FRESH" | "STALE";
   identity_source: "RECONSTRUCTED_OCC_VALIDATED_BY_DXLINK";
-  confidence: "MEDIUM";
+  confidence: "MEDIUM" | "LOW";
   provenance: HistoricalCandidateProvenance[];
   warnings: string[];
 };
@@ -87,7 +90,7 @@ export type HistoricalSpxUniverseContract = {
 export type HistoricalSpxCandidateUniverseResult = {
   contract_version: "1.0.0";
   request_id: string;
-  status: "COMPLETE" | "PARTIAL" | "NOT_AVAILABLE";
+  status: "COMPLETE" | "PARTIAL" | "NOT_AVAILABLE" | "PROVIDER_ERROR";
   evidence_type: "HISTORICAL_SPX_CANDIDATE_UNIVERSE";
   evidence_phase: "REGRESSION_RESEARCH";
   as_of: string;
@@ -97,16 +100,48 @@ export type HistoricalSpxCandidateUniverseResult = {
   expiration_dates: string[];
   option_sides: OptionSide[];
   underlying_price: string | null;
+  max_observation_age_minutes: number;
+  freshness_threshold_minutes: 60;
   contracts: HistoricalSpxUniverseContract[];
   coverage: {
     requested_contract_count: number;
     verified_contract_count: number;
     missing_contract_count: number;
+    gaps: Array<{
+      expiration: string;
+      dte_at_as_of: number;
+      option_side: OptionSide;
+      requested_count: number;
+      verified_count: number;
+      missing_count: number;
+      missing_strikes: string[];
+      missing_strike_ranges: Array<{
+        min: string;
+        max: string;
+        step: string;
+      }>;
+    }>;
+    provider_errors: Array<{
+      stage: "UNDERLYING" | "OPTION_BATCH";
+      batch_index: number | null;
+      symbols: string[];
+      message: string;
+    }>;
+  };
+  field_coverage: {
+    historical_price: { available: number; missing: number };
+    historical_delta: { available: number; missing: number };
+    historical_iv: { available: number; missing: number };
+    historical_open_interest: { available: number; missing: number };
+    historical_volume: { available: number; missing: number };
   };
   capabilities: {
     historical_contract_universe_reconstructed: boolean;
     exact_provider_contract_identity: boolean;
+    reconstructed_contract_identity: boolean;
+    provider_returned_contract_identity: false;
     checkpoint_timestamp_safe: boolean;
+    stale_pre_checkpoint_evidence_included: boolean;
     historical_price: boolean;
     historical_delta: boolean;
     historical_contract_iv: boolean;
@@ -161,6 +196,7 @@ const DEFAULT_UNIVERSE_MAX_DTE = 35;
 const DEFAULT_UNIVERSE_STRIKE_STEP = 25;
 const DEFAULT_UNIVERSE_MAX_CONTRACTS = 500;
 const MAX_UNIVERSE_CONTRACTS = 1_000;
+const MAX_UNIVERSE_OBSERVATION_AGE_MINUTES = 1_440;
 
 function shiftDate(value: string, days: number): string {
   const date = new Date(`${value}T00:00:00.000Z`);
@@ -493,6 +529,7 @@ function completeObservation(
   contract: ContractSpec,
   result: HistoricalCandlesResult,
   asOfMs: number,
+  maxObservationAgeMs = MAX_OBSERVATION_AGE_MS,
 ): CandleObservation | null {
   if (!result.snapshot_complete || result.snapshot_truncated) return null;
   const candidates = result.candles
@@ -505,7 +542,7 @@ function completeObservation(
         price === null ||
         price <= 0 ||
         availableAtMs > asOfMs ||
-        asOfMs - availableAtMs > MAX_OBSERVATION_AGE_MS
+        asOfMs - availableAtMs > maxObservationAgeMs
       ) {
         return null;
       }
@@ -1068,6 +1105,13 @@ export function prepareHistoricalSpxCandidateUniverse(
     1,
     MAX_UNIVERSE_CONTRACTS,
   );
+  const maxObservationAgeMinutes = integerInRange(
+    input.max_observation_age_minutes,
+    MAX_OBSERVATION_AGE_MS / 60_000,
+    "max_observation_age_minutes",
+    5,
+    MAX_UNIVERSE_OBSERVATION_AGE_MINUTES,
+  );
   const optionSides = normalizeOptionSides(input.option_sides);
   const sessionDate = dateInTimezone(asOf, "America/New_York");
 
@@ -1141,6 +1185,7 @@ export function prepareHistoricalSpxCandidateUniverse(
     strike_step: strikeStep,
     option_sides: optionSides,
     max_contracts: maxContracts,
+    max_observation_age_minutes: maxObservationAgeMinutes,
     references,
   };
   return {
@@ -1156,6 +1201,7 @@ export function prepareHistoricalSpxCandidateUniverse(
     strikes,
     option_sides: optionSides,
     max_contracts: maxContracts,
+    max_observation_age_minutes: maxObservationAgeMinutes,
     requested_contract_count: requestedContractCount,
     references,
   };
@@ -1172,6 +1218,7 @@ function universeContract(
   const delta = forward
     ? historicalDelta(observation, forward, asOfMs)
     : null;
+  const stale = observation.age_ms > MAX_OBSERVATION_AGE_MS;
   const optionFields = ["historical_price", "source_timestamp"];
   if (observation.candle.implied_volatility !== null) {
     optionFields.push("historical_iv");
@@ -1209,8 +1256,9 @@ function universeContract(
         : normalizedDecimal(observation.candle.volume),
     underlying_price: underlyingPrice,
     observation_age_ms: observation.age_ms,
+    freshness: stale ? "STALE" : "FRESH",
     identity_source: "RECONSTRUCTED_OCC_VALIDATED_BY_DXLINK",
-    confidence: "MEDIUM",
+    confidence: stale ? "LOW" : "MEDIUM",
     provenance: [
       {
         source: "tastytrade-research-mcp:request",
@@ -1267,10 +1315,173 @@ function universeContract(
       ...(observation.age_ms > 0
         ? ["OPTION_OBSERVATION_PRECEDES_CHECKPOINT"]
         : []),
+      ...(stale ? ["STALE_PRE_CHECKPOINT_OBSERVATION"] : []),
       ...(delta !== null
         ? ["DELTA_DERIVED_FROM_CANDLE_IV_AND_PUT_CALL_PARITY_FORWARD"]
         : []),
     ],
+  };
+}
+
+type UniverseProviderError =
+  HistoricalSpxCandidateUniverseResult["coverage"]["provider_errors"][number];
+
+function errorMessage(error: unknown): string {
+  if (error instanceof Error && error.message.trim()) return error.message;
+  return String(error);
+}
+
+function missingStrikeRanges(
+  missing: number[],
+  step: number,
+): Array<{ min: string; max: string; step: string }> {
+  if (missing.length === 0) return [];
+  const ranges: Array<{ min: string; max: string; step: string }> = [];
+  let start = missing[0];
+  let end = missing[0];
+  for (const strike of missing.slice(1)) {
+    if (strike === end + step) {
+      end = strike;
+      continue;
+    }
+    ranges.push({
+      min: strikeText(start),
+      max: strikeText(end),
+      step: strikeText(step),
+    });
+    start = strike;
+    end = strike;
+  }
+  ranges.push({
+    min: strikeText(start),
+    max: strikeText(end),
+    step: strikeText(step),
+  });
+  return ranges;
+}
+
+function universeCoverageGaps(
+  plan: HistoricalSpxCandidateUniversePlan,
+  contracts: HistoricalSpxUniverseContract[],
+): HistoricalSpxCandidateUniverseResult["coverage"]["gaps"] {
+  const gaps: HistoricalSpxCandidateUniverseResult["coverage"]["gaps"] = [];
+  for (const expirationDate of plan.expiration_dates) {
+    const expiration = newYorkCloseTimestamp(expirationDate);
+    for (const optionSide of plan.option_sides) {
+      const verified = new Set(
+        contracts
+          .filter(
+            (contract) =>
+              contract.expiration === expiration &&
+              contract.option_side === optionSide,
+          )
+          .map((contract) => Number(contract.strike)),
+      );
+      const missing = plan.strikes.filter((strike) => !verified.has(strike));
+      if (missing.length === 0) continue;
+      gaps.push({
+        expiration,
+        dte_at_as_of: calendarDaysBetween(
+          plan.session_date,
+          expirationDate,
+        ),
+        option_side: optionSide,
+        requested_count: plan.strikes.length,
+        verified_count: verified.size,
+        missing_count: missing.length,
+        missing_strikes: missing.map(strikeText),
+        missing_strike_ranges: missingStrikeRanges(
+          missing,
+          plan.strike_step,
+        ),
+      });
+    }
+  }
+  return gaps;
+}
+
+function universeFieldCoverage(
+  contracts: HistoricalSpxUniverseContract[],
+): HistoricalSpxCandidateUniverseResult["field_coverage"] {
+  const coverage = (
+    available: number,
+  ): { available: number; missing: number } => ({
+    available,
+    missing: contracts.length - available,
+  });
+  return {
+    historical_price: coverage(contracts.length),
+    historical_delta: coverage(
+      contracts.filter((contract) => contract.historical_delta !== null)
+        .length,
+    ),
+    historical_iv: coverage(
+      contracts.filter((contract) => contract.historical_iv !== null).length,
+    ),
+    historical_open_interest: coverage(
+      contracts.filter(
+        (contract) => contract.historical_open_interest !== null,
+      ).length,
+    ),
+    historical_volume: coverage(
+      contracts.filter((contract) => contract.historical_volume !== null)
+        .length,
+    ),
+  };
+}
+
+function emptyUniverseResult(
+  plan: HistoricalSpxCandidateUniversePlan,
+  status: "NOT_AVAILABLE" | "PROVIDER_ERROR",
+  warnings: string[],
+  providerErrors: UniverseProviderError[],
+): HistoricalSpxCandidateUniverseResult {
+  return {
+    contract_version: "1.0.0",
+    request_id: plan.request_id,
+    status,
+    evidence_type: "HISTORICAL_SPX_CANDIDATE_UNIVERSE",
+    evidence_phase: "REGRESSION_RESEARCH",
+    as_of: plan.as_of,
+    underlying: "SPX",
+    requested_dte_range: { min: plan.min_dte, max: plan.max_dte },
+    requested_strike_range: {
+      min: strikeText(plan.strike_min),
+      max: strikeText(plan.strike_max),
+      step: strikeText(plan.strike_step),
+    },
+    expiration_dates: plan.expiration_dates,
+    option_sides: plan.option_sides,
+    underlying_price: null,
+    max_observation_age_minutes: plan.max_observation_age_minutes,
+    freshness_threshold_minutes: 60,
+    contracts: [],
+    coverage: {
+      requested_contract_count: plan.requested_contract_count,
+      verified_contract_count: 0,
+      missing_contract_count: plan.requested_contract_count,
+      gaps: universeCoverageGaps(plan, []),
+      provider_errors: providerErrors,
+    },
+    field_coverage: universeFieldCoverage([]),
+    capabilities: {
+      historical_contract_universe_reconstructed: true,
+      exact_provider_contract_identity: false,
+      reconstructed_contract_identity: false,
+      provider_returned_contract_identity: false,
+      checkpoint_timestamp_safe: true,
+      stale_pre_checkpoint_evidence_included: false,
+      historical_price: false,
+      historical_delta: false,
+      historical_contract_iv: false,
+      historical_open_interest: false,
+      historical_volume: false,
+      historical_bid_ask: false,
+      full_historical_chain: false,
+    },
+    provenance: [],
+    references: plan.references,
+    warnings,
   };
 }
 
@@ -1284,26 +1495,38 @@ export async function getHistoricalSpxCandidateUniverse(
     "HISTORICAL_CONTRACT_UNIVERSE_RECONSTRUCTED_FROM_DXLINK",
     "HISTORICAL_CONTRACT_UNIVERSE_IS_BOUNDED_NOT_FULL_CHAIN",
     "OPTION_CANDLE_SOURCE_TIME_IS_INTERVAL_START",
-    "OPTION_OBSERVATION_MAX_AGE_MINUTES:60",
+    `OPTION_OBSERVATION_MAX_AGE_MINUTES:${plan.max_observation_age_minutes}`,
     "HISTORICAL_BID_ASK_NOT_AVAILABLE",
   ];
-  const baseCapabilities = {
-    historical_contract_universe_reconstructed: true,
-    checkpoint_timestamp_safe: true,
-    historical_bid_ask: false as const,
-    full_historical_chain: false as const,
-  };
+  const providerErrors: UniverseProviderError[] = [];
 
-  const underlyingResult = await candles.getHistoricalCandles({
-    symbol: "SPX",
-    streamer_symbol: "SPX",
-    instrument_type: "INDEX",
-    interval: CANDLE_INTERVAL,
-    start_time: new Date(asOfMs - 2 * CANDLE_INTERVAL_MS).toISOString(),
-    end_time: plan.as_of,
-    session: { kind: "ALL", timezone: "UTC" },
-    max_candles: 20_000,
-  });
+  let underlyingResult: HistoricalCandlesResult;
+  try {
+    underlyingResult = await candles.getHistoricalCandles({
+      symbol: "SPX",
+      streamer_symbol: "SPX",
+      instrument_type: "INDEX",
+      interval: CANDLE_INTERVAL,
+      start_time: new Date(asOfMs - 2 * CANDLE_INTERVAL_MS).toISOString(),
+      end_time: plan.as_of,
+      session: { kind: "ALL", timezone: "UTC" },
+      max_candles: 20_000,
+    });
+  } catch (error) {
+    const message = errorMessage(error);
+    providerErrors.push({
+      stage: "UNDERLYING",
+      batch_index: null,
+      symbols: ["SPX"],
+      message,
+    });
+    return emptyUniverseResult(
+      plan,
+      "PROVIDER_ERROR",
+      [...warnings, `UNDERLYING_PROVIDER_ERROR:${message}`],
+      providerErrors,
+    );
+  }
   const underlyingContract = contractSpec(
     plan.session_date,
     plan.expiration_dates[0],
@@ -1316,42 +1539,12 @@ export async function getHistoricalSpxCandidateUniverse(
     asOfMs,
   );
   if (!underlying) {
-    return {
-      contract_version: "1.0.0",
-      request_id: plan.request_id,
-      status: "NOT_AVAILABLE",
-      evidence_type: "HISTORICAL_SPX_CANDIDATE_UNIVERSE",
-      evidence_phase: "REGRESSION_RESEARCH",
-      as_of: plan.as_of,
-      underlying: "SPX",
-      requested_dte_range: { min: plan.min_dte, max: plan.max_dte },
-      requested_strike_range: {
-        min: strikeText(plan.strike_min),
-        max: strikeText(plan.strike_max),
-        step: strikeText(plan.strike_step),
-      },
-      expiration_dates: plan.expiration_dates,
-      option_sides: plan.option_sides,
-      underlying_price: null,
-      contracts: [],
-      coverage: {
-        requested_contract_count: plan.requested_contract_count,
-        verified_contract_count: 0,
-        missing_contract_count: plan.requested_contract_count,
-      },
-      capabilities: {
-        ...baseCapabilities,
-        exact_provider_contract_identity: false,
-        historical_price: false,
-        historical_delta: false,
-        historical_contract_iv: false,
-        historical_open_interest: false,
-        historical_volume: false,
-      },
-      provenance: [],
-      references: plan.references,
-      warnings: [...warnings, "NO_COMPLETE_SPX_CANDLE_AT_OR_BEFORE_AS_OF"],
-    };
+    return emptyUniverseResult(
+      plan,
+      "NOT_AVAILABLE",
+      [...warnings, "NO_COMPLETE_SPX_CANDLE_AT_OR_BEFORE_AS_OF"],
+      providerErrors,
+    );
   }
 
   const requestedContracts = plan.expiration_dates.flatMap((expirationDate) =>
@@ -1393,7 +1586,9 @@ export async function getHistoricalSpxCandidateUniverse(
   const fetchContracts = [...contractsByKey.values()];
   const observations = new Map<string, CandleObservation>();
   const optionStart = new Date(
-    asOfMs - MAX_OBSERVATION_AGE_MS - CANDLE_INTERVAL_MS,
+    asOfMs -
+      plan.max_observation_age_minutes * 60_000 -
+      CANDLE_INTERVAL_MS,
   ).toISOString();
   for (
     let offset = 0;
@@ -1401,25 +1596,41 @@ export async function getHistoricalSpxCandidateUniverse(
     offset += OPTION_BATCH_SIZE
   ) {
     const batch = fetchContracts.slice(offset, offset + OPTION_BATCH_SIZE);
-    const results = await candles.getHistoricalCandlesBatch({
-      instruments: batch.map((contract) => ({
-        symbol: contract.occ_symbol,
-        streamer_symbol: contract.streamer_symbol,
-        instrument_type: "OPTION",
-      })),
-      interval: CANDLE_INTERVAL,
-      start_time: optionStart,
-      end_time: plan.as_of,
-      session: { kind: "ALL", timezone: "UTC" },
-      max_candles: 20_000,
-    });
-    if (results.length !== batch.length) {
-      throw new Error(
-        `DXLink option batch returned ${results.length} results for ${batch.length} contracts.`,
-      );
+    let results: HistoricalCandlesResult[];
+    try {
+      results = await candles.getHistoricalCandlesBatch({
+        instruments: batch.map((contract) => ({
+          symbol: contract.occ_symbol,
+          streamer_symbol: contract.streamer_symbol,
+          instrument_type: "OPTION",
+        })),
+        interval: CANDLE_INTERVAL,
+        start_time: optionStart,
+        end_time: plan.as_of,
+        session: { kind: "ALL", timezone: "UTC" },
+        max_candles: 20_000,
+      });
+      if (results.length !== batch.length) {
+        throw new Error(
+          `DXLink option batch returned ${results.length} results for ${batch.length} contracts.`,
+        );
+      }
+    } catch (error) {
+      providerErrors.push({
+        stage: "OPTION_BATCH",
+        batch_index: offset / OPTION_BATCH_SIZE,
+        symbols: batch.map((contract) => contract.occ_symbol),
+        message: errorMessage(error),
+      });
+      continue;
     }
     for (const [index, result] of results.entries()) {
-      const observation = completeObservation(batch[index], result, asOfMs);
+      const observation = completeObservation(
+        batch[index],
+        result,
+        asOfMs,
+        plan.max_observation_age_minutes * 60_000,
+      );
       if (observation) {
         observations.set(contractKey(batch[index]), observation);
       }
@@ -1470,9 +1681,19 @@ export async function getHistoricalSpxCandidateUniverse(
   if (contracts.some((contract) => contract.historical_delta === null)) {
     warnings.push("HISTORICAL_DELTA_PARTIALLY_AVAILABLE");
   }
+  if (contracts.some((contract) => contract.freshness === "STALE")) {
+    warnings.push("STALE_PRE_CHECKPOINT_EVIDENCE_INCLUDED");
+  }
+  if (providerErrors.length > 0) {
+    warnings.push(`OPTION_BATCH_PROVIDER_ERRORS:${providerErrors.length}`);
+  }
+  const gaps = universeCoverageGaps(plan, contracts);
+  const fieldCoverage = universeFieldCoverage(contracts);
   const status =
     verifiedContractCount === 0
-      ? "NOT_AVAILABLE"
+      ? providerErrors.length > 0
+        ? "PROVIDER_ERROR"
+        : "NOT_AVAILABLE"
       : missingContractCount === 0
         ? "COMPLETE"
         : "PARTIAL";
@@ -1493,28 +1714,41 @@ export async function getHistoricalSpxCandidateUniverse(
     expiration_dates: plan.expiration_dates,
     option_sides: plan.option_sides,
     underlying_price: underlyingPrice,
+    max_observation_age_minutes: plan.max_observation_age_minutes,
+    freshness_threshold_minutes: 60,
     contracts,
     coverage: {
       requested_contract_count: plan.requested_contract_count,
       verified_contract_count: verifiedContractCount,
       missing_contract_count: missingContractCount,
+      gaps,
+      provider_errors: providerErrors,
     },
+    field_coverage: fieldCoverage,
     capabilities: {
-      ...baseCapabilities,
+      historical_contract_universe_reconstructed: true,
       exact_provider_contract_identity: verifiedContractCount > 0,
+      reconstructed_contract_identity: verifiedContractCount > 0,
+      provider_returned_contract_identity: false,
+      checkpoint_timestamp_safe: true,
+      stale_pre_checkpoint_evidence_included: contracts.some(
+        (contract) => contract.freshness === "STALE",
+      ),
       historical_price: verifiedContractCount > 0,
-      historical_delta: contracts.some(
-        (contract) => contract.historical_delta !== null,
-      ),
-      historical_contract_iv: contracts.some(
-        (contract) => contract.historical_iv !== null,
-      ),
-      historical_open_interest: contracts.some(
-        (contract) => contract.historical_open_interest !== null,
-      ),
-      historical_volume: contracts.some(
-        (contract) => contract.historical_volume !== null,
-      ),
+      historical_delta:
+        verifiedContractCount > 0 &&
+        fieldCoverage.historical_delta.missing === 0,
+      historical_contract_iv:
+        verifiedContractCount > 0 &&
+        fieldCoverage.historical_iv.missing === 0,
+      historical_open_interest:
+        verifiedContractCount > 0 &&
+        fieldCoverage.historical_open_interest.missing === 0,
+      historical_volume:
+        verifiedContractCount > 0 &&
+        fieldCoverage.historical_volume.missing === 0,
+      historical_bid_ask: false,
+      full_historical_chain: false,
     },
     provenance: [
       {

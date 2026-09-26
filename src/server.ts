@@ -255,6 +255,11 @@ const HISTORICAL_SPX_UNIVERSE_SCHEMA = {
           minimum: 1,
           maximum: 1000,
         },
+        max_observation_age_minutes: {
+          type: "integer",
+          minimum: 5,
+          maximum: 1440,
+        },
         phase: {
           type: "string",
           enum: ["REGRESSION_RESEARCH"],
@@ -618,7 +623,7 @@ export const TOOLS: Tool[] = [
   {
     name: "tastytrade_get_historical_spx_candidate_universe",
     description:
-      "Return a bounded timestamp-safe SPXW contract universe across requested strikes, sides, and min/mid/max DTE expirations. Exact OCC identity is returned only when completed DXLink evidence exists at or before as_of; the tool is research-only and never selects a final spread.",
+      "Return a bounded timestamp-safe SPXW contract universe across requested strikes, sides, and min/mid/max DTE expirations. Exact OCC identity requires completed DXLink evidence at or before as_of; optional older pre-checkpoint evidence is labeled stale, coverage gaps/provider errors remain explicit, and the tool never selects a final spread.",
     inputSchema: HISTORICAL_SPX_UNIVERSE_SCHEMA,
   },
   {
