@@ -476,6 +476,80 @@ function shiftDate(value: string, days: number): string {
   return date.toISOString().slice(0, 10);
 }
 
+const sessionBoundsCache = new Map<string, { start: number; end: number }>();
+
+function sessionBounds(
+  localDate: string,
+  session: Extract<
+    ResolutionProfileSession,
+    { kind: "REGULAR" | "CUSTOM" }
+  >,
+): { start: number; end: number } {
+  const cacheKey = [
+    session.kind,
+    session.timezone,
+    localDate,
+    session.start_time,
+    session.end_time,
+  ].join("|");
+  const cached = sessionBoundsCache.get(cacheKey);
+  if (cached) return cached;
+  const start = Date.parse(
+    resolveCheckpoint(undefined, {
+      local_date: localDate,
+      local_time: session.start_time,
+      timezone: session.timezone,
+    } satisfies LocalCheckpointInput).instant,
+  );
+  const endDate =
+    session.end_time <= session.start_time
+      ? shiftDate(localDate, 1)
+      : localDate;
+  const end = Date.parse(
+    resolveCheckpoint(undefined, {
+      local_date: endDate,
+      local_time: session.end_time,
+      timezone: session.timezone,
+    } satisfies LocalCheckpointInput).instant,
+  );
+  const bounds = { start, end };
+  sessionBoundsCache.set(cacheKey, bounds);
+  return bounds;
+}
+
+export function historicalBarMatchesResolutionProfile(
+  timing: HistoricalBarTiming,
+  aggregation: string,
+  profile: ResolutionProfile,
+): boolean {
+  const intervalMs = resolutionMilliseconds(aggregation);
+  const barStart = Date.parse(timing.bar_start);
+  const barEnd = Date.parse(timing.bar_end);
+  if (barEnd - barStart !== intervalMs) return false;
+  if (profile.alignment === "MIDNIGHT") {
+    return barStart % intervalMs === 0;
+  }
+  if (
+    profile.session.kind === "ALL" ||
+    profile.session.start_time === null ||
+    profile.session.end_time === null
+  ) {
+    return false;
+  }
+  const localDate = dateInTimezone(barStart, profile.session.timezone);
+  for (const candidateDate of [localDate, shiftDate(localDate, -1)]) {
+    const bounds = sessionBounds(candidateDate, profile.session);
+    if (
+      barStart >= bounds.start &&
+      barEnd <= bounds.end &&
+      (barStart - bounds.start) % intervalMs === 0
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
 export function alignedBarStarts(
   startMs: number,
   endMs: number,
@@ -517,24 +591,10 @@ export function alignedBarStarts(
     localDate <= lastDate;
     localDate = shiftDate(localDate, 1)
   ) {
-    const sessionStart = Date.parse(
-      resolveCheckpoint(undefined, {
-        local_date: localDate,
-        local_time: profile.session.start_time,
-        timezone: profile.session.timezone,
-      } satisfies LocalCheckpointInput).instant,
-    );
-    let sessionEndDate = localDate;
-    if (profile.session.end_time <= profile.session.start_time) {
-      sessionEndDate = shiftDate(localDate, 1);
-    }
-    const sessionEnd = Date.parse(
-      resolveCheckpoint(undefined, {
-        local_date: sessionEndDate,
-        local_time: profile.session.end_time,
-        timezone: profile.session.timezone,
-      } satisfies LocalCheckpointInput).instant,
-    );
+    const {
+      start: sessionStart,
+      end: sessionEnd,
+    } = sessionBounds(localDate, profile.session);
     for (
       let sourceTime = sessionStart;
       sourceTime + intervalMs <= sessionEnd;

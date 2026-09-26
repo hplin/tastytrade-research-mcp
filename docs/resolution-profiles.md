@@ -138,3 +138,10 @@ It checks 07:30 Pacific checkpoints for 2026-03-02, 04-01, 05-01, 06-01,
 07-01, 08-03, and 08-25 and emits `SUPPORTED`, `PARTIAL`, `BLOCKED`, or
 `NOT_RUN`. Missing credentials or missing provider data are never reported as
 a pass.
+
+Consumers validate every returned bar against the declared session grid. A
+provider may echo `{=h,a=s,tho=true}` yet return an option series on a
+top-of-hour grid. That bar remains visible as transport evidence but is
+rejected from candidate and package decisions with
+`PROVIDER_BAR_ALIGNMENT_MISMATCH[_IGNORED]`; it is never relabeled as the
+09:30-10:30 New York bar.

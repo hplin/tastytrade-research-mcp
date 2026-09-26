@@ -14,6 +14,7 @@ import type {
 } from "./historical-spx-candidates.js";
 import {
   candleSessionForResolutionProfile,
+  historicalBarMatchesResolutionProfile,
   normalizeCandidateConstructionProfile,
   normalizeResolutionProfile,
   resolutionCandleSource,
@@ -572,6 +573,7 @@ function completeObservation(
   result: HistoricalCandlesResult,
   asOfMs: number,
   aggregation: string,
+  profile: ResolutionProfile,
   maxObservationAgeMs = MAX_OBSERVATION_AGE_MS,
 ): CandleObservation | null {
   if (!result.snapshot_complete || result.snapshot_truncated) return null;
@@ -582,6 +584,15 @@ function completeObservation(
         aggregation,
         result.retrieved_at,
       );
+      if (
+        !historicalBarMatchesResolutionProfile(
+          timing,
+          aggregation,
+          profile,
+        )
+      ) {
+        return null;
+      }
       const availableAtMs = Date.parse(timing.available_at);
       const price = decimalNumber(candle.close);
       if (
@@ -608,6 +619,25 @@ function completeObservation(
     .filter((value): value is CandleObservation => value !== null)
     .sort((left, right) => right.available_at_ms - left.available_at_ms);
   return candidates[0] ?? null;
+}
+
+function misalignedCandleCount(
+  result: HistoricalCandlesResult,
+  aggregation: string,
+  profile: ResolutionProfile,
+): number {
+  return result.candles.filter((candle) => {
+    const timing = resolveHistoricalBarTiming(
+      candle,
+      aggregation,
+      result.retrieved_at,
+    );
+    return !historicalBarMatchesResolutionProfile(
+      timing,
+      aggregation,
+      profile,
+    );
+  }).length;
 }
 
 function forwardByExpiration(
@@ -926,8 +956,19 @@ export async function reconstructHistoricalSpxCandidates(
     underlyingResult,
     asOfMs,
     interval,
+    resolutionProfile,
     maxObservationAgeMs,
   );
+  const underlyingMisaligned = misalignedCandleCount(
+    underlyingResult,
+    interval,
+    resolutionProfile,
+  );
+  if (underlyingMisaligned > 0) {
+    warnings.push(
+      `PROVIDER_BAR_ALIGNMENT_MISMATCH_IGNORED:${underlyingMisaligned}`,
+    );
+  }
   if (!underlying) {
     warnings.push("NO_COMPLETE_SPX_CANDLE_AT_OR_BEFORE_AS_OF");
     for (const item of plan.items) {
@@ -1029,6 +1070,7 @@ export async function reconstructHistoricalSpxCandidates(
 
   const contracts = [...contractsByKey.values()];
   const observations = new Map<string, CandleObservation>();
+  let misalignedOptionBars = 0;
   const optionStart = new Date(
     asOfMs - maxObservationAgeMs - intervalMs,
   ).toISOString();
@@ -1055,17 +1097,28 @@ export async function reconstructHistoricalSpxCandidates(
       );
     }
     for (const [index, result] of results.entries()) {
+      misalignedOptionBars += misalignedCandleCount(
+        result,
+        interval,
+        resolutionProfile,
+      );
       const observation = completeObservation(
         batch[index],
         result,
         asOfMs,
         interval,
+        resolutionProfile,
         maxObservationAgeMs,
       );
       if (observation) {
         observations.set(contractKey(batch[index]), observation);
       }
     }
+  }
+  if (misalignedOptionBars > 0) {
+    warnings.push(
+      `PROVIDER_BAR_ALIGNMENT_MISMATCH_IGNORED:${misalignedOptionBars}`,
+    );
   }
 
   const forwards = forwardByExpiration(
@@ -1719,8 +1772,19 @@ export async function getHistoricalSpxCandidateUniverse(
     underlyingResult,
     asOfMs,
     interval,
+    resolutionProfile,
     plan.max_observation_age_minutes * 60_000,
   );
+  const underlyingMisaligned = misalignedCandleCount(
+    underlyingResult,
+    interval,
+    resolutionProfile,
+  );
+  if (underlyingMisaligned > 0) {
+    warnings.push(
+      `PROVIDER_BAR_ALIGNMENT_MISMATCH_IGNORED:${underlyingMisaligned}`,
+    );
+  }
   if (!underlying) {
     return emptyUniverseResult(
       plan,
@@ -1768,6 +1832,7 @@ export async function getHistoricalSpxCandidateUniverse(
 
   const fetchContracts = [...contractsByKey.values()];
   const observations = new Map<string, CandleObservation>();
+  let misalignedOptionBars = 0;
   const optionStart = new Date(
     asOfMs -
       plan.max_observation_age_minutes * 60_000 -
@@ -1811,17 +1876,28 @@ export async function getHistoricalSpxCandidateUniverse(
       continue;
     }
     for (const [index, result] of results.entries()) {
+      misalignedOptionBars += misalignedCandleCount(
+        result,
+        interval,
+        resolutionProfile,
+      );
       const observation = completeObservation(
         batch[index],
         result,
         asOfMs,
         interval,
+        resolutionProfile,
         plan.max_observation_age_minutes * 60_000,
       );
       if (observation) {
         observations.set(contractKey(batch[index]), observation);
       }
     }
+  }
+  if (misalignedOptionBars > 0) {
+    warnings.push(
+      `PROVIDER_BAR_ALIGNMENT_MISMATCH_IGNORED:${misalignedOptionBars}`,
+    );
   }
 
   const forwards = forwardByExpiration(

@@ -392,6 +392,49 @@ describe("historical exact-leg option packages", () => {
     expect(service.getHistoricalCandlesBatch).toHaveBeenCalledTimes(1);
   });
 
+  test("fails closed on provider hourly bars outside the declared session grid", async () => {
+    const service = {
+      getHistoricalCandlesBatch: jest.fn(async (request) =>
+        request.instruments.map((instrument, index) =>
+          candleResult(instrument, request.interval, [
+            {
+              source_time: "2026-08-27T13:00:00.000Z",
+              open: index === 0 ? "81.31" : "60.25",
+              high: index === 0 ? "81.31" : "60.25",
+              low: index === 0 ? "81.31" : "60.25",
+              close: index === 0 ? "81.31" : "60.25",
+              volume: "1",
+              vwap: index === 0 ? "81.31" : "60.25",
+              bid_volume: null,
+              ask_volume: "1",
+              implied_volatility: "0.1",
+              open_interest: "10",
+            },
+          ]),
+        ),
+      ),
+    };
+
+    const result = await getHistoricalOptionPackageAtCheckpoint(
+      service,
+      checkpointRequest({
+        resolution_profile: {
+          profile_id: "HOURLY_VALUATION_RESEARCH",
+          profile_version: "1.0.0",
+        },
+      }),
+    );
+
+    expect(result.status).toBe("NOT_AVAILABLE");
+    expect(result.reference_value).toBeNull();
+    expect(result.warnings).toEqual(
+      expect.arrayContaining([
+        "PROVIDER_BAR_ALIGNMENT_MISMATCH_IGNORED:SPXW  260924C07750000:1",
+        "PROVIDER_BAR_ALIGNMENT_MISMATCH_IGNORED:SPXW  260924C07800000:1",
+      ]),
+    );
+  });
+
   test("returns missing evidence instead of a success-shaped package", async () => {
     const service = fixtureService();
     const original = service.getHistoricalCandlesBatch;

@@ -132,7 +132,11 @@ if (missingEnvironment.length > 0) {
         outcome:
           manifest.every((item) => item.status === "SUPPORTED")
             ? "SUPPORTED"
-            : manifest.some((item) => item.status === "SUPPORTED")
+            : manifest.some(
+                  (item) =>
+                    item.status === "SUPPORTED" ||
+                    item.status === "PARTIAL",
+                )
               ? "PARTIAL"
               : "BLOCKED",
         note:

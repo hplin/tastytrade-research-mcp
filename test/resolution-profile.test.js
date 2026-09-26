@@ -1,6 +1,8 @@
 import { describe, expect, test } from "@jest/globals";
 import {
+  historicalBarMatchesResolutionProfile,
   normalizeResolutionProfile,
+  resolveHistoricalBarTiming,
   withEffectiveAggregation,
 } from "../dist/resolution-profile.js";
 import { resolveCheckpoint } from "../dist/time.js";
@@ -145,5 +147,42 @@ describe("research resolution profiles", () => {
         timezone: "America/Los_Angeles",
       }),
     ).toThrow("is ambiguous");
+  });
+
+  test("rejects provider bars that do not match the declared session grid", () => {
+    const profile = withEffectiveAggregation(
+      normalizeResolutionProfile(
+        {
+          profile_id: "HOURLY_VALUATION_RESEARCH",
+          profile_version: "1.0.0",
+        },
+        {
+          default_requested_aggregation: "5m",
+          default_max_observation_age_minutes: 60,
+          default_max_temporal_skew_minutes: 0,
+          default_fallback_aggregations: [],
+        },
+      ),
+      "1h",
+    );
+    const aligned = resolveHistoricalBarTiming(
+      { source_time: "2026-04-01T13:30:00.000Z" },
+      "1h",
+    );
+    const providerMisaligned = resolveHistoricalBarTiming(
+      { source_time: "2026-04-01T13:00:00.000Z" },
+      "1h",
+    );
+
+    expect(
+      historicalBarMatchesResolutionProfile(aligned, "1h", profile),
+    ).toBe(true);
+    expect(
+      historicalBarMatchesResolutionProfile(
+        providerMisaligned,
+        "1h",
+        profile,
+      ),
+    ).toBe(false);
   });
 });

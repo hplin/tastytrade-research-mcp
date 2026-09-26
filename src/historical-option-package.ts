@@ -20,6 +20,7 @@ import type {
 import {
   alignedBarStarts,
   candleSessionForResolutionProfile,
+  historicalBarMatchesResolutionProfile,
   normalizeCandidateConstructionProfile,
   normalizeResolutionProfile,
   resolutionCandidates,
@@ -917,6 +918,7 @@ export async function getHistoricalOptionPackageAtCheckpoint(
       );
     const eligible: HistoricalCandle[] = [];
     let ignoredIncomplete = 0;
+    let ignoredMisaligned = 0;
     for (const candle of result?.candles ?? []) {
       const timing = resolveHistoricalBarTiming(
         candle,
@@ -924,6 +926,16 @@ export async function getHistoricalOptionPackageAtCheckpoint(
         result?.retrieved_at,
       );
       if (Date.parse(timing.bar_start) < rangeStartMs) continue;
+      if (
+        !historicalBarMatchesResolutionProfile(
+          timing,
+          selectedResolution,
+          resolutionProfile,
+        )
+      ) {
+        ignoredMisaligned += 1;
+        continue;
+      }
       if (Date.parse(timing.available_at) > asOfMs) {
         ignoredIncomplete += 1;
         continue;
@@ -947,10 +959,14 @@ export async function getHistoricalOptionPackageAtCheckpoint(
           ).available_at,
         ),
     );
-    const extraWarnings =
-      ignoredIncomplete > 0
+    const extraWarnings = [
+      ...(ignoredIncomplete > 0
         ? [`INCOMPLETE_OR_FUTURE_CANDLES_IGNORED:${ignoredIncomplete}`]
-        : [];
+        : []),
+      ...(ignoredMisaligned > 0
+        ? [`PROVIDER_BAR_ALIGNMENT_MISMATCH_IGNORED:${ignoredMisaligned}`]
+        : []),
+    ];
     return observedLeg(
       leg,
       selectedResolution,
@@ -976,6 +992,12 @@ export async function getHistoricalOptionPackageAtCheckpoint(
       } else if (warning.startsWith("INCOMPLETE_OR_FUTURE_CANDLES_IGNORED:")) {
         warnings.push(
           `INCOMPLETE_OR_FUTURE_CANDLES_IGNORED:${observation.provider_symbol}:${warning.split(":")[1]}`,
+        );
+      } else if (
+        warning.startsWith("PROVIDER_BAR_ALIGNMENT_MISMATCH_IGNORED:")
+      ) {
+        warnings.push(
+          `PROVIDER_BAR_ALIGNMENT_MISMATCH_IGNORED:${observation.provider_symbol}:${warning.split(":")[1]}`,
         );
       } else if (
         warning === "DXLINK_SNAPSHOT_INCOMPLETE" ||
@@ -1265,6 +1287,7 @@ export async function getHistoricalOptionPackagePath(
   );
   const byStreamer = resultByStreamerSymbol(selected.results);
   const candleMaps = new Map<string, Map<number, HistoricalCandle>>();
+  const misalignedCounts = new Map<string, number>();
   for (const leg of legs) {
     const result = byStreamer.get(leg.streamer_symbol);
     const candles = new Map<number, HistoricalCandle>();
@@ -1274,6 +1297,19 @@ export async function getHistoricalOptionPackagePath(
         selected.resolution,
         result?.retrieved_at,
       );
+      if (
+        !historicalBarMatchesResolutionProfile(
+          timing,
+          selected.resolution,
+          effectiveProfile,
+        )
+      ) {
+        misalignedCounts.set(
+          leg.streamer_symbol,
+          (misalignedCounts.get(leg.streamer_symbol) ?? 0) + 1,
+        );
+        continue;
+      }
       const sourceTime = Date.parse(timing.bar_start);
       if (
         sourceTime >= startMs &&
@@ -1307,7 +1343,11 @@ export async function getHistoricalOptionPackagePath(
         );
       } else if (!candle) {
         missingProviderSymbols.push(leg.provider_symbol);
-        reasons.add("MISSING_LEG_EVIDENCE");
+        reasons.add(
+          (misalignedCounts.get(leg.streamer_symbol) ?? 0) > 0
+            ? "PROVIDER_BAR_ALIGNMENT_MISMATCH"
+            : "MISSING_LEG_EVIDENCE",
+        );
       }
       return observedLeg(
         leg,
