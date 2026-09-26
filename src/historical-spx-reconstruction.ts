@@ -12,8 +12,25 @@ import type {
   HistoricalSpxCandidate,
   HistoricalSpxCandidatesPlan,
 } from "./historical-spx-candidates.js";
+import {
+  candleSessionForResolutionProfile,
+  normalizeCandidateConstructionProfile,
+  normalizeResolutionProfile,
+  resolutionCandleSource,
+  resolutionMilliseconds,
+  resolutionProfileInput,
+  resolveHistoricalBarTiming,
+  withEffectiveAggregation,
+  type CandidateConstructionProfile,
+  type ResolutionProfile,
+  type ResolutionProfileInput,
+} from "./resolution-profile.js";
 import type { OptionSide } from "./spread-adapter.js";
-import { normalizeRfc3339 } from "./time.js";
+import {
+  resolveCheckpoint,
+  type LocalCheckpointInput,
+  type ResolvedCheckpoint,
+} from "./time.js";
 
 export type HistoricalCandidateCandles = {
   getHistoricalCandles(
@@ -31,7 +48,8 @@ export type HistoricalSpxReconstruction = {
 
 export type HistoricalSpxCandidateUniverseInput = {
   underlying: "SPX";
-  as_of: string;
+  as_of?: string;
+  local_checkpoint?: LocalCheckpointInput;
   min_dte?: number;
   max_dte?: number;
   strike_min: number;
@@ -41,6 +59,8 @@ export type HistoricalSpxCandidateUniverseInput = {
   expirations?: string[];
   max_contracts?: number;
   max_observation_age_minutes?: number;
+  resolution_profile?: ResolutionProfileInput;
+  candidate_construction_profile?: Record<string, unknown>;
   phase: "REGRESSION_RESEARCH";
   references?: ExecutionReferences;
 };
@@ -48,6 +68,7 @@ export type HistoricalSpxCandidateUniverseInput = {
 export type HistoricalSpxCandidateUniversePlan = {
   request_id: string;
   as_of: string;
+  checkpoint: ResolvedCheckpoint;
   session_date: string;
   min_dte: number;
   max_dte: number;
@@ -60,6 +81,8 @@ export type HistoricalSpxCandidateUniversePlan = {
   max_contracts: number;
   max_observation_age_minutes: number;
   requested_contract_count: number;
+  resolution_profile: ResolutionProfile;
+  candidate_construction_profile: CandidateConstructionProfile | null;
   references: ExecutionReferences;
 };
 
@@ -73,6 +96,10 @@ export type HistoricalSpxUniverseContract = {
   option_side: OptionSide;
   dte_at_as_of: number;
   source_timestamp: string;
+  bar_start: string;
+  bar_end: string;
+  available_at: string;
+  retrieved_at: string | null;
   historical_price: string;
   historical_delta: string | null;
   historical_iv: string | null;
@@ -94,6 +121,7 @@ export type HistoricalSpxCandidateUniverseResult = {
   evidence_type: "HISTORICAL_SPX_CANDIDATE_UNIVERSE";
   evidence_phase: "REGRESSION_RESEARCH";
   as_of: string;
+  checkpoint: ResolvedCheckpoint;
   underlying: "SPX";
   requested_dte_range: { min: number; max: number };
   requested_strike_range: { min: string; max: string; step: string };
@@ -102,6 +130,9 @@ export type HistoricalSpxCandidateUniverseResult = {
   underlying_price: string | null;
   max_observation_age_minutes: number;
   freshness_threshold_minutes: 60;
+  retrieved_at: string | null;
+  resolution_profile: ResolutionProfile;
+  candidate_construction_profile: CandidateConstructionProfile | null;
   contracts: HistoricalSpxUniverseContract[];
   coverage: {
     requested_contract_count: number;
@@ -168,8 +199,11 @@ type ContractSpec = {
 type CandleObservation = {
   contract: ContractSpec;
   candle: HistoricalCandle;
+  bar_start: string;
+  bar_end: string;
   available_at: string;
   available_at_ms: number;
+  retrieved_at: string | null;
   age_ms: number;
   price: number;
   implied_volatility: number | null;
@@ -188,8 +222,6 @@ type UniverseDeltaForward = DeltaForwardObservation & {
   basis: "PUT_CALL_PARITY" | "SPOT_FORWARD_ZERO_CARRY";
 };
 
-const CANDLE_INTERVAL = "5m";
-const CANDLE_INTERVAL_MS = 5 * 60_000;
 const CANDLE_MAX_OUTPUT = 20_000;
 const CANDLE_MAX_RECEIVED_EVENTS = 20_000;
 const CANDLE_MAX_BUFFER_BYTES = 32 * 1024 * 1024;
@@ -539,16 +571,20 @@ function completeObservation(
   contract: ContractSpec,
   result: HistoricalCandlesResult,
   asOfMs: number,
+  aggregation: string,
   maxObservationAgeMs = MAX_OBSERVATION_AGE_MS,
 ): CandleObservation | null {
   if (!result.snapshot_complete || result.snapshot_truncated) return null;
   const candidates = result.candles
     .map((candle) => {
-      const sourceMs = Date.parse(candle.source_time);
-      const availableAtMs = sourceMs + CANDLE_INTERVAL_MS;
+      const timing = resolveHistoricalBarTiming(
+        candle,
+        aggregation,
+        result.retrieved_at,
+      );
+      const availableAtMs = Date.parse(timing.available_at);
       const price = decimalNumber(candle.close);
       if (
-        !Number.isFinite(sourceMs) ||
         price === null ||
         price <= 0 ||
         availableAtMs > asOfMs ||
@@ -559,8 +595,11 @@ function completeObservation(
       return {
         contract,
         candle,
-        available_at: new Date(availableAtMs).toISOString(),
+        bar_start: timing.bar_start,
+        bar_end: timing.bar_end,
+        available_at: timing.available_at,
         available_at_ms: availableAtMs,
+        retrieved_at: timing.retrieved_at,
         age_ms: asOfMs - availableAtMs,
         price,
         implied_volatility: decimalNumber(candle.implied_volatility),
@@ -575,6 +614,7 @@ function forwardByExpiration(
   observations: Map<string, CandleObservation>,
   contracts: ContractSpec[],
   underlyingPrice: number,
+  maxTemporalSkewMs: number,
 ): Map<string, ForwardObservation> {
   const result = new Map<string, ForwardObservation>();
   const expirations = [...new Set(contracts.map((item) => item.expiration_date))];
@@ -610,7 +650,10 @@ function forwardByExpiration(
       if (
         !callObservation ||
         !putObservation ||
-        callObservation.available_at !== putObservation.available_at
+        Math.abs(
+          callObservation.available_at_ms -
+            putObservation.available_at_ms,
+        ) > maxTemporalSkewMs
       ) {
         continue;
       }
@@ -619,7 +662,11 @@ function forwardByExpiration(
       pairs.push({
         forward: {
           value,
-          source_timestamp: callObservation.available_at,
+          source_timestamp:
+            callObservation.available_at_ms >=
+            putObservation.available_at_ms
+              ? callObservation.available_at
+              : putObservation.available_at,
           strike,
         },
         age_ms: Math.max(callObservation.age_ms, putObservation.age_ms),
@@ -753,6 +800,10 @@ function buildCandidate(
         ? null
         : normalizedDecimal(observation.candle.open_interest),
     underlying_price: underlyingPriceText,
+    bar_start: observation.bar_start,
+    bar_end: observation.bar_end,
+    available_at: observation.available_at,
+    retrieved_at: observation.retrieved_at,
     observation_age_ms: observation.age_ms,
     confidence: "MEDIUM",
     provenance: [
@@ -768,13 +819,19 @@ function buildCandidate(
         documented_contract: true,
       },
       {
-        source: "tastytrade-dxlink:SPX{=5m}",
+        source: resolutionCandleSource(
+          plan.resolution_profile,
+          "SPX",
+        ),
         source_timestamp: underlyingTimestamp,
         fields: ["underlying_price"],
         documented_contract: true,
       },
       {
-        source: `tastytrade-dxlink:${observation.contract.streamer_symbol}{=5m}`,
+        source: resolutionCandleSource(
+          plan.resolution_profile,
+          observation.contract.streamer_symbol,
+        ),
         source_timestamp: observation.available_at,
         fields: optionFields,
         documented_contract: true,
@@ -827,11 +884,19 @@ export async function reconstructHistoricalSpxCandidates(
   candles: HistoricalCandidateCandles,
 ): Promise<HistoricalSpxReconstruction> {
   const asOfMs = Date.parse(plan.as_of);
+  const resolutionProfile = plan.resolution_profile;
+  const interval = resolutionProfile.requested_aggregation;
+  const intervalMs = resolutionMilliseconds(interval);
+  const maxObservationAgeMs =
+    resolutionProfile.max_observation_age_minutes * 60_000;
+  const maxTemporalSkewMs =
+    resolutionProfile.max_temporal_skew_minutes * 60_000;
+  const session = candleSessionForResolutionProfile(resolutionProfile);
   const warnings = [
     "HISTORICAL_CONTRACT_UNIVERSE_RECONSTRUCTED_FROM_DXLINK",
     "OPTION_CANDLE_SOURCE_TIME_IS_INTERVAL_START",
     "CONTRACT_EXISTENCE_INFERRED_FROM_HISTORICAL_CANDLE",
-    "OPTION_OBSERVATION_MAX_AGE_MINUTES:60",
+    `OPTION_OBSERVATION_MAX_AGE_MINUTES:${resolutionProfile.max_observation_age_minutes}`,
   ];
   const candidates: Array<HistoricalSpxCandidate | null> = plan.items.map(
     () => null,
@@ -841,10 +906,11 @@ export async function reconstructHistoricalSpxCandidates(
     symbol: "SPX",
     streamer_symbol: "SPX",
     instrument_type: "INDEX",
-    interval: CANDLE_INTERVAL,
-    start_time: new Date(asOfMs - 2 * CANDLE_INTERVAL_MS).toISOString(),
+    interval,
+    start_time: new Date(asOfMs - 2 * intervalMs).toISOString(),
     end_time: plan.as_of,
-    session: { kind: "ALL", timezone: "UTC" },
+    session,
+    resolution_profile: resolutionProfileInput(resolutionProfile),
     max_output_candles: CANDLE_MAX_OUTPUT,
     max_received_events: CANDLE_MAX_RECEIVED_EVENTS,
     max_buffer_bytes: CANDLE_MAX_BUFFER_BYTES,
@@ -859,6 +925,8 @@ export async function reconstructHistoricalSpxCandidates(
     underlyingContract,
     underlyingResult,
     asOfMs,
+    interval,
+    maxObservationAgeMs,
   );
   if (!underlying) {
     warnings.push("NO_COMPLETE_SPX_CANDLE_AT_OR_BEFORE_AS_OF");
@@ -962,7 +1030,7 @@ export async function reconstructHistoricalSpxCandidates(
   const contracts = [...contractsByKey.values()];
   const observations = new Map<string, CandleObservation>();
   const optionStart = new Date(
-    asOfMs - MAX_OBSERVATION_AGE_MS - CANDLE_INTERVAL_MS,
+    asOfMs - maxObservationAgeMs - intervalMs,
   ).toISOString();
   for (let offset = 0; offset < contracts.length; offset += OPTION_BATCH_SIZE) {
     const batch = contracts.slice(offset, offset + OPTION_BATCH_SIZE);
@@ -972,10 +1040,11 @@ export async function reconstructHistoricalSpxCandidates(
         streamer_symbol: contract.streamer_symbol,
         instrument_type: "OPTION",
       })),
-      interval: CANDLE_INTERVAL,
+      interval,
       start_time: optionStart,
       end_time: plan.as_of,
-      session: { kind: "ALL", timezone: "UTC" },
+      session,
+      resolution_profile: resolutionProfileInput(resolutionProfile),
       max_output_candles: CANDLE_MAX_OUTPUT,
       max_received_events: CANDLE_MAX_RECEIVED_EVENTS,
       max_buffer_bytes: CANDLE_MAX_BUFFER_BYTES,
@@ -986,7 +1055,13 @@ export async function reconstructHistoricalSpxCandidates(
       );
     }
     for (const [index, result] of results.entries()) {
-      const observation = completeObservation(batch[index], result, asOfMs);
+      const observation = completeObservation(
+        batch[index],
+        result,
+        asOfMs,
+        interval,
+        maxObservationAgeMs,
+      );
       if (observation) {
         observations.set(contractKey(batch[index]), observation);
       }
@@ -997,6 +1072,7 @@ export async function reconstructHistoricalSpxCandidates(
     observations,
     contracts,
     underlyingPrice,
+    maxTemporalSkewMs,
   );
   if (forwards.size > 0) {
     warnings.push(
@@ -1090,7 +1166,12 @@ export function prepareHistoricalSpxCandidateUniverse(
     throw new Error("phase must be REGRESSION_RESEARCH.");
   }
 
-  const asOf = normalizeRfc3339(input.as_of, "as_of");
+  const checkpoint = resolveCheckpoint(
+    input.as_of,
+    input.local_checkpoint,
+    "historical_spx_candidate_universe",
+  );
+  const asOf = checkpoint.instant;
   const minDte = integerInRange(
     input.min_dte,
     DEFAULT_UNIVERSE_MIN_DTE,
@@ -1137,13 +1218,44 @@ export function prepareHistoricalSpxCandidateUniverse(
     1,
     MAX_UNIVERSE_CONTRACTS,
   );
-  const maxObservationAgeMinutes = integerInRange(
+  const legacyMaxObservationAgeMinutes = integerInRange(
     input.max_observation_age_minutes,
     MAX_OBSERVATION_AGE_MS / 60_000,
     "max_observation_age_minutes",
     5,
     MAX_UNIVERSE_OBSERVATION_AGE_MINUTES,
   );
+  if (
+    input.max_observation_age_minutes !== undefined &&
+    input.resolution_profile?.max_observation_age_minutes !== undefined &&
+    input.max_observation_age_minutes !==
+      input.resolution_profile.max_observation_age_minutes
+  ) {
+    throw new Error(
+      "max_observation_age_minutes must match resolution_profile.max_observation_age_minutes when both are provided.",
+    );
+  }
+  const resolutionProfile = normalizeResolutionProfile(
+    input.resolution_profile,
+    {
+      default_requested_aggregation: "5m",
+      default_max_observation_age_minutes:
+        legacyMaxObservationAgeMinutes,
+      default_max_temporal_skew_minutes: 0,
+      default_fallback_aggregations: [],
+    },
+  );
+  if (resolutionProfile.fallback_policy.allowed) {
+    throw new Error(
+      "Historical SPX candidate universe does not support resolution fallback; request a single cohort explicitly.",
+    );
+  }
+  const maxObservationAgeMinutes =
+    resolutionProfile.max_observation_age_minutes;
+  const candidateConstructionProfile =
+    normalizeCandidateConstructionProfile(
+      input.candidate_construction_profile,
+    );
   const optionSides = normalizeOptionSides(input.option_sides);
   const sessionDate = dateInTimezone(asOf, "America/New_York");
 
@@ -1218,11 +1330,15 @@ export function prepareHistoricalSpxCandidateUniverse(
     option_sides: optionSides,
     max_contracts: maxContracts,
     max_observation_age_minutes: maxObservationAgeMinutes,
+    checkpoint,
+    resolution_profile: resolutionProfile,
+    candidate_construction_profile: candidateConstructionProfile,
     references,
   };
   return {
     request_id: stableRequestId(requestIdentity),
     as_of: asOf,
+    checkpoint,
     session_date: sessionDate,
     min_dte: minDte,
     max_dte: maxDte,
@@ -1235,6 +1351,8 @@ export function prepareHistoricalSpxCandidateUniverse(
     max_contracts: maxContracts,
     max_observation_age_minutes: maxObservationAgeMinutes,
     requested_contract_count: requestedContractCount,
+    resolution_profile: resolutionProfile,
+    candidate_construction_profile: candidateConstructionProfile,
     references,
   };
 }
@@ -1269,6 +1387,10 @@ function universeContract(
     option_side: observation.contract.option_side,
     dte_at_as_of: observation.contract.dte,
     source_timestamp: observation.available_at,
+    bar_start: observation.bar_start,
+    bar_end: observation.bar_end,
+    available_at: observation.available_at,
+    retrieved_at: observation.retrieved_at,
     historical_price: normalizedDecimal(observation.candle.close),
     historical_delta:
       delta === null ? null : roundedDecimal(delta, 6),
@@ -1302,13 +1424,19 @@ function universeContract(
         documented_contract: true,
       },
       {
-        source: "tastytrade-dxlink:SPX{=5m}",
+        source: resolutionCandleSource(
+          plan.resolution_profile,
+          "SPX",
+        ),
         source_timestamp: underlyingTimestamp,
         fields: ["underlying_price"],
         documented_contract: true,
       },
       {
-        source: `tastytrade-dxlink:${observation.contract.streamer_symbol}{=5m}`,
+        source: resolutionCandleSource(
+          plan.resolution_profile,
+          observation.contract.streamer_symbol,
+        ),
         source_timestamp: observation.available_at,
         fields: optionFields,
         documented_contract: true,
@@ -1481,6 +1609,7 @@ function emptyUniverseResult(
     evidence_type: "HISTORICAL_SPX_CANDIDATE_UNIVERSE",
     evidence_phase: "REGRESSION_RESEARCH",
     as_of: plan.as_of,
+    checkpoint: plan.checkpoint,
     underlying: "SPX",
     requested_dte_range: { min: plan.min_dte, max: plan.max_dte },
     requested_strike_range: {
@@ -1493,6 +1622,13 @@ function emptyUniverseResult(
     underlying_price: null,
     max_observation_age_minutes: plan.max_observation_age_minutes,
     freshness_threshold_minutes: 60,
+    retrieved_at: null,
+    resolution_profile: withEffectiveAggregation(
+      plan.resolution_profile,
+      plan.resolution_profile.requested_aggregation,
+    ),
+    candidate_construction_profile:
+      plan.candidate_construction_profile,
     contracts: [],
     coverage: {
       requested_contract_count: plan.requested_contract_count,
@@ -1529,6 +1665,10 @@ export async function getHistoricalSpxCandidateUniverse(
 ): Promise<HistoricalSpxCandidateUniverseResult> {
   const plan = prepareHistoricalSpxCandidateUniverse(input);
   const asOfMs = Date.parse(plan.as_of);
+  const resolutionProfile = plan.resolution_profile;
+  const interval = resolutionProfile.requested_aggregation;
+  const intervalMs = resolutionMilliseconds(interval);
+  const session = candleSessionForResolutionProfile(resolutionProfile);
   const warnings = [
     "HISTORICAL_CONTRACT_UNIVERSE_RECONSTRUCTED_FROM_DXLINK",
     "HISTORICAL_CONTRACT_UNIVERSE_IS_BOUNDED_NOT_FULL_CHAIN",
@@ -1544,10 +1684,11 @@ export async function getHistoricalSpxCandidateUniverse(
       symbol: "SPX",
       streamer_symbol: "SPX",
       instrument_type: "INDEX",
-      interval: CANDLE_INTERVAL,
-      start_time: new Date(asOfMs - 2 * CANDLE_INTERVAL_MS).toISOString(),
+      interval,
+      start_time: new Date(asOfMs - 2 * intervalMs).toISOString(),
       end_time: plan.as_of,
-      session: { kind: "ALL", timezone: "UTC" },
+      session,
+      resolution_profile: resolutionProfileInput(resolutionProfile),
       max_output_candles: CANDLE_MAX_OUTPUT,
       max_received_events: CANDLE_MAX_RECEIVED_EVENTS,
       max_buffer_bytes: CANDLE_MAX_BUFFER_BYTES,
@@ -1577,6 +1718,8 @@ export async function getHistoricalSpxCandidateUniverse(
     underlyingContract,
     underlyingResult,
     asOfMs,
+    interval,
+    plan.max_observation_age_minutes * 60_000,
   );
   if (!underlying) {
     return emptyUniverseResult(
@@ -1628,7 +1771,7 @@ export async function getHistoricalSpxCandidateUniverse(
   const optionStart = new Date(
     asOfMs -
       plan.max_observation_age_minutes * 60_000 -
-      CANDLE_INTERVAL_MS,
+      intervalMs,
   ).toISOString();
   for (
     let offset = 0;
@@ -1644,10 +1787,11 @@ export async function getHistoricalSpxCandidateUniverse(
           streamer_symbol: contract.streamer_symbol,
           instrument_type: "OPTION",
         })),
-        interval: CANDLE_INTERVAL,
+        interval,
         start_time: optionStart,
         end_time: plan.as_of,
-        session: { kind: "ALL", timezone: "UTC" },
+        session,
+        resolution_profile: resolutionProfileInput(resolutionProfile),
         max_output_candles: CANDLE_MAX_OUTPUT,
         max_received_events: CANDLE_MAX_RECEIVED_EVENTS,
         max_buffer_bytes: CANDLE_MAX_BUFFER_BYTES,
@@ -1671,6 +1815,7 @@ export async function getHistoricalSpxCandidateUniverse(
         batch[index],
         result,
         asOfMs,
+        interval,
         plan.max_observation_age_minutes * 60_000,
       );
       if (observation) {
@@ -1683,6 +1828,7 @@ export async function getHistoricalSpxCandidateUniverse(
     observations,
     fetchContracts,
     underlying.price,
+    resolutionProfile.max_temporal_skew_minutes * 60_000,
   );
   const underlyingPrice = normalizedDecimal(underlying.candle.close);
   const contracts = requestedContracts
@@ -1768,6 +1914,7 @@ export async function getHistoricalSpxCandidateUniverse(
     evidence_type: "HISTORICAL_SPX_CANDIDATE_UNIVERSE",
     evidence_phase: "REGRESSION_RESEARCH",
     as_of: plan.as_of,
+    checkpoint: plan.checkpoint,
     underlying: "SPX",
     requested_dte_range: { min: plan.min_dte, max: plan.max_dte },
     requested_strike_range: {
@@ -1780,6 +1927,18 @@ export async function getHistoricalSpxCandidateUniverse(
     underlying_price: underlyingPrice,
     max_observation_age_minutes: plan.max_observation_age_minutes,
     freshness_threshold_minutes: 60,
+    retrieved_at:
+      contracts
+        .map((contract) => contract.retrieved_at)
+        .filter((value): value is string => value !== null)
+        .sort()
+        .at(-1) ?? null,
+    resolution_profile: withEffectiveAggregation(
+      resolutionProfile,
+      interval,
+    ),
+    candidate_construction_profile:
+      plan.candidate_construction_profile,
     contracts,
     coverage: {
       requested_contract_count: plan.requested_contract_count,
@@ -1827,7 +1986,7 @@ export async function getHistoricalSpxCandidateUniverse(
         documented_contract: true,
       },
       {
-        source: "tastytrade-dxlink:SPX{=5m}",
+        source: resolutionCandleSource(resolutionProfile, "SPX"),
         source_timestamp: underlying.available_at,
         fields: ["underlying_price"],
         documented_contract: true,

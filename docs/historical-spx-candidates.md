@@ -48,8 +48,9 @@ The adapter never sends or trusts this field. The sanitized observation is in
 
 For each request, the reconstruction path:
 
-1. Retrieves the latest completed 5-minute `SPX` candle. A candle is usable
-   only when `source_time + 5 minutes <= as_of`.
+1. Retrieves the latest completed `SPX` candle under the normalized resolution
+   profile. The omitted-profile default remains 5 minutes. A candle is usable
+   only when its explicit `available_at <= as_of`.
 2. Builds eligible SPXW PM expiration dates from the requested calendar DTE.
    A weekday target uses that exact expiration date; a weekend target uses
    the nearest eligible weekdays inside the requested DTE range.
@@ -61,9 +62,9 @@ For each request, the reconstruction path:
 4. Adds paired call/put parity anchors around SPX spot.
 5. Constructs documented SPXW OCC and streamer symbols, then retrieves the
    option candles in batches of at most 20 symbols.
-6. Keeps only complete bars available by `as_of` and no more than 60 minutes
-   old. Contract existence is inferred only when DXLink returns historical
-   evidence for that exact generated symbol.
+6. Keeps only complete bars available by `as_of` and inside the profile's
+   maximum observation age. Contract existence is inferred only when DXLink
+   returns historical evidence for that exact generated symbol.
 7. Reconstructs an expiration-specific forward from a call and put at the
    same strike and candle timestamp:
 
@@ -116,6 +117,15 @@ Backtester fallback. They are not success-shaped by the reconstruction path.
       }
     ],
     "lookback_calendar_days": 0,
+    "resolution_profile": {
+      "profile_id": "HOURLY_VALUATION_RESEARCH",
+      "profile_version": "1.0.0",
+      "max_observation_age_minutes": 60,
+      "max_temporal_skew_minutes": 0
+    },
+    "candidate_construction_profile": {
+      "version": "candidate-construction/7"
+    },
     "phase": "REGRESSION_RESEARCH",
     "references": {
       "checkpoint_id": "spx-2026-08-25-0730-pt"
@@ -125,6 +135,16 @@ Backtester fallback. They are not success-shaped by the reconstruction path.
 ```
 
 The selector/side cross-product is capped at 12 attempts.
+
+`as_of` may be replaced by `local_checkpoint` with `local_date`,
+`local_time`, and an IANA `timezone`. Ambiguous and nonexistent local times
+are rejected. Omitting `resolution_profile` preserves the existing 5-minute
+cohort; native-hour New York RTH reconstruction requires the explicit
+`HOURLY_VALUATION_RESEARCH` profile.
+
+`candidate_construction_profile` is returned unchanged and contributes to the
+request ID. Its grading, bucket, and final selection fields are not
+interpreted by this MCP.
 
 ## 2026-08-25 07:30 PT validation
 
@@ -164,6 +184,7 @@ Each reconstructed contract preserves:
 - generated-and-evidence-validated SPXW OCC identity;
 - expiration, strike, option side, requested selector, and DTE;
 - `selected_at`, which is always the requested checkpoint;
+- `bar_start`, `bar_end`, `available_at`, and `retrieved_at`;
 - the latest usable option close and contract IV;
 - interval volume and open interest when DXLink supplies them;
 - reconstructed historical delta;
@@ -196,9 +217,10 @@ Candidate discovery does not use that later snapshot.
 
 1. Every candle must be complete by `as_of`; a bar starting exactly at
    `as_of` is excluded.
-2. Option observations older than 60 minutes are excluded.
+2. Option observations older than the profile limit are excluded.
 3. Contract price and IV come from the same option candle.
-4. Delta requires a call/put parity pair at an identical timestamp.
+4. Delta requires a call/put parity pair inside the profile's temporal-skew
+   limit; the default limit remains zero.
 5. Future DXLink candles never enter the candidate universe or selector.
 6. Backtester trials and opening orders must both equal `as_of`; stale and
    future trials remain excluded.

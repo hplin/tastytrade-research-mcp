@@ -15,6 +15,14 @@ representation:
 `1h` and `60m` have the same nominal duration but different aggregation
 types. They are never treated as interchangeable.
 
+Historical candle results now include the shared versioned
+`resolution_profile` metadata described in
+[`resolution-profiles.md`](resolution-profiles.md). Direct requests without a
+profile retain their caller-supplied interval/session under
+`DIRECT_CANDLE_REQUEST`. The named `HOURLY_VALUATION_RESEARCH` profile is an
+explicit opt-in and produces `{=h,a=s,tho=true}` for New York regular-session
+SPX research.
+
 Request/response matching canonicalizes only provider-defined equivalences:
 
 - a period value of one may be omitted (`1h` equals `h`);
@@ -81,6 +89,10 @@ marks only unfinished symbols with the applicable failure reason.
 
 Each result reports:
 
+- a deterministic request ID and requested/effective cohort identity;
+- `bar_start`, `bar_end`, `available_at`, and `retrieved_at` on every
+  normalized candle, while retaining `source_time` as the bar-start
+  compatibility field;
 - requested, canonical-requested, received, canonical-received, and unmatched
   received symbols;
 - per-symbol and per-request event/resource counters;

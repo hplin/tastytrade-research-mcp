@@ -20,6 +20,15 @@ Double Diagonal, or other package.
     "option_sides": ["CALL", "PUT"],
     "max_contracts": 500,
     "max_observation_age_minutes": 60,
+    "resolution_profile": {
+      "profile_id": "HOURLY_VALUATION_RESEARCH",
+      "profile_version": "1.0.0",
+      "max_observation_age_minutes": 60,
+      "max_temporal_skew_minutes": 0
+    },
+    "candidate_construction_profile": {
+      "version": "candidate-construction/7"
+    },
     "phase": "REGRESSION_RESEARCH",
     "references": {
       "checkpoint_id": "spx-universe-2026-08-25-0730-pt"
@@ -43,16 +52,26 @@ timestamp-safe, but is labeled `freshness: STALE`, `confidence: LOW`, and
 `STALE_PRE_CHECKPOINT_OBSERVATION`. Extending the maximum never permits
 evidence after `as_of`.
 
+Existing RFC3339 `as_of` input remains supported. It may be replaced by an
+unambiguous `local_checkpoint` using an IANA timezone. Omitting
+`resolution_profile` preserves the prior 5-minute cohort. Native-hour New
+York regular-session research is enabled only by
+`HOURLY_VALUATION_RESEARCH`; its normalized profile, provider, cohort,
+alignment, age/skew limits, and fallback policy are returned with the result.
+
+`candidate_construction_profile` is opaque and returned unchanged. This tool
+does not grade contracts, assign Double Diagonal buckets, or choose final
+legs.
+
 ## Evidence reconstruction
 
 The adapter:
 
-1. obtains the latest complete SPX 5-minute candle available by `as_of`;
+1. obtains the latest complete SPX candle under the requested profile;
 2. deterministically generates SPXW OCC and streamer symbols for the bounded
    expiration/strike/side grid;
 3. retrieves option candles in batches of at most 20 symbols;
-4. accepts only complete bars with
-   `source_time + 5 minutes <= as_of`;
+4. accepts only complete bars with `available_at <= as_of`;
 5. excludes observations older than the caller's maximum age;
 6. treats a generated contract as historically verified only when DXLink
    returns evidence for that exact symbol; and
@@ -85,7 +104,7 @@ Each verified contract includes:
 
 - exact OCC/provider/simulation symbol;
 - expiration, strike, side, and DTE at `as_of`;
-- evidence availability timestamp and observation age;
+- `bar_start`, `bar_end`, `available_at`, `retrieved_at`, and observation age;
 - historical close;
 - reconstructed delta when available;
 - contract IV, interval volume, and open interest when available;
@@ -154,10 +173,12 @@ spot-forward zero-carry approximation. The remaining seven contracts lacked
 historical IV and stayed null. No contract or provenance timestamp exceeded
 the checkpoint.
 
-The response `request_id` includes `as_of`, bounds, explicit expirations,
-freshness maximum, and references. Persisted replay evidence must be treated
-as immutable; a later call with broader freshness or newly available provider
-data is a distinct record and must never silently upgrade an earlier replay.
+The response `request_id` includes the normalized checkpoint, bounds,
+explicit expirations, resolution/provider cohort, opaque candidate
+construction profile, freshness maximum, and references. Persisted replay
+evidence must be treated as immutable; a later call with broader freshness,
+another resolution/provider cohort, or newly available provider data is a
+distinct record and must never silently upgrade an earlier replay.
 
 ## 2026-08-25 acceptance fixture
 

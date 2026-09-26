@@ -27,13 +27,19 @@ const REQUEST = {
   references: { checkpoint_id: "spx-universe-2026-08-25-0730-pt" },
 };
 
-function candleResult(symbol, streamerSymbol, candles) {
+function candleResult(
+  symbol,
+  streamerSymbol,
+  candles,
+  interval = "5m",
+  session = "ALL",
+) {
   return {
     contract_version: "1.0.0",
     symbol,
     streamer_symbol: streamerSymbol,
     instrument_type: symbol === "SPX" ? "INDEX" : "OPTION",
-    interval: "5m",
+    interval,
     requested_range: {
       start: "2026-08-25T13:25:00.000Z",
       end: REQUEST.as_of,
@@ -45,8 +51,10 @@ function candleResult(symbol, streamerSymbol, candles) {
             start: candles[0].source_time,
             end: candles.at(-1).source_time,
           },
-    timezone: "UTC",
-    session: "ALL",
+    timezone:
+      session === "REGULAR" ? "America/New_York" : "UTC",
+    session,
+    retrieved_at: "2026-08-25T16:00:00.000Z",
     source: "tastytrade-dxlink",
     source_timestamp_unit: "epoch_milliseconds",
     snapshot_complete: true,
@@ -62,11 +70,13 @@ function fixtureCandles(source = fixture) {
     source.options.map((option) => [option.symbol, option]),
   );
   return {
-    getHistoricalCandles: jest.fn(async () =>
+    getHistoricalCandles: jest.fn(async (input) =>
       candleResult(
         source.underlying.symbol,
         source.underlying.streamer_symbol,
         [structuredClone(source.underlying.candle)],
+        input.interval,
+        input.session?.kind,
       ),
     ),
     getHistoricalCandlesBatch: jest.fn(async (input) =>
@@ -76,6 +86,8 @@ function fixtureCandles(source = fixture) {
           instrument.symbol,
           instrument.streamer_symbol,
           option ? [structuredClone(option.candle)] : [],
+          input.interval,
+          input.session?.kind,
         );
       }),
     ),
@@ -97,6 +109,37 @@ describe("historical SPX candidate universe", () => {
       requested_contract_count: 144,
     });
     expect(plan.request_id).toMatch(/^[a-f0-9]{64}$/);
+    expect(plan.resolution_profile).toMatchObject({
+      profile_id: "DEFAULT_5M",
+      requested_aggregation: "5m",
+      effective_aggregation: null,
+    });
+  });
+
+  test("separates hourly and provider cohorts in the universe request id", () => {
+    const hourly = prepareHistoricalSpxCandidateUniverse({
+      ...REQUEST,
+      resolution_profile: {
+        profile_id: "HOURLY_VALUATION_RESEARCH",
+        profile_version: "1.0.0",
+      },
+    });
+    const otherProvider = prepareHistoricalSpxCandidateUniverse({
+      ...REQUEST,
+      resolution_profile: {
+        profile_id: "HOURLY_VALUATION_RESEARCH",
+        profile_version: "1.0.0",
+        provider_id: "licensed-provider-b",
+      },
+    });
+
+    expect(hourly.request_id).not.toBe(
+      prepareHistoricalSpxCandidateUniverse(REQUEST).request_id,
+    );
+    expect(hourly.request_id).not.toBe(otherProvider.request_id);
+    expect(hourly.resolution_profile.cohort_id).not.toBe(
+      otherProvider.resolution_profile.cohort_id,
+    );
   });
 
   test("returns only timestamp-safe evidence across strikes and expirations", async () => {
@@ -392,6 +435,7 @@ describe("historical SPX candidate universe", () => {
       historical_open_interest: null,
       historical_volume: null,
     });
+
     expect(contract.provenance).not.toEqual(
       expect.arrayContaining([
         expect.objectContaining({
@@ -414,6 +458,57 @@ describe("historical SPX candidate universe", () => {
       historical_open_interest: { available: 17, missing: 1 },
       historical_volume: { available: 17, missing: 1 },
     });
+  });
+
+  test("reconstructs the universe with completed native-hour RTH evidence", async () => {
+    const source = structuredClone(fixture);
+    source.underlying.candle.source_time = "2026-08-25T13:30:00.000Z";
+    for (const option of source.options) {
+      option.candle.source_time = "2026-08-25T13:30:00.000Z";
+    }
+    const candidateConstructionProfile = {
+      version: "candidate-construction/7",
+      grading: { owned_by: "downstream" },
+    };
+    const candles = fixtureCandles(source);
+    const result = await getHistoricalSpxCandidateUniverse(candles, {
+      ...REQUEST,
+      resolution_profile: {
+        profile_id: "HOURLY_VALUATION_RESEARCH",
+        profile_version: "1.0.0",
+      },
+      candidate_construction_profile: candidateConstructionProfile,
+    });
+
+    expect(result.status).toBe("PARTIAL");
+    expect(result.resolution_profile).toMatchObject({
+      profile_id: "HOURLY_VALUATION_RESEARCH",
+      requested_aggregation: "1h",
+      native_aggregation: "h",
+      effective_aggregation: "1h",
+      max_observation_age_minutes: 60,
+      max_temporal_skew_minutes: 0,
+    });
+    expect(result.candidate_construction_profile).toBe(
+      candidateConstructionProfile,
+    );
+    expect(
+      result.contracts.every(
+        (contract) =>
+          contract.bar_start === "2026-08-25T13:30:00.000Z" &&
+          contract.bar_end === REQUEST.as_of &&
+          contract.available_at === REQUEST.as_of &&
+          contract.retrieved_at === "2026-08-25T16:00:00.000Z",
+      ),
+    ).toBe(true);
+    expect(
+      candles.getHistoricalCandlesBatch.mock.calls.every(
+        ([input]) =>
+          input.interval === "1h" &&
+          input.session.kind === "REGULAR" &&
+          input.session.timezone === "America/New_York",
+      ),
+    ).toBe(true);
   });
 
   test("returns partial coverage when one provider batch fails", async () => {

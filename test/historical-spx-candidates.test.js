@@ -81,13 +81,19 @@ function fixtureBacktester(source = fixture, logs = source.logs) {
   };
 }
 
-function candleResult(symbol, streamerSymbol, candles) {
+function candleResult(
+  symbol,
+  streamerSymbol,
+  candles,
+  interval = "5m",
+  session = "ALL",
+) {
   return {
     contract_version: "1.0.0",
     symbol,
     streamer_symbol: streamerSymbol,
     instrument_type: symbol === "SPX" ? "INDEX" : "OPTION",
-    interval: "5m",
+    interval,
     requested_range: {
       start: "2026-08-25T13:25:00.000Z",
       end: "2026-08-25T14:30:00.000Z",
@@ -99,8 +105,10 @@ function candleResult(symbol, streamerSymbol, candles) {
             start: candles[0].source_time,
             end: candles.at(-1).source_time,
           },
-    timezone: "UTC",
-    session: "ALL",
+    timezone:
+      session === "REGULAR" ? "America/New_York" : "UTC",
+    session,
+    retrieved_at: "2026-08-25T16:00:00.000Z",
     source: "tastytrade-dxlink",
     source_timestamp_unit: "epoch_milliseconds",
     candles,
@@ -123,6 +131,8 @@ function fixturePathBCandles(source = pathBFixture) {
         source.underlying.symbol,
         source.underlying.streamer_symbol,
         [structuredClone(source.underlying.candle)],
+        input.interval,
+        input.session?.kind,
       );
     }),
     getHistoricalCandlesBatch: jest.fn(async (input) =>
@@ -132,6 +142,8 @@ function fixturePathBCandles(source = pathBFixture) {
           instrument.symbol,
           instrument.streamer_symbol,
           option ? [structuredClone(option.candle)] : [],
+          input.interval,
+          input.session?.kind,
         );
       }),
     ),
@@ -172,6 +184,85 @@ describe("historical SPX candidate discovery", () => {
       "entryTime",
     );
     expect(plan.request_id).toMatch(/^[a-f0-9]{64}$/);
+    expect(plan.resolution_profile).toMatchObject({
+      profile_id: "DEFAULT_5M",
+      requested_aggregation: "5m",
+      native_aggregation: "5m",
+      effective_aggregation: null,
+      session: { kind: "ALL", timezone: "UTC" },
+      alignment: "MIDNIGHT",
+      max_observation_age_minutes: 60,
+      max_temporal_skew_minutes: 0,
+      fallback_policy: { allowed: false, aggregations: [] },
+    });
+    expect(plan.candidate_construction_profile).toBeNull();
+  });
+
+  test("keeps local checkpoints, resolution cohorts, and candidate policy in request identity", () => {
+    const candidateConstructionProfile = {
+      version: "candidate-construction/7",
+      rules: {
+        grading_engine: "external",
+        dd_bucket: ["opaque", 3],
+      },
+    };
+    const { as_of: _asOf, ...withoutAsOf } = PATH_B_REQUEST;
+    const defaultPlan = prepareHistoricalSpxCandidates(PATH_B_REQUEST);
+    const hourlyPlan = prepareHistoricalSpxCandidates({
+      ...withoutAsOf,
+      local_checkpoint: {
+        local_date: "2026-08-25",
+        local_time: "07:30",
+        timezone: "America/Los_Angeles",
+      },
+      resolution_profile: {
+        profile_id: "HOURLY_VALUATION_RESEARCH",
+        profile_version: "1.0.0",
+      },
+      candidate_construction_profile: candidateConstructionProfile,
+    });
+    const otherProviderPlan = prepareHistoricalSpxCandidates({
+      ...withoutAsOf,
+      local_checkpoint: {
+        local_date: "2026-08-25",
+        local_time: "07:30",
+        timezone: "America/Los_Angeles",
+      },
+      resolution_profile: {
+        profile_id: "HOURLY_VALUATION_RESEARCH",
+        profile_version: "1.0.0",
+        provider_id: "licensed-provider-b",
+      },
+      candidate_construction_profile: candidateConstructionProfile,
+    });
+
+    expect(hourlyPlan.as_of).toBe("2026-08-25T14:30:00.000Z");
+    expect(hourlyPlan.checkpoint).toMatchObject({
+      kind: "IANA_LOCAL",
+      timezone: "America/Los_Angeles",
+      local_date: "2026-08-25",
+      local_time: "07:30:00",
+    });
+    expect(hourlyPlan.resolution_profile).toMatchObject({
+      profile_id: "HOURLY_VALUATION_RESEARCH",
+      requested_aggregation: "1h",
+      native_aggregation: "h",
+      session: {
+        kind: "REGULAR",
+        timezone: "America/New_York",
+        start_time: "09:30",
+        end_time: "16:00",
+      },
+      alignment: "SESSION",
+    });
+    expect(hourlyPlan.candidate_construction_profile).toBe(
+      candidateConstructionProfile,
+    );
+    expect(defaultPlan.request_id).not.toBe(hourlyPlan.request_id);
+    expect(hourlyPlan.request_id).not.toBe(otherProviderPlan.request_id);
+    expect(hourlyPlan.resolution_profile.cohort_id).not.toBe(
+      otherProviderPlan.resolution_profile.cohort_id,
+    );
   });
 
   test("preserves exact identity for a provider selection at the checkpoint", async () => {
@@ -330,6 +421,7 @@ describe("historical SPX candidate discovery", () => {
         historical_contract_universe_reconstructed: true,
       },
     });
+
     expect(result.contracts).toHaveLength(4);
     expect(result.contracts).toEqual([
       expect.objectContaining({
@@ -424,6 +516,102 @@ describe("historical SPX candidate discovery", () => {
     expect(
       result.contracts.some(
         (candidate) => candidate.occ_symbol === "SPXW  260922C07925000",
+      ),
+    ).toBe(false);
+  });
+
+  test("uses only the completed 09:30-10:30 ET native-hour bar", async () => {
+    const source = structuredClone(pathBFixture);
+    source.underlying.candle.source_time = "2026-08-25T13:30:00.000Z";
+    for (const option of source.options) {
+      option.candle.source_time = "2026-08-25T13:30:00.000Z";
+    }
+    const candles = fixturePathBCandles(source);
+    const underlying = candles.getHistoricalCandles;
+    candles.getHistoricalCandles = jest.fn(async (input) => {
+      const result = await underlying(input);
+      result.candles.push({
+        ...structuredClone(result.candles[0]),
+        source_time: PATH_B_REQUEST.as_of,
+        close: "9999",
+      });
+      return result;
+    });
+    const batch = candles.getHistoricalCandlesBatch;
+    candles.getHistoricalCandlesBatch = jest.fn(async (input) => {
+      const results = await batch(input);
+      for (const result of results) {
+        if (result.candles[0]) {
+          result.candles.push({
+            ...structuredClone(result.candles[0]),
+            source_time: PATH_B_REQUEST.as_of,
+            close: "0.01",
+          });
+        }
+      }
+      return results;
+    });
+    const candidateConstructionProfile = {
+      version: "candidate-construction/7",
+      selection_rules: { intentionally_opaque: true },
+    };
+
+    const result = await discoverHistoricalSpxCandidates(
+      fixtureBacktester(entryTimeIgnoredFixture),
+      {
+        ...PATH_B_REQUEST,
+        resolution_profile: {
+          profile_id: "HOURLY_VALUATION_RESEARCH",
+          profile_version: "1.0.0",
+        },
+        candidate_construction_profile: candidateConstructionProfile,
+      },
+      candles,
+    );
+
+    expect(result.status).toBe("COMPLETE");
+    expect(result.resolution_profile).toMatchObject({
+      profile_id: "HOURLY_VALUATION_RESEARCH",
+      requested_aggregation: "1h",
+      native_aggregation: "h",
+      effective_aggregation: "1h",
+      session: {
+        kind: "REGULAR",
+        timezone: "America/New_York",
+      },
+      alignment: "SESSION",
+    });
+    expect(result.candidate_construction_profile).toBe(
+      candidateConstructionProfile,
+    );
+    expect(
+      result.contracts.every(
+        (candidate) =>
+          candidate.bar_start === "2026-08-25T13:30:00.000Z" &&
+          candidate.bar_end === PATH_B_REQUEST.as_of &&
+          candidate.available_at === PATH_B_REQUEST.as_of &&
+          candidate.retrieved_at === "2026-08-25T16:00:00.000Z",
+      ),
+    ).toBe(true);
+    expect(
+      candles.getHistoricalCandles.mock.calls.every(
+        ([input]) =>
+          input.interval === "1h" &&
+          input.session.kind === "REGULAR" &&
+          input.session.timezone === "America/New_York",
+      ),
+    ).toBe(true);
+    expect(
+      candles.getHistoricalCandlesBatch.mock.calls.every(
+        ([input]) =>
+          input.interval === "1h" &&
+          input.session.kind === "REGULAR" &&
+          input.session.timezone === "America/New_York",
+      ),
+    ).toBe(true);
+    expect(
+      result.contracts.some(
+        (candidate) => candidate.historical_price === "0.01",
       ),
     ).toBe(false);
   });

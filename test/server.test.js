@@ -25,7 +25,10 @@ describe("MCP research server", () => {
           ? {
               candles: [
                 {
-                  source_time: "2026-04-15T14:25:00.000Z",
+                  source_time:
+                    request.interval === "1h"
+                      ? "2026-04-15T13:30:00.000Z"
+                      : "2026-04-15T14:25:00.000Z",
                   close: "5300",
                   implied_volatility: "0.2",
                 },
@@ -81,12 +84,24 @@ describe("MCP research server", () => {
       expect(
         candleTool.inputSchema.properties.request.properties,
       ).toMatchObject({
+        resolution_profile: expect.any(Object),
         deadline_ms: { maximum: 60000 },
         max_output_candles: { maximum: 250000 },
         max_received_events: { maximum: 1000000 },
         max_buffer_bytes: { maximum: 134217728 },
         timeout_ms: { maximum: 60000 },
         max_candles: { maximum: 20000 },
+      });
+      const candidateTool = tools.tools.find(
+        (tool) =>
+          tool.name === "tastytrade_discover_historical_spx_candidates",
+      );
+      expect(
+        candidateTool.inputSchema.properties.request.properties,
+      ).toMatchObject({
+        local_checkpoint: expect.any(Object),
+        resolution_profile: expect.any(Object),
+        candidate_construction_profile: expect.any(Object),
       });
 
       const priced = textResult(
@@ -161,7 +176,11 @@ describe("MCP research server", () => {
           arguments: {
             request: {
               underlying: "SPX",
-              as_of: "2026-04-15T14:30:00.000Z",
+              local_checkpoint: {
+                local_date: "2026-04-15",
+                local_time: "07:30",
+                timezone: "America/Los_Angeles",
+              },
               sides: ["PUT"],
               selector_grid: [
                 {
@@ -170,6 +189,14 @@ describe("MCP research server", () => {
                   days_until_expiration: 28,
                 },
               ],
+              resolution_profile: {
+                profile_id: "HOURLY_VALUATION_RESEARCH",
+                profile_version: "1.0.0",
+              },
+              candidate_construction_profile: {
+                version: "candidate-construction/7",
+                grading: { external: true },
+              },
               phase: "REGRESSION_RESEARCH",
             },
           },
@@ -177,6 +204,7 @@ describe("MCP research server", () => {
       );
       expect(candidates).toMatchObject({
         status: "NOT_AVAILABLE",
+        as_of: "2026-04-15T14:30:00.000Z",
         evidence_type: "HISTORICAL_SELECTOR_CANDIDATE_SET",
         evidence_phase: "REGRESSION_RESEARCH",
         surface: {
@@ -187,6 +215,14 @@ describe("MCP research server", () => {
         capabilities: {
           backtester_entry_time_configurable: false,
           exact_checkpoint_selection: false,
+        },
+        resolution_profile: {
+          profile_id: "HOURLY_VALUATION_RESEARCH",
+          requested_aggregation: "1h",
+        },
+        candidate_construction_profile: {
+          version: "candidate-construction/7",
+          grading: { external: true },
         },
       });
       expect(backtester.createBacktest).toHaveBeenCalledWith(
