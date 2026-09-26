@@ -15,9 +15,13 @@ The suite builds the TypeScript project before running Jest and covers:
 - native versus synthetic provenance;
 - stale, missing, crossed, and timestamp-misaligned quote handling;
 - midpoint valuation-only semantics;
+- completed-bar historical exact-leg package valuation;
+- checkpoint observation age and multi-leg temporal-skew rejection;
+- bounded 1-minute to 5-minute package-path fallback without resampling;
+- exact package-path gaps without interpolation or forward fill;
 - `LIMIT_TOUCH` and `CONSERVATIVE_CROSS`;
 - sparse first-touch intervals, complete no-touch paths, and
-  `NOT_VERIFIABLE`;
+  `NOT_VERIFIABLE`/`NOT_ASSESSABLE`;
 - entry and exit verification;
 - live-paper disagreement without event mutation;
 - broker dry-run acceptance without implied fillability;

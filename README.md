@@ -34,10 +34,12 @@ The project is intentionally separate from the official
 | `tastytrade_price_option_package` | Price verticals, iron condors, and double diagonals with explicit native/synthetic provenance |
 | `tastytrade_discover_historical_spx_candidates` | Reconstruct timestamp-safe historical SPXW candidates from completed DXLink evidence, with exact-timestamp Backtester fallback |
 | `tastytrade_get_historical_spx_candidate_universe` | Return a bounded multi-strike, multi-expiration SPXW universe for downstream deterministic spread construction |
+| `tastytrade_get_historical_option_package_at_checkpoint` | Reconstruct an exact-leg SPX package reference at a historical checkpoint with explicit age and skew controls |
+| `tastytrade_get_historical_option_package_path` | Return aligned completed-candle package points and explicit gaps at the finest retrievable resolution |
 | `tastytrade_prepare_spx_spread` | Deterministically normalize SPX legs without calling an upstream service |
 | `tastytrade_simulate_spx_spread` | Run exact-leg SPX historical simulation and normalize its result |
 | `tastytrade_create_spx_spread_backtest` | Submit supported SPX structures through relative Backtester selectors |
-| `tastytrade_verify_historical_fill` | Check a frozen paper limit against a forward Backtester path |
+| `tastytrade_verify_historical_fill` | Check a frozen paper limit against a caller-supplied historical package path or a forward Backtester path |
 | `tastytrade_get_historical_candles` | Retrieve normalized DXLink OHLCV candles without resampling |
 
 Use MCP `tools/list` for the complete JSON input schemas.
@@ -50,6 +52,7 @@ The contract distinguishes:
 - `NATIVE_PACKAGE`
 - `SYNTHETIC_NATURAL`
 - `SYNTHETIC_MID_REFERENCE`
+- `HISTORICAL_OPTION_PACKAGE_REFERENCE`
 - `HISTORICAL_PATH`
 - `BACKTESTER_SIMULATION`
 - `BROKER_DRY_RUN`
@@ -175,14 +178,38 @@ See
 [`docs/historical-spx-universe.md`](docs/historical-spx-universe.md)
 for the input contract, reconstruction rules, and live checkpoint findings.
 
+## Historical exact-leg package reconstruction
+
+`tastytrade_get_historical_option_package_at_checkpoint` selects only
+completed option candles available by the requested checkpoint and preserves
+each leg's exact OCC identity, derived streamer symbol, historical close, IV,
+bar-start timestamp, availability timestamp, age, and provenance. Explicit
+age and temporal-skew limits fail closed. Candle-derived values are always
+`VALUATION_ONLY`; historical bid/ask is not fabricated.
+
+`tastytrade_get_historical_option_package_path` emits a point only when every
+leg has an exact timestamp-aligned completed bar. It never interpolates or
+forward-fills missing legs. If a bounded old 1-minute DXLink replay exceeds
+the provider snapshot limit, the result records the failed attempt and
+explicitly selects the finest retrievable coarser resolution.
+
+The returned `fill_verification_path` can be passed directly to
+`tastytrade_verify_historical_fill`. Full rules and the 2026-08-27 07:30 PT
+acceptance finding are documented in
+[`docs/historical-option-package.md`](docs/historical-option-package.md).
+
 ## Historical fill verification
 
 `tastytrade_verify_historical_fill`:
 
 - evaluates only `[submitted_at, valid_until]`;
+- accepts either caller-supplied historical package points or the existing
+  exact-leg Backtester mode;
 - supports both `ENTRY` and `EXIT`;
 - preserves `paper_order_id`, `checkpoint_id`, and `position_id` references;
-- returns `TOUCHED`, `NOT_TOUCHED`, or `NOT_VERIFIABLE`;
+- returns legacy `status` values `TOUCHED`, `NOT_TOUCHED`, or
+  `NOT_VERIFIABLE`, plus `assessment_status: NOT_ASSESSABLE` for an
+  insufficient path;
 - distinguishes `LIMIT_TOUCH` from `CONSERVATIVE_CROSS`;
 - reports an exact observed touch timestamp when defensible, otherwise a
   bounded interval for a sparse path;

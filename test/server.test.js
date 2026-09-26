@@ -42,9 +42,12 @@ describe("MCP research server", () => {
       getHistoricalCandlesBatch: jest.fn(async (request) =>
         request.instruments.map((instrument) => ({
           symbol: instrument.symbol,
+          streamer_symbol: instrument.streamer_symbol,
+          interval: request.interval,
           candles: [],
           snapshot_complete: true,
           snapshot_truncated: false,
+          warnings: [],
         })),
       ),
     };
@@ -57,12 +60,14 @@ describe("MCP research server", () => {
     await client.connect(clientTransport);
     try {
       const tools = await client.listTools();
-      expect(tools.tools).toHaveLength(15);
+      expect(tools.tools).toHaveLength(17);
       expect(tools.tools.map((tool) => tool.name)).toEqual(
         expect.arrayContaining([
           "tastytrade_price_option_package",
           "tastytrade_discover_historical_spx_candidates",
           "tastytrade_get_historical_spx_candidate_universe",
+          "tastytrade_get_historical_option_package_at_checkpoint",
+          "tastytrade_get_historical_option_package_path",
           "tastytrade_verify_historical_fill",
           "tastytrade_get_historical_candles",
           "tastytrade_prepare_spx_spread",
@@ -207,6 +212,116 @@ describe("MCP research server", () => {
           missing_contract_count: 6,
         },
       });
+
+      const checkpointPackage = textResult(
+        await client.callTool({
+          name: "tastytrade_get_historical_option_package_at_checkpoint",
+          arguments: {
+            request: {
+              family: "DEBIT_VERTICAL",
+              underlying: "SPX",
+              as_of: "2026-08-27T14:30:00.000Z",
+              legs: [
+                {
+                  provider_symbol: "SPXW  260924C07750000",
+                  action: "BUY_TO_OPEN",
+                },
+                {
+                  provider_symbol: "SPXW  260924C07800000",
+                  action: "SELL_TO_OPEN",
+                },
+              ],
+              max_observation_age_minutes: 30,
+              max_temporal_skew_minutes: 10,
+              phase: "REGRESSION_RESEARCH",
+              references: { checkpoint_id: "checkpoint-35" },
+            },
+          },
+        }),
+      );
+      expect(checkpointPackage).toMatchObject({
+        status: "NOT_AVAILABLE",
+        reference_value: null,
+        effective_resolution: "5m",
+      });
+
+      const packagePath = textResult(
+        await client.callTool({
+          name: "tastytrade_get_historical_option_package_path",
+          arguments: {
+            request: {
+              family: "DEBIT_VERTICAL",
+              underlying: "SPX",
+              start_time: "2026-08-27T14:30:00.000Z",
+              end_time: "2026-08-27T14:50:00.000Z",
+              resolution: "5m",
+              legs: [
+                {
+                  provider_symbol: "SPXW  260924C07750000",
+                  action: "BUY_TO_OPEN",
+                },
+                {
+                  provider_symbol: "SPXW  260924C07800000",
+                  action: "SELL_TO_OPEN",
+                },
+              ],
+              phase: "REGRESSION_RESEARCH",
+              references: { checkpoint_id: "checkpoint-35" },
+            },
+          },
+        }),
+      );
+      expect(packagePath).toMatchObject({
+        status: "NOT_AVAILABLE",
+        expected_point_count: 4,
+        observed_point_count: 0,
+        fill_verification_compatible: true,
+      });
+
+      const directFill = textResult(
+        await client.callTool({
+          name: "tastytrade_verify_historical_fill",
+          arguments: {
+            request: {
+              submitted_at: "2026-08-27T14:30:00.000Z",
+              valid_until: "2026-08-27T14:40:00.000Z",
+              working_limit: "5.5",
+              price_effect: "DEBIT",
+              verification_side: "ENTRY",
+              fill_model: "LIMIT_TOUCH",
+              path: [
+                {
+                  as_of: "2026-08-27T14:30:00.000Z",
+                  price: "6",
+                  price_effect: "DEBIT",
+                  source: "fixture",
+                },
+                {
+                  as_of: "2026-08-27T14:35:00.000Z",
+                  price: "5.5",
+                  price_effect: "DEBIT",
+                  source: "fixture",
+                },
+                {
+                  as_of: "2026-08-27T14:40:00.000Z",
+                  price: "5",
+                  price_effect: "DEBIT",
+                  source: "fixture",
+                },
+              ],
+              evidence_source: "fixture",
+              references: { checkpoint_id: "checkpoint-35" },
+              max_observation_gap_ms: 300000,
+            },
+          },
+        }),
+      );
+      expect(directFill).toMatchObject({
+        status: "TOUCHED",
+        assessment_status: "TOUCHED",
+        first_touch_at: "2026-08-27T14:35:00.000Z",
+      });
+      expect(backtester.simulateTrade).not.toHaveBeenCalled();
 
       await expect(
         client.callTool({

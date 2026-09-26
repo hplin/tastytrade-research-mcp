@@ -1,0 +1,87 @@
+{
+  "checkpoint": "2026-08-27T14:30:00.000Z",
+  "path_end": "2026-08-27T14:50:00.000Z",
+  "family": "DEBIT_VERTICAL",
+  "underlying": "SPX",
+  "legs": [
+    {
+      "provider_symbol": "SPXW  260924C07750000",
+      "streamer_symbol": ".SPXW260924C7750",
+      "action": "BUY_TO_OPEN",
+      "candles": [
+        {
+          "source_time": "2026-08-27T13:30:00.000Z",
+          "open": "81.06",
+          "high": "81.06",
+          "low": "81.06",
+          "close": "81.06",
+          "volume": "12",
+          "vwap": "81.06",
+          "bid_volume": null,
+          "ask_volume": "12",
+          "implied_volatility": "0.117329467854309",
+          "open_interest": "68"
+        },
+        {
+          "source_time": "2026-08-27T13:35:00.000Z",
+          "open": "81.31",
+          "high": "81.31",
+          "low": "81.31",
+          "close": "81.31",
+          "volume": "1",
+          "vwap": "81.31",
+          "bid_volume": null,
+          "ask_volume": "1",
+          "implied_volatility": "0.1169321422153059",
+          "open_interest": "166"
+        }
+      ]
+    },
+    {
+      "provider_symbol": "SPXW  260924C07800000",
+      "streamer_symbol": ".SPXW260924C7800",
+      "action": "SELL_TO_OPEN",
+      "candles": [
+        {
+          "source_time": "2026-08-27T13:50:00.000Z",
+          "open": "62.34",
+          "high": "62.34",
+          "low": "62.34",
+          "close": "62.34",
+          "volume": "1",
+          "vwap": "62.34",
+          "bid_volume": null,
+          "ask_volume": "1",
+          "implied_volatility": "0.1122566029778262",
+          "open_interest": "318"
+        },
+        {
+          "source_time": "2026-08-27T14:05:00.000Z",
+          "open": "60.25",
+          "high": "60.25",
+          "low": "60.25",
+          "close": "60.25",
+          "volume": "1",
+          "vwap": "60.25",
+          "bid_volume": null,
+          "ask_volume": "1",
+          "implied_volatility": "0.111001015516424",
+          "open_interest": "329"
+        },
+        {
+          "source_time": "2026-08-27T14:45:00.000Z",
+          "open": "63.18",
+          "high": "63.18",
+          "low": "63.13",
+          "close": "63.15",
+          "volume": "4",
+          "vwap": "63.16",
+          "bid_volume": "4",
+          "ask_volume": null,
+          "implied_volatility": "0.1101363790734686",
+          "open_interest": "329"
+        }
+      ]
+    }
+  ]
+}
