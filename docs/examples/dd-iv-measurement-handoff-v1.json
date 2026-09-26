@@ -87,7 +87,7 @@
       "measurement_profile_version": "1.0.0",
       "grading_role": "RESEARCH_ONLY",
       "candidate_id": "dd-fixture-2026-08-25",
-      "cohort_id": "e240eb6d28c6c304d7aa4c71a75679929f36b99c4cfa27d7ef79e7a8a0b7a947",
+      "cohort_id": "570b468e8d925c8ac6dd56389ad17c20e8a8b4d0d66adae26fceb3b0cf79c855",
       "status": "AVAILABLE",
       "iv_unit": "DECIMAL",
       "frozen_legs": [
@@ -420,7 +420,13 @@
               "delta_origin": "DERIVED",
               "iv_decimal": "0.21",
               "weight": "1",
+              "bar_start": "2026-08-25T14:20:00.000Z",
+              "bar_end": "2026-08-25T14:25:00.000Z",
               "available_at": "2026-08-25T14:25:00.000Z",
+              "effective_available_at": "2026-08-25T14:25:00.000Z",
+              "retrieved_at": "2026-08-25T16:00:00.000Z",
+              "bar_status": "COMPLETE",
+              "freshness": "FRESH",
               "iv_origin": "PROVIDER_OBSERVATION",
               "model": {
                 "iv_model": "PROVIDER_CANDLE_IMPLIED_VOLATILITY",
@@ -435,6 +441,11 @@
                 "origin": "DERIVED",
                 "source_timestamp": "2026-08-25T14:25:00.000Z"
               },
+              "provider": "tastytrade-dxlink",
+              "dataset": "historical-spx-candidate-universe/1.0.0",
+              "resolution": "5m",
+              "alignment": "MIDNIGHT",
+              "source_cohort_id": "fixture-5m-cohort",
               "lineage": [
                 {
                   "source": "fixture:front-put-25",
@@ -489,7 +500,13 @@
               "delta_origin": "DERIVED",
               "iv_decimal": "0.21",
               "weight": "1",
+              "bar_start": "2026-08-25T14:20:00.000Z",
+              "bar_end": "2026-08-25T14:25:00.000Z",
               "available_at": "2026-08-25T14:25:00.000Z",
+              "effective_available_at": "2026-08-25T14:25:00.000Z",
+              "retrieved_at": "2026-08-25T16:00:00.000Z",
+              "bar_status": "COMPLETE",
+              "freshness": "FRESH",
               "iv_origin": "PROVIDER_OBSERVATION",
               "model": {
                 "iv_model": "PROVIDER_CANDLE_IMPLIED_VOLATILITY",
@@ -504,6 +521,11 @@
                 "origin": "DERIVED",
                 "source_timestamp": "2026-08-25T14:25:00.000Z"
               },
+              "provider": "tastytrade-dxlink",
+              "dataset": "historical-spx-candidate-universe/1.0.0",
+              "resolution": "5m",
+              "alignment": "MIDNIGHT",
+              "source_cohort_id": "fixture-5m-cohort",
               "lineage": [
                 {
                   "source": "fixture:back-put-25",
@@ -587,7 +609,13 @@
               "delta_origin": "DERIVED",
               "iv_decimal": "0.19",
               "weight": "1",
+              "bar_start": "2026-08-25T14:20:00.000Z",
+              "bar_end": "2026-08-25T14:25:00.000Z",
               "available_at": "2026-08-25T14:25:00.000Z",
+              "effective_available_at": "2026-08-25T14:25:00.000Z",
+              "retrieved_at": "2026-08-25T16:00:00.000Z",
+              "bar_status": "COMPLETE",
+              "freshness": "FRESH",
               "iv_origin": "PROVIDER_OBSERVATION",
               "model": {
                 "iv_model": "PROVIDER_CANDLE_IMPLIED_VOLATILITY",
@@ -602,6 +630,11 @@
                 "origin": "DERIVED",
                 "source_timestamp": "2026-08-25T14:25:00.000Z"
               },
+              "provider": "tastytrade-dxlink",
+              "dataset": "historical-spx-candidate-universe/1.0.0",
+              "resolution": "5m",
+              "alignment": "MIDNIGHT",
+              "source_cohort_id": "fixture-5m-cohort",
               "lineage": [
                 {
                   "source": "fixture:front-call-25",
@@ -656,7 +689,13 @@
               "delta_origin": "DERIVED",
               "iv_decimal": "0.195",
               "weight": "1",
+              "bar_start": "2026-08-25T14:20:00.000Z",
+              "bar_end": "2026-08-25T14:25:00.000Z",
               "available_at": "2026-08-25T14:25:00.000Z",
+              "effective_available_at": "2026-08-25T14:25:00.000Z",
+              "retrieved_at": "2026-08-25T16:00:00.000Z",
+              "bar_status": "COMPLETE",
+              "freshness": "FRESH",
               "iv_origin": "PROVIDER_OBSERVATION",
               "model": {
                 "iv_model": "PROVIDER_CANDLE_IMPLIED_VOLATILITY",
@@ -671,6 +710,11 @@
                 "origin": "DERIVED",
                 "source_timestamp": "2026-08-25T14:25:00.000Z"
               },
+              "provider": "tastytrade-dxlink",
+              "dataset": "historical-spx-candidate-universe/1.0.0",
+              "resolution": "5m",
+              "alignment": "MIDNIGHT",
+              "source_cohort_id": "fixture-5m-cohort",
               "lineage": [
                 {
                   "source": "fixture:back-call-25",
@@ -754,7 +798,13 @@
               "delta_origin": "DERIVED",
               "iv_decimal": "0.21",
               "weight": "1",
+              "bar_start": "2026-08-25T14:20:00.000Z",
+              "bar_end": "2026-08-25T14:25:00.000Z",
               "available_at": "2026-08-25T14:25:00.000Z",
+              "effective_available_at": "2026-08-25T14:25:00.000Z",
+              "retrieved_at": "2026-08-25T16:00:00.000Z",
+              "bar_status": "COMPLETE",
+              "freshness": "FRESH",
               "iv_origin": "PROVIDER_OBSERVATION",
               "model": {
                 "iv_model": "PROVIDER_CANDLE_IMPLIED_VOLATILITY",
@@ -769,6 +819,11 @@
                 "origin": "DERIVED",
                 "source_timestamp": "2026-08-25T14:25:00.000Z"
               },
+              "provider": "tastytrade-dxlink",
+              "dataset": "historical-spx-candidate-universe/1.0.0",
+              "resolution": "5m",
+              "alignment": "MIDNIGHT",
+              "source_cohort_id": "fixture-5m-cohort",
               "lineage": [
                 {
                   "source": "fixture:front-put-25",
@@ -823,7 +878,13 @@
               "delta_origin": "DERIVED",
               "iv_decimal": "0.21",
               "weight": "1",
+              "bar_start": "2026-08-25T14:20:00.000Z",
+              "bar_end": "2026-08-25T14:25:00.000Z",
               "available_at": "2026-08-25T14:25:00.000Z",
+              "effective_available_at": "2026-08-25T14:25:00.000Z",
+              "retrieved_at": "2026-08-25T16:00:00.000Z",
+              "bar_status": "COMPLETE",
+              "freshness": "FRESH",
               "iv_origin": "PROVIDER_OBSERVATION",
               "model": {
                 "iv_model": "PROVIDER_CANDLE_IMPLIED_VOLATILITY",
@@ -838,6 +899,11 @@
                 "origin": "DERIVED",
                 "source_timestamp": "2026-08-25T14:25:00.000Z"
               },
+              "provider": "tastytrade-dxlink",
+              "dataset": "historical-spx-candidate-universe/1.0.0",
+              "resolution": "5m",
+              "alignment": "MIDNIGHT",
+              "source_cohort_id": "fixture-5m-cohort",
               "lineage": [
                 {
                   "source": "fixture:back-put-25",
@@ -921,7 +987,13 @@
               "delta_origin": "DERIVED",
               "iv_decimal": "0.18",
               "weight": "1",
+              "bar_start": "2026-08-25T14:20:00.000Z",
+              "bar_end": "2026-08-25T14:25:00.000Z",
               "available_at": "2026-08-25T14:25:00.000Z",
+              "effective_available_at": "2026-08-25T14:25:00.000Z",
+              "retrieved_at": "2026-08-25T16:00:00.000Z",
+              "bar_status": "COMPLETE",
+              "freshness": "FRESH",
               "iv_origin": "PROVIDER_OBSERVATION",
               "model": {
                 "iv_model": "PROVIDER_CANDLE_IMPLIED_VOLATILITY",
@@ -936,6 +1008,11 @@
                 "origin": "DERIVED",
                 "source_timestamp": "2026-08-25T14:25:00.000Z"
               },
+              "provider": "tastytrade-dxlink",
+              "dataset": "historical-spx-candidate-universe/1.0.0",
+              "resolution": "5m",
+              "alignment": "MIDNIGHT",
+              "source_cohort_id": "fixture-5m-cohort",
               "lineage": [
                 {
                   "source": "fixture:front-call",
@@ -990,7 +1067,13 @@
               "delta_origin": "DERIVED",
               "iv_decimal": "0.195",
               "weight": "1",
+              "bar_start": "2026-08-25T14:20:00.000Z",
+              "bar_end": "2026-08-25T14:25:00.000Z",
               "available_at": "2026-08-25T14:25:00.000Z",
+              "effective_available_at": "2026-08-25T14:25:00.000Z",
+              "retrieved_at": "2026-08-25T16:00:00.000Z",
+              "bar_status": "COMPLETE",
+              "freshness": "FRESH",
               "iv_origin": "PROVIDER_OBSERVATION",
               "model": {
                 "iv_model": "PROVIDER_CANDLE_IMPLIED_VOLATILITY",
@@ -1005,6 +1088,11 @@
                 "origin": "DERIVED",
                 "source_timestamp": "2026-08-25T14:25:00.000Z"
               },
+              "provider": "tastytrade-dxlink",
+              "dataset": "historical-spx-candidate-universe/1.0.0",
+              "resolution": "5m",
+              "alignment": "MIDNIGHT",
+              "source_cohort_id": "fixture-5m-cohort",
               "lineage": [
                 {
                   "source": "fixture:back-call-25",
@@ -1036,7 +1124,7 @@
       }
     ],
     "cohort_identity": {
-      "selected_leg": "e240eb6d28c6c304d7aa4c71a75679929f36b99c4cfa27d7ef79e7a8a0b7a947",
+      "selected_leg": "570b468e8d925c8ac6dd56389ad17c20e8a8b4d0d66adae26fceb3b0cf79c855",
       "matched": [
         "6db0535ee68fc2a10495ff4f00f4d52248b1ab488d1f6393498a96165a1af883",
         "66088254aa696b299b340253d54cb51fbf7fb1d5290cc434a05e114294fc4e12",

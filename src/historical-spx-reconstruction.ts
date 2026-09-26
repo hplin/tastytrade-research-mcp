@@ -1482,7 +1482,9 @@ export function prepareHistoricalSpxCandidateUniverse(
     checkpoint,
     resolution_profile: resolutionProfile,
     candidate_construction_profile: candidateConstructionProfile,
-    dd_iv_measurement: ddIvMeasurement,
+    ...(ddIvMeasurement === null
+      ? {}
+      : { dd_iv_measurement: ddIvMeasurement }),
     references,
   };
   return {
@@ -1773,18 +1775,14 @@ function universeFieldCoverage(
 const DD_IV_UNIVERSE_DATASET =
   "historical-spx-candidate-universe/1.0.0";
 
-function ddIvLineageOrigin(
-  source: string,
-): "PROVIDER_OBSERVATION" | "DERIVED" {
-  return source.includes("dxlink")
-    ? "PROVIDER_OBSERVATION"
-    : "DERIVED";
-}
-
 function ddIvObservationFromUniverse(
   contract: HistoricalSpxUniverseContract,
   profile: ResolutionProfile,
 ): DdIvObservationInput {
+  const providerSources = new Set([
+    resolutionCandleSource(profile, "SPX"),
+    resolutionCandleSource(profile, contract.provider_symbol),
+  ]);
   return {
     source_symbol: contract.provider_symbol,
     expiration: contract.expiration,
@@ -1838,7 +1836,9 @@ function ddIvObservationFromUniverse(
       source: item.source,
       source_timestamp: item.source_timestamp,
       fields: item.fields,
-      origin: ddIvLineageOrigin(item.source),
+      origin: providerSources.has(item.source)
+        ? "PROVIDER_OBSERVATION"
+        : "DERIVED",
     })),
     warnings: contract.warnings,
   };

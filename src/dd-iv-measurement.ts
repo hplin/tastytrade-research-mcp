@@ -345,10 +345,21 @@ export type DdIvMatchInput = {
   delta_origin: DdIvValueOrigin | null;
   iv_decimal: string;
   weight: string;
+  bar_start: string;
+  bar_end: string;
   available_at: string;
+  effective_available_at: string;
+  retrieved_at: string | null;
+  bar_status: "COMPLETE";
+  freshness: "FRESH";
   iv_origin: DdIvValueOrigin;
   model: DdIvObservation["model"];
   forward: DdIvObservation["forward"];
+  provider: string;
+  dataset: string;
+  resolution: string;
+  alignment: string;
+  source_cohort_id: string;
   lineage: DdIvLineage[];
 };
 
@@ -1367,6 +1378,7 @@ function selectedMeasurement(
     measurement_basis: "SELECTED_LEG_IV_DIFFERENCE",
     candidate_id: request.candidate_id,
     profile_version: request.measurement_profile.profile_version,
+    selected_leg_profile: request.measurement_profile.selected_leg,
     source_cohort_ids: sourceCohorts,
     selected_legs: request.selected_legs,
   });
@@ -1396,6 +1408,7 @@ type CoordinateCandidate = {
   observation: DdIvObservation;
   coordinate: ExactDecimal;
   error: ExactDecimal;
+  effectiveAvailableAt: string;
 };
 
 const LOG_MONEYNESS_DECIMAL_PLACES = 12;
@@ -1453,6 +1466,23 @@ function coordinateErrorFields(
     : { moneyness_error: error };
 }
 
+function coordinateEffectiveAvailableAt(
+  observation: DdIvObservation,
+  profile: DdIvMatchedCoordinateProfile,
+): string {
+  const timestamps = [observation.available_at!];
+  const requiresForward =
+    profile.measurement_basis === "MATCHED_FORWARD_MONEYNESS" ||
+    (profile.measurement_basis === "MATCHED_DELTA" &&
+      observation.delta_origin === "DERIVED");
+  if (requiresForward && observation.forward !== null) {
+    timestamps.push(observation.forward.source_timestamp);
+  }
+  return new Date(
+    Math.max(...timestamps.map((timestamp) => Date.parse(timestamp))),
+  ).toISOString();
+}
+
 function matchInput(
   candidate: CoordinateCandidate,
   weight: string,
@@ -1469,10 +1499,21 @@ function matchInput(
     delta_origin: observation.delta_origin,
     iv_decimal: observation.iv!,
     weight,
+    bar_start: observation.bar_start!,
+    bar_end: observation.bar_end!,
     available_at: observation.available_at!,
+    effective_available_at: candidate.effectiveAvailableAt,
+    retrieved_at: observation.retrieved_at,
+    bar_status: "COMPLETE",
+    freshness: "FRESH",
     iv_origin: observation.iv_origin,
     model: observation.model,
     forward: observation.forward,
+    provider: observation.provider,
+    dataset: observation.dataset,
+    resolution: observation.resolution,
+    alignment: observation.alignment,
+    source_cohort_id: observation.source_cohort_id,
     lineage: observation.lineage,
   };
 }
@@ -1514,7 +1555,7 @@ function unavailableMatch(
       nearest === null ? [] : [nearest.observation.strike],
     source_cohort_ids:
       nearest === null ? [] : [nearest.observation.source_cohort_id],
-    effective_available_at: nearest?.observation.available_at ?? null,
+    effective_available_at: nearest?.effectiveAvailableAt ?? null,
     interpolation: null,
     inputs: [],
     quality: "NOT_AVAILABLE",
@@ -1559,6 +1600,10 @@ function matchedCoordinate(
         observation,
         coordinate,
         error: coordinate.subtract(target).abs(),
+        effectiveAvailableAt: coordinateEffectiveAvailableAt(
+          observation,
+          profile,
+        ),
       };
     })
     .filter(
@@ -1593,7 +1638,7 @@ function matchedCoordinate(
       source_symbols: [direct.observation.source_symbol],
       source_strikes: [direct.observation.strike],
       source_cohort_ids: [direct.observation.source_cohort_id],
-      effective_available_at: direct.observation.available_at,
+      effective_available_at: direct.effectiveAvailableAt,
       interpolation: null,
       inputs: [input],
       quality: "COMPLETE",
@@ -1634,8 +1679,8 @@ function matchedCoordinate(
       "INTERPOLATION_BRACKET_EXCEEDS_DECLARED_WIDTH",
     ]);
   }
-  const lowerAvailable = Date.parse(lower.observation.available_at!);
-  const upperAvailable = Date.parse(upper.observation.available_at!);
+  const lowerAvailable = Date.parse(lower.effectiveAvailableAt);
+  const upperAvailable = Date.parse(upper.effectiveAvailableAt);
   if (
     Math.abs(lowerAvailable - upperAvailable) >
     profile.interpolation.max_bracket_skew_ms

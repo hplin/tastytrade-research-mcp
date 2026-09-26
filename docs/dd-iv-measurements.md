@@ -172,9 +172,10 @@ coverage analysis.
 The output preserves the coordinate definition, target and achieved
 coordinates, coordinate and basis-specific errors, source strikes, source
 symbols, delta when available, IV origin, models, forward assumptions,
-timing, lineage, and source cohort. The spread is calculated only when both
-sides are available, share a source cohort, and satisfy the declared
-front/back skew limit.
+full bar timing/status/freshness, provider, dataset, resolution, alignment,
+lineage, and source cohort. The spread is calculated only when both sides are
+available, share a source cohort, and satisfy the declared front/back skew
+limit.
 
 ## Interpolation
 
@@ -236,6 +237,10 @@ checkpoint.
 Unavailable data produces null spreads and warnings; it is never converted
 to success-shaped evidence. `retrieved_at` may be later than the checkpoint
 because it records collection provenance, not decision availability.
+For a derived-delta or forward-moneyness match, `effective_available_at` is
+the later of the option bar availability and the required forward source
+timestamp. Both interpolation-bracket skew and front/back skew use this
+effective time rather than the option bar alone.
 
 Universe deltas preserve their derivation:
 

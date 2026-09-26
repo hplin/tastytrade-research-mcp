@@ -293,10 +293,22 @@ describe("Double Diagonal IV measurement contract", () => {
       },
     });
     expect(putMatched.front.inputs[0]).toMatchObject({
+      bar_start: "2026-08-25T14:20:00.000Z",
+      bar_end: "2026-08-25T14:25:00.000Z",
+      available_at: "2026-08-25T14:25:00.000Z",
+      effective_available_at: "2026-08-25T14:25:00.000Z",
+      retrieved_at: "2026-08-25T16:00:00.000Z",
+      bar_status: "COMPLETE",
+      freshness: "FRESH",
       delta: "-25",
       delta_convention: "SIGNED_FORWARD_DELTA_PERCENT",
       delta_origin: "DERIVED",
       iv_origin: "PROVIDER_OBSERVATION",
+      provider: "tastytrade-dxlink",
+      dataset: "historical-spx-candidate-universe/1.0.0",
+      resolution: "5m",
+      alignment: "MIDNIGHT",
+      source_cohort_id: "fixture-5m-cohort",
       model: {
         delta_model: "BLACK_76_FORWARD_DELTA",
         forward_model: "SPOT_FORWARD_ZERO_CARRY",
@@ -481,6 +493,62 @@ describe("Double Diagonal IV measurement contract", () => {
     );
   });
 
+  test("uses required forward timestamps for bracket and front/back skew", () => {
+    const directInput = fixtureInput();
+    directInput.request.measurement_profile.matched_coordinates = [
+      {
+        measurement_id: "put-forward-skew",
+        measurement_basis: "MATCHED_DELTA",
+        front_expiration: "2026-09-15T20:00:00.000Z",
+        back_expiration: "2026-09-29T20:00:00.000Z",
+        option_side: "PUT",
+        target_delta: "25",
+        delta_convention: "ABSOLUTE_FORWARD_DELTA_PERCENT",
+        tolerance: "0",
+        missing_policy: "NOT_AVAILABLE",
+        max_front_back_skew_ms: 60000,
+      },
+    ];
+    directInput.observations.find(
+      (observation) => observation.source_symbol === "FRONT-PUT-25D",
+    ).forward.source_timestamp = "2026-08-25T14:29:00.000Z";
+    const direct = matched(
+      normalizeDdIvMeasurements(directInput),
+      "put-forward-skew",
+    );
+
+    expect(direct).toMatchObject({
+      status: "NOT_AVAILABLE",
+      temporal_skew_ms: 240000,
+      front: {
+        effective_available_at: "2026-08-25T14:29:00.000Z",
+      },
+      back: {
+        effective_available_at: "2026-08-25T14:25:00.000Z",
+      },
+    });
+    expect(direct.warnings).toContain(
+      "MATCHED_FRONT_BACK_TEMPORAL_SKEW_EXCEEDED",
+    );
+
+    const interpolation = moneynessInterpolationInput();
+    interpolation.request.measurement_profile.matched_coordinates[0]
+      .interpolation.max_bracket_skew_ms = 60000;
+    interpolation.observations.find(
+      (observation) => observation.source_symbol === "FRONT-PUT-7700",
+    ).forward.source_timestamp = "2026-08-25T14:29:00.000Z";
+    const bracket = matched(
+      normalizeDdIvMeasurements(interpolation),
+      "put-atm-log-moneyness-interpolated",
+    );
+
+    expect(bracket.status).toBe("NOT_AVAILABLE");
+    expect(bracket.front.status).toBe("NOT_AVAILABLE");
+    expect(bracket.warnings).toContain(
+      "INTERPOLATION_BRACKET_TEMPORAL_SKEW_EXCEEDED",
+    );
+  });
+
   test("matches and interpolates by declared ln(K/F) without requiring delta", () => {
     const direct = matched(
       normalizeDdIvMeasurements(fixtureInput()),
@@ -591,6 +659,28 @@ describe("Double Diagonal IV measurement contract", () => {
         "MISSING_FORWARD:FRONT-PUT-20D",
         "MISSING_FORWARD_MODEL:FRONT-PUT-25D",
       ]),
+    );
+  });
+
+  test("includes selected-leg policy in its cohort identity", () => {
+    const baselineInput = fixtureInput();
+    const weightedInput = fixtureInput();
+    weightedInput.request.measurement_profile.selected_leg.combined = {
+      aggregation: "WEIGHTED_ARITHMETIC_MEAN",
+      put_weight: "0.9",
+      call_weight: "0.1",
+    };
+
+    const baseline = normalizeDdIvMeasurements(baselineInput);
+    const weighted = normalizeDdIvMeasurements(weightedInput);
+
+    expect(
+      weighted.selected_leg_measurement.combined.spread_decimal,
+    ).not.toBe(
+      baseline.selected_leg_measurement.combined.spread_decimal,
+    );
+    expect(weighted.selected_leg_measurement.cohort_id).not.toBe(
+      baseline.selected_leg_measurement.cohort_id,
     );
   });
 

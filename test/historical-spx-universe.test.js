@@ -116,6 +116,9 @@ describe("historical SPX candidate universe", () => {
       requested_contract_count: 144,
     });
     expect(plan.request_id).toMatch(/^[a-f0-9]{64}$/);
+    expect(plan.request_id).toBe(
+      "bf43ffa425a169ca33d8464fc4cdb815c62cc3938432a9fa711a22a68c670580",
+    );
     expect(plan.resolution_profile).toMatchObject({
       profile_id: "DEFAULT_5M",
       requested_aggregation: "5m",
@@ -486,6 +489,11 @@ describe("historical SPX candidate universe", () => {
       fixtureCandles(fixture, evidenceRecord),
       {
         ...REQUEST,
+        resolution_profile: {
+          profile_id: "DEFAULT_5M",
+          profile_version: "1.0.0",
+          provider_id: "licensed-provider-b",
+        },
         dd_iv_measurement: {
           contract_version: "1.0.0",
           candidate_id: "fixture-dd-candidate",
@@ -620,6 +628,19 @@ describe("historical SPX candidate universe", () => {
             leg.available_at <= REQUEST.as_of,
         ),
     ).toBe(true);
+    const frozenLeg =
+      result.dd_iv_measurement_handoff.selected_leg_measurement
+        .frozen_legs[0];
+    expect(
+      frozenLeg.lineage.find((item) =>
+        item.source.startsWith("licensed-provider-b:"),
+      ),
+    ).toMatchObject({ origin: "PROVIDER_OBSERVATION" });
+    expect(
+      frozenLeg.lineage.find(
+        (item) => item.source === "tastytrade-research-mcp:derived",
+      ),
+    ).toMatchObject({ origin: "DERIVED" });
     expect(result).not.toHaveProperty("term_structure");
   });
 
