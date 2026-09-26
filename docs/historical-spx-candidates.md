@@ -1,37 +1,34 @@
 # Historical SPX candidate discovery
 
-`tastytrade_discover_historical_spx_candidates` provides checkpoint-safe,
-selector-based SPX contract discovery for grading regression. It returns a
-contract only when Backtester selected it exactly at the requested `as_of`;
-otherwise it fails closed. It does not reconstruct or claim a full historical
-option chain.
+`tastytrade_discover_historical_spx_candidates` provides timestamp-safe,
+selector-based SPX contract discovery for `REGRESSION_RESEARCH`. It supports
+arbitrary historical checkpoints, including 07:30 PT, without using option
+evidence observed after `as_of`.
+
+The tool returns `HISTORICAL_SELECTOR_CANDIDATE_SET`, not a full historical
+option chain. It uses two provider-faithful paths:
+
+1. deterministic SPXW reconstruction from completed DXLink candles for
+   `DELTA` and `PERCENTAGE_OTM`; and
+2. exact-timestamp Backtester selection as a fallback.
+
+If neither path has sufficient timestamp-safe evidence, the selector fails
+closed.
 
 ## Provider capability findings
 
-Verified against the tastytrade OpenAPI definitions and a live Backtester
-spike on 2026-09-25:
+Verified against the tastytrade OpenAPI definitions and live provider probes:
 
-| Provider surface | Verified capability | Historical snapshot limitation |
+| Provider surface | Verified capability | Limitation |
 | --- | --- | --- |
-| [`GET /option-chains/{symbol}`](https://developer.tastytrade.com/openapi/instruments.yaml) | Current equity-option instrument chain | The path accepts only `symbol`; no documented `as_of` or historical timestamp parameter |
-| [`GET /market-data/by-type`](https://developer.tastytrade.com/openapi/market-data.json) | Current quotes for known symbols | The query accepts symbol lists by instrument type; no documented historical quote timestamp |
-| [`POST /backtests`](https://developer.tastytrade.com/openapi/backtesting.yaml) | Historical selection by delta, percentage OTM, current-price offset, premium, and DTE | The documented `EntryConditions` has frequency, day, concurrency, and VIX fields, but no time-of-day field; the documented `Trial` schema contains only open time, close time, and P/L |
-| `GET /backtests/{id}/logs` | Live responses exposed the selected option's side, strike, expiration, fill price, and provider `internalSymbol` | The response body is not documented by the OpenAPI schema, so these identity fields are explicitly best-effort |
-| `POST /simulate-trade` | Accepts the recovered provider `internalSymbol` and returns a point-in-time price and delta | Does not provide historical bid/ask, IV, skew, term structure, OI, or volume |
+| `GET /option-chains/{symbol}` | Current equity-option instrument chain and symbology | No documented historical `as_of` parameter |
+| `GET /market-data/by-type` | Current quotes for known symbols | No documented historical quote timestamp |
+| DXLink historical `Candle` | Historical SPX and known SPXW option OHLCV, IV, and OI | Requires the symbol to be known; it does not enumerate a historical chain |
+| `POST /backtests` | Historical selection by delta, percentage OTM, current-price offset, premium, and DTE | Documented `EntryConditions` has no time-of-day field |
+| `GET /backtests/{id}/logs` | Live responses expose selected side, strike, expiration, fill price, and provider `internalSymbol` | Identity fields are undocumented and accepted only at an exact checkpoint timestamp |
+| `POST /simulate-trade` | Accepts recovered provider symbols and generated SPXW OCC symbols | Historical snapshots are available only at provider sampling times, not every arbitrary checkpoint |
 
-The identity capability spike used a 20-delta, 28-DTE SPX put selector over
-2026-04-14 through 2026-04-15. The logs selected:
-
-- `equity-option.SPX.20260512200000.P.6690000` at
-  `2026-04-14T19:45:00Z`; and
-- `equity-option.SPX.20260513200000.P.6740000` at
-  `2026-04-15T19:45:00Z`.
-
-An exact point request to `/simulate-trade` for the first provider symbol
-returned price `42.35` and delta `-20.17` at
-`2026-04-14T19:45:00Z`.
-
-The checkpoint-time capability spike submitted the undocumented field:
+The Backtester accepted an undocumented request field:
 
 ```json
 {
@@ -42,17 +39,59 @@ The checkpoint-time capability spike submitted the undocumented field:
 }
 ```
 
-The provider accepted the request but ignored `entryTime`; the 2026-08-25 SPX
-trial still opened at `2026-08-25T19:45:00Z` (12:45 PT), after the requested
-07:30 PT checkpoint. The adapter never sends or trusts this field. The
-sanitized observation is captured in
+It silently ignored `entryTime`; the 2026-08-25 SPX trial still opened at
+`2026-08-25T19:45:00Z` (12:45 PT), after the requested 07:30 PT checkpoint.
+The adapter never sends or trusts this field. The sanitized observation is in
 [`test/fixtures/spx-candidate-entry-time-ignored-2026-08-25.json`](../test/fixtures/spx-candidate-entry-time-ignored-2026-08-25.json).
 
-Because the log identity fields are undocumented, production use is accepted
-only behind normalization and the captured contract fixture
-[`test/fixtures/spx-candidate-2026-04-15.json`](../test/fixtures/spx-candidate-2026-04-15.json).
-If the provider shape drifts, the tool returns `PARTIAL` or `NOT_AVAILABLE`
-instead of reconstructing a symbol.
+## Deterministic Path B reconstruction
+
+For each request, the reconstruction path:
+
+1. Retrieves the latest completed 5-minute `SPX` candle. A candle is usable
+   only when `source_time + 5 minutes <= as_of`.
+2. Builds eligible SPXW PM expiration dates from the requested calendar DTE.
+   A weekday target uses that exact expiration date; a weekend target uses
+   the nearest eligible weekdays inside the requested DTE range.
+3. Builds a bounded 5-point strike ladder:
+   - `PERCENTAGE_OTM` centers the ladder on the requested spot-relative
+     strike.
+   - `DELTA` uses the SPX candle IV only to center a wider ladder. The final
+     contract is selected from contract-specific historical evidence.
+4. Adds paired call/put parity anchors around SPX spot.
+5. Constructs documented SPXW OCC and streamer symbols, then retrieves the
+   option candles in batches of at most 20 symbols.
+6. Keeps only complete bars available by `as_of` and no more than 60 minutes
+   old. Contract existence is inferred only when DXLink returns historical
+   evidence for that exact generated symbol.
+7. Reconstructs an expiration-specific forward from a call and put at the
+   same strike and candle timestamp:
+
+   ```text
+   F = K + call_close - put_close
+   ```
+
+   The calculation intentionally omits a discount factor because no separate
+   historical rates source is introduced. This limitation is explicit in the
+   output warnings.
+8. Reconstructs contract delta with the contract candle IV and a
+   Black-76-style forward delta:
+
+   ```text
+   d1 = (ln(F / K) + 0.5 * sigma^2 * T) / (sigma * sqrt(T))
+   call_delta = N(d1)
+   put_delta = N(d1) - 1
+   ```
+
+9. Selects deterministically by selector error, observation age, requested
+   expiration distance, then strike.
+
+The bounded universe is not represented as a full historical chain. Missing
+IV, missing timestamp-aligned parity, stale observations, incomplete bars, or
+provider snapshot failures cannot be replaced by future or current data.
+
+`CURRENT_PRICE_OFFSET` and `PREMIUM` remain eligible for the exact-timestamp
+Backtester fallback. They are not success-shaped by the reconstruction path.
 
 ## MCP input
 
@@ -60,118 +99,134 @@ instead of reconstructing a symbol.
 {
   "request": {
     "underlying": "SPX",
-    "as_of": "2026-04-15T14:30:00Z",
+    "as_of": "2026-08-25T14:30:00Z",
     "min_dte": 21,
     "max_dte": 35,
-    "sides": ["PUT"],
+    "sides": ["CALL", "PUT"],
     "selector_grid": [
       {
         "method": "DELTA",
         "value": 20,
         "days_until_expiration": 28
+      },
+      {
+        "method": "PERCENTAGE_OTM",
+        "value": 0.01,
+        "days_until_expiration": 28
       }
     ],
-    "lookback_calendar_days": 7,
+    "lookback_calendar_days": 0,
     "phase": "REGRESSION_RESEARCH",
     "references": {
-      "checkpoint_id": "spx-2026-04-15-0730-pt"
+      "checkpoint_id": "spx-2026-08-25-0730-pt"
     }
   }
 }
 ```
 
-Supported selector methods are `DELTA`, `PERCENTAGE_OTM`,
-`CURRENT_PRICE_OFFSET`, and `PREMIUM`. The cross-product of `selector_grid`
-and `sides` is capped at 12 provider jobs per MCP call.
+The selector/side cross-product is capped at 12 attempts.
+
+## 2026-08-25 07:30 PT validation
+
+The live four-selector smoke test completed without creating Backtester jobs:
+
+| Side | Selector | OCC/provider symbol | Strike | Price | Reconstructed delta | Observation age |
+| --- | --- | --- | ---: | ---: | ---: | ---: |
+| CALL | Delta 20 | `SPXW  260922C07900000` | 7900 | 24.52 | 18.766569 | 30 minutes |
+| CALL | 1% OTM | `SPXW  260922C07740000` | 7740 | 82.09 | 42.642850 | 40 minutes |
+| PUT | Delta 20 | `SPXW  260922P07425000` | 7425 | 38.50 | -20.712880 | 35 minutes |
+| PUT | 1% OTM | `SPXW  260922P07590000` | 7590 | 71.58 | -35.884120 | 20 minutes |
+
+All four candidates have:
+
+- `selected_at = 2026-08-25T14:30:00.000Z`;
+- exact expiration `2026-09-22T20:00:00.000Z`;
+- exact SPXW OCC identity used for `provider_symbol`,
+  `simulation_symbol`, and `occ_symbol`;
+- no provenance timestamp after `as_of`; and
+- `RECONSTRUCTED_CANDIDATE_FOUND` with no Backtester job ID.
+
+The fixture is captured in
+[`test/fixtures/spx-candidate-path-b-2026-08-25.json`](../test/fixtures/spx-candidate-path-b-2026-08-25.json).
 
 ## Normalized output
 
-The result uses:
+`status` is:
 
-- `evidence_type: HISTORICAL_SELECTOR_CANDIDATE_SET`;
-- `evidence_phase: REGRESSION_RESEARCH`;
-- `status: COMPLETE` when every requested selector/side produced an
-  exact-checkpoint identity plus point-in-time price and delta;
-- `status: PARTIAL` when at least one exact-checkpoint contract is available
-  but the requested set or enrichment is incomplete; and
-- `status: NOT_AVAILABLE` when no exact-checkpoint contract can be recovered.
+- `COMPLETE` when every requested selector/side has price, price effect, and
+  selected historical delta;
+- `PARTIAL` when at least one exact candidate is available but the requested
+  set or enrichment is incomplete; or
+- `NOT_AVAILABLE` when no timestamp-safe candidate can be recovered.
 
-Each returned contract preserves:
+Each reconstructed contract preserves:
 
-- exact provider `internalSymbol`, also usable as `simulation_symbol`;
-- expiration, strike, and option side;
-- requested selector method, selector value, and DTE;
-- DTE at selection and DTE at the requested checkpoint;
-- provider selection timestamp;
-- simulated price and selected historical delta at that exact timestamp;
-- underlying price at selection when present in logs;
+- generated-and-evidence-validated SPXW OCC identity;
+- expiration, strike, option side, requested selector, and DTE;
+- `selected_at`, which is always the requested checkpoint;
+- the latest usable option close and contract IV;
+- interval volume and open interest when DXLink supplies them;
+- reconstructed historical delta;
+- checkpoint SPX close;
 - observation age relative to `as_of`;
-- field-level source timestamps and endpoint provenance; and
+- field-level source timestamps and provenance; and
 - explicit confidence and limitation warnings.
 
-`occ_symbol` remains `null` because Backtester logs do not expose a documented
-OCC symbol. No OCC root is guessed. The exact provider symbol is sufficient
-for `/simulate-trade`.
+The option observation can precede `selected_at`. Its availability timestamp
+is retained in provenance, while `observation_age_ms` makes the staleness
+explicit.
 
-The current provider path requires `selected_at == as_of`, so
-`observation_age_ms` is zero for every returned contract. The field remains in
-the stable result contract so downstream replay can preserve the selected
-timestamp and explicitly reason about age if a future provider-faithful
-reconstruction path supports earlier observations.
+Capability semantics:
+
+- `deterministic_checkpoint_reconstruction` means at least one returned
+  candidate came from Path B.
+- `historical_contract_universe_reconstructed` means a bounded generated
+  universe was validated with historical DXLink evidence.
+- `exact_leg_simulation` means the exact returned identifier is accepted by
+  `/simulate-trade`.
+- `exact_checkpoint_simulation` is separate. It is `false` for reconstructed
+  07:30 candidates because Backtester does not expose an exact 07:30
+  simulation snapshot.
+
+The live `SPXW  260922C07900000` identifier was accepted by
+`/simulate-trade` at the provider-supported `2026-08-25T19:45:00Z` sample.
+Candidate discovery does not use that later snapshot.
 
 ## Anti-lookahead behavior
 
-1. The tool derives the SPX session date in `America/New_York` and submits a
-   bounded lookback window for each selector/side.
-2. It accepts only a trial whose `openDateTime` equals `as_of`.
-3. Earlier trials are counted in `STALE_TRIALS_EXCLUDED`; later trials are
-   counted in `FUTURE_TRIALS_EXCLUDED`. Neither can become a candidate.
-4. It separately requires the opening order timestamp to equal `as_of`.
-5. It validates the recovered contract against the requested DTE range at
-   `as_of`.
-6. Exact-leg enrichment calls `/simulate-trade` with
-   `startTime == endTime == selected_at`; only a snapshot with that exact
-   timestamp is accepted.
-7. Raw Backtester logs, close timestamps, P/L, transactions, and later
-   snapshots are never included in the normalized result.
-8. Candidate discovery and forward outcome simulation remain separate
+1. Every candle must be complete by `as_of`; a bar starting exactly at
+   `as_of` is excluded.
+2. Option observations older than 60 minutes are excluded.
+3. Contract price and IV come from the same option candle.
+4. Delta requires a call/put parity pair at an identical timestamp.
+5. Future DXLink candles never enter the candidate universe or selector.
+6. Backtester trials and opening orders must both equal `as_of`; stale and
+   future trials remain excluded.
+7. Current chain, quote, Greek, or IV values never fill historical fields.
+8. Raw future closes, P/L, and outcome fields never enter candidate output.
+9. Candidate discovery and forward outcome simulation remain separate
    phases.
 
-For the fixture checkpoint `2026-04-15T14:30:00Z` (07:30 PT), the
-`2026-04-14T19:45:00Z` selection is stale and the same-day
-`2026-04-15T19:45:00Z` selection is in the future. The tool returns
-`NOT_AVAILABLE`; it does not substitute either contract. When `as_of` is
-exactly `2026-04-14T19:45:00Z`, the exact provider symbol, expiration, strike,
-selection timestamp, and zero observation age remain available for downstream
-exact-leg simulation.
-
-## Unsupported historical fields
-
-The following fields remain unavailable and must stay `UNKNOWN`/`null` in
-grading:
+## Remaining limitations
 
 | Field | Status |
 | --- | --- |
-| Full historical chain/universe | Not available |
-| Historical bid/ask surface | Not available |
-| ATM IV | Not available |
-| Contract or surface IV from this capability | Not available |
+| Full historical chain | Not available; only a bounded deterministic universe is reconstructed |
+| Historical bid/ask | Not available |
+| Contract candle IV | Available when the option candle supplies it |
+| ATM IV surface | Not available |
 | Skew | Not available |
 | Term structure | Not available |
-| Open interest | Not available |
-| Volume | Not available |
+| Interval volume | Available when the option candle supplies it |
+| Open interest | Available when the option candle supplies it |
+| Exact arbitrary-time `/simulate-trade` snapshot | Not available |
 
-The output always keeps `surface.atm_iv`, `surface.skew`, and
-`surface.term_structure` as `null` and exposes matching capability flags and
-warnings. Current option-chain, quote, Greek, or IV values must never be used
-to fill these historical fields.
+`surface.atm_iv`, `surface.skew`, and `surface.term_structure` remain `null`.
+Aggregate selector backtests remain discovery evidence only and must never be
+reported as exact-leg replay, execution evidence, win rate, expectancy, or
+P/L.
 
-Aggregate selector backtests are discovery evidence only. They must not be
-reported as exact-leg historical replay, execution evidence, win rate,
-expectancy, or P/L. Exact forward-path analysis must start from a returned
-`simulation_symbol` in a separate regression step.
-
-`spx-spread-historical-replay` must treat `NOT_AVAILABLE` as a frozen
-no-candidate checkpoint. It may build any supported spread family only from
-contracts returned for that exact checkpoint, then pass their unchanged
-`simulation_symbol` values into exact-leg forward simulation.
+`spx-spread-historical-replay` may freeze the returned exact symbols at the
+checkpoint. Forward analysis must then use only future evidence in a separate
+phase and must preserve whether the provider path is exact checkpoint
+simulation or historical-candle evidence.
