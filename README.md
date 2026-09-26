@@ -180,8 +180,11 @@ time-of-day field, and a live request containing undocumented
 
 For `DELTA` and `PERCENTAGE_OTM`, the adapter reconstructs a bounded SPXW
 universe from generated OCC/streamer symbols and completed DXLink candles.
-Omitting `resolution_profile` preserves the 5-minute cohort; native-hour RTH
-research requires explicit `HOURLY_VALUATION_RESEARCH`. It enforces
+Omitting `resolution_profile` preserves the 5-minute cohort; strict native-hour RTH
+research requires explicit `HOURLY_VALUATION_RESEARCH`. When DXLink labels SPXW
+hour bars on its provider clock instead of the 09:30 ET session anchor, callers
+must opt into the separate `HOURLY_PROVIDER_ALIGNED_RESEARCH` cohort; those bars
+are never relabeled as session-aligned. It enforces
 `available_at <= as_of`, profile age/skew limits, aligned call/put parity for
 the forward, and contract-candle IV for Black-76-style delta. Selection is
 deterministic by selector error, observation age, DTE distance, and strike.
