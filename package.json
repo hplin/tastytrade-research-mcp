@@ -15,6 +15,7 @@
     "start:http": "node dist/http.js",
     "handoff:dd-iv": "npm run build --silent && node scripts/generate-dd-iv-handoff.mjs",
     "handoff:dd-iv:check": "npm run build --silent && node scripts/generate-dd-iv-handoff.mjs --check",
+    "live:historical-quote-capability": "npm run build --silent && node --env-file-if-exists=.env scripts/live-historical-quote-capability.mjs",
     "live:resolution-gate": "npm run build --silent && node --env-file-if-exists=.env scripts/live-resolution-profile-gate.mjs",
     "report:evidence-cache": "npm run build --silent && node scripts/evidence-cache-report.mjs",
     "typecheck": "tsc --noEmit",
