@@ -33,6 +33,7 @@ The project is intentionally separate from the official
 | --- | --- |
 | `tastytrade_price_option_package` | Price verticals, iron condors, and double diagonals with explicit native/synthetic provenance |
 | `tastytrade_discover_historical_spx_candidates` | Reconstruct timestamp-safe historical SPXW candidates from completed DXLink evidence, with exact-timestamp Backtester fallback |
+| `tastytrade_get_historical_spx_candidate_universe` | Return a bounded multi-strike, multi-expiration SPXW universe for downstream deterministic spread construction |
 | `tastytrade_prepare_spx_spread` | Deterministically normalize SPX legs without calling an upstream service |
 | `tastytrade_simulate_spx_spread` | Run exact-leg SPX historical simulation and normalize its result |
 | `tastytrade_create_spx_spread_backtest` | Submit supported SPX structures through relative Backtester selectors |
@@ -145,6 +146,23 @@ Delta-20 and 1%-OTM candidates without creating Backtester jobs.
 The full provider findings, contract, anti-lookahead rules, and limitations
 are documented in
 [`docs/historical-spx-candidates.md`](docs/historical-spx-candidates.md).
+
+## Historical SPX candidate universe
+
+`tastytrade_get_historical_spx_candidate_universe` expands checkpoint-safe
+evidence from selector winners into a caller-bounded strike grid. By default
+it covers the nearest min/mid/max DTE SPXW expirations, both option sides, and
+a 25-point strike step.
+
+Generated OCC identity is returned only after DXLink supplies a completed
+historical candle for that exact symbol. Contracts without timestamp-safe
+evidence are omitted and counted as coverage gaps. The endpoint preserves
+price, reconstructed delta, contract IV, OI, volume, observation age, and
+field-level provenance when available; it never selects the final spread.
+
+See
+[`docs/historical-spx-universe.md`](docs/historical-spx-universe.md)
+for the input contract, reconstruction rules, and live checkpoint findings.
 
 ## Historical fill verification
 

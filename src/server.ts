@@ -23,6 +23,10 @@ import {
   type HistoricalSpxCandidatesInput,
 } from "./historical-spx-candidates.js";
 import {
+  getHistoricalSpxCandidateUniverse,
+  type HistoricalSpxCandidateUniverseInput,
+} from "./historical-spx-reconstruction.js";
+import {
   verifyHistoricalFillWithBacktester,
   type HistoricalFillBacktesterInput,
 } from "./historical-fill.js";
@@ -210,6 +214,58 @@ const HISTORICAL_SPX_CANDIDATES_SCHEMA = {
         "underlying",
         "as_of",
         "selector_grid",
+        "phase",
+      ],
+      additionalProperties: false,
+    },
+  },
+  required: ["request"],
+  additionalProperties: false,
+} as const;
+
+const HISTORICAL_SPX_UNIVERSE_SCHEMA = {
+  type: "object",
+  properties: {
+    request: {
+      type: "object",
+      properties: {
+        underlying: { type: "string", enum: ["SPX"] },
+        as_of: RFC3339_SCHEMA,
+        min_dte: { type: "integer", minimum: 1, maximum: 365 },
+        max_dte: { type: "integer", minimum: 1, maximum: 365 },
+        strike_min: { type: "integer", minimum: 1, maximum: 100000 },
+        strike_max: { type: "integer", minimum: 1, maximum: 100000 },
+        strike_step: { type: "integer", minimum: 1, maximum: 1000 },
+        option_sides: {
+          type: "array",
+          minItems: 1,
+          maxItems: 2,
+          uniqueItems: true,
+          items: { type: "string", enum: ["CALL", "PUT"] },
+        },
+        expirations: {
+          type: "array",
+          minItems: 1,
+          maxItems: 20,
+          uniqueItems: true,
+          items: DATE_SCHEMA,
+        },
+        max_contracts: {
+          type: "integer",
+          minimum: 1,
+          maximum: 1000,
+        },
+        phase: {
+          type: "string",
+          enum: ["REGRESSION_RESEARCH"],
+        },
+        references: REFERENCES_SCHEMA,
+      },
+      required: [
+        "underlying",
+        "as_of",
+        "strike_min",
+        "strike_max",
         "phase",
       ],
       additionalProperties: false,
@@ -560,6 +616,12 @@ export const TOOLS: Tool[] = [
     inputSchema: HISTORICAL_SPX_CANDIDATES_SCHEMA,
   },
   {
+    name: "tastytrade_get_historical_spx_candidate_universe",
+    description:
+      "Return a bounded timestamp-safe SPXW contract universe across requested strikes, sides, and min/mid/max DTE expirations. Exact OCC identity is returned only when completed DXLink evidence exists at or before as_of; the tool is research-only and never selects a final spread.",
+    inputSchema: HISTORICAL_SPX_UNIVERSE_SCHEMA,
+  },
+  {
     name: "tastytrade_prepare_spx_spread",
     description:
       "Normalize an SPX debit vertical, credit vertical, iron condor, or double diagonal into deterministic Backtester and exact-leg simulation requests without submitting it.",
@@ -740,6 +802,18 @@ export function createResearchServer(
             backtester,
             requestArg<HistoricalSpxCandidatesInput>(args),
             reconstructionCandles,
+          ),
+        );
+      case "tastytrade_get_historical_spx_candidate_universe":
+        if (!reconstructionCandles) {
+          throw new Error(
+            "Historical SPX candidate universe requires batched candle retrieval.",
+          );
+        }
+        return toolResult(
+          await getHistoricalSpxCandidateUniverse(
+            reconstructionCandles,
+            requestArg<HistoricalSpxCandidateUniverseInput>(args),
           ),
         );
       case "tastytrade_prepare_spx_spread":
