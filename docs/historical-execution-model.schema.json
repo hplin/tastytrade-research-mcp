@@ -1,0 +1,650 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/hplin/tastytrade-research-mcp/docs/historical-execution-model.schema.json",
+  "title": "Caller-frozen historical simulated execution",
+  "type": "object",
+  "required": [
+    "contract_version",
+    "simulation_id",
+    "evidence_class",
+    "status",
+    "run_id",
+    "frozen_decision_id",
+    "frozen_candidate_id",
+    "candidate_fingerprint",
+    "family",
+    "inventory",
+    "study_stage",
+    "prior_outcome_accessed",
+    "source_manifest_ids",
+    "source_evidence_ids",
+    "source_contract",
+    "grading_profile",
+    "candidate_construction_profile",
+    "measurement_basis",
+    "decision_frozen_at",
+    "candidate_frozen_at",
+    "profile_frozen_at",
+    "outcome_accessed_at",
+    "quantity",
+    "horizon",
+    "execution_profile",
+    "fee_model",
+    "evidence_strength",
+    "entry",
+    "exit",
+    "pnl",
+    "broker_fill_verified",
+    "mutates_live_event",
+    "mutates_source_evidence",
+    "limitations",
+    "warnings"
+  ],
+  "properties": {
+    "contract_version": {
+      "const": "1.0.0"
+    },
+    "simulation_id": {
+      "$ref": "#/$defs/contentId"
+    },
+    "evidence_class": {
+      "const": "SIMULATED_EXECUTION"
+    },
+    "status": {
+      "enum": [
+        "SIMULATED_FILLED",
+        "NO_FILL_UNDER_MODEL",
+        "NOT_ASSESSABLE",
+        "OPEN_EXIT_UNRESOLVED"
+      ]
+    },
+    "run_id": {
+      "$ref": "#/$defs/nonEmptyString"
+    },
+    "frozen_decision_id": {
+      "$ref": "#/$defs/nonEmptyString"
+    },
+    "frozen_candidate_id": {
+      "$ref": "#/$defs/nonEmptyString"
+    },
+    "candidate_fingerprint": {
+      "$ref": "#/$defs/nonEmptyString"
+    },
+    "family": {
+      "$ref": "#/$defs/family"
+    },
+    "inventory": {
+      "type": "array",
+      "minItems": 2,
+      "maxItems": 4,
+      "items": {
+        "type": "object"
+      }
+    },
+    "study_stage": {
+      "enum": [
+        "IN_SAMPLE",
+        "OUT_OF_SAMPLE"
+      ]
+    },
+    "prior_outcome_accessed": {
+      "type": "boolean"
+    },
+    "source_manifest_ids": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {
+        "$ref": "#/$defs/contentId"
+      }
+    },
+    "source_evidence_ids": {
+      "type": "object",
+      "required": [
+        "entry",
+        "exit"
+      ],
+      "properties": {
+        "entry": {
+          "$ref": "#/$defs/contentId"
+        },
+        "exit": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/contentId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "source_contract": {
+      "$ref": "#/$defs/sourceContract"
+    },
+    "grading_profile": {
+      "$ref": "#/$defs/versionedHash"
+    },
+    "candidate_construction_profile": {
+      "$ref": "#/$defs/versionedHash"
+    },
+    "measurement_basis": {
+      "type": "object",
+      "required": [
+        "basis_id",
+        "version",
+        "hash"
+      ],
+      "properties": {
+        "basis_id": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "version": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "hash": {
+          "$ref": "#/$defs/contentId"
+        }
+      },
+      "additionalProperties": false
+    },
+    "decision_frozen_at": {
+      "$ref": "#/$defs/timestamp"
+    },
+    "candidate_frozen_at": {
+      "$ref": "#/$defs/timestamp"
+    },
+    "profile_frozen_at": {
+      "$ref": "#/$defs/timestamp"
+    },
+    "outcome_accessed_at": {
+      "$ref": "#/$defs/timestamp"
+    },
+    "quantity": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "horizon": {
+      "type": "object",
+      "required": [
+        "kind",
+        "trading_days",
+        "scheduled_exit_at"
+      ],
+      "properties": {
+        "kind": {
+          "const": "FIXED_TRADING_DAYS"
+        },
+        "trading_days": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "scheduled_exit_at": {
+          "$ref": "#/$defs/timestamp"
+        }
+      },
+      "additionalProperties": false
+    },
+    "execution_profile": {
+      "$ref": "#/$defs/executionProfile"
+    },
+    "fee_model": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/feeModel"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "evidence_strength": {
+      "enum": [
+        "QUOTE_BACKED",
+        "REFERENCE_MODEL"
+      ]
+    },
+    "entry": {
+      "$ref": "#/$defs/phase"
+    },
+    "exit": {
+      "$ref": "#/$defs/phase"
+    },
+    "pnl": {
+      "$ref": "#/$defs/pnl"
+    },
+    "broker_fill_verified": {
+      "const": false
+    },
+    "mutates_live_event": {
+      "const": false
+    },
+    "mutates_source_evidence": {
+      "const": false
+    },
+    "limitations": {
+      "$ref": "#/$defs/stringArray"
+    },
+    "warnings": {
+      "$ref": "#/$defs/stringArray"
+    }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "timestamp": {
+      "type": "string",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d{1,9})?(?:Z|[+-]\\d{2}:\\d{2})$"
+    },
+    "contentId": {
+      "type": "string",
+      "pattern": "^sha256:[a-f0-9]{64}$"
+    },
+    "nonEmptyString": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 200
+    },
+    "decimal": {
+      "type": "string",
+      "pattern": "^[+-]?(?:0|[1-9][0-9]*)(?:\\.[0-9]+)?$"
+    },
+    "nullableDecimal": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/decimal"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "stringArray": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "family": {
+      "enum": [
+        "DEBIT_VERTICAL",
+        "CREDIT_VERTICAL",
+        "IRON_CONDOR",
+        "DOUBLE_DIAGONAL"
+      ]
+    },
+    "coverage": {
+      "enum": [
+        "COMPLETE",
+        "PARTIAL",
+        "NONE"
+      ]
+    },
+    "versionedHash": {
+      "type": "object",
+      "required": [
+        "version",
+        "hash"
+      ],
+      "properties": {
+        "version": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "hash": {
+          "$ref": "#/$defs/contentId"
+        }
+      },
+      "additionalProperties": false
+    },
+    "resolution": {
+      "type": "object",
+      "required": [
+        "profile_id",
+        "profile_version",
+        "native_resolution",
+        "effective_resolution"
+      ],
+      "properties": {
+        "profile_id": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "profile_version": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "native_resolution": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "effective_resolution": {
+          "$ref": "#/$defs/nonEmptyString"
+        }
+      },
+      "additionalProperties": false
+    },
+    "sourceContract": {
+      "type": "object",
+      "required": [
+        "provider_id",
+        "dataset_id",
+        "license_scope_id",
+        "resolution_profile",
+        "source_revision"
+      ],
+      "properties": {
+        "provider_id": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "dataset_id": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "license_scope_id": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "resolution_profile": {
+          "$ref": "#/$defs/resolution"
+        },
+        "source_revision": {
+          "$ref": "#/$defs/nonEmptyString"
+        }
+      },
+      "additionalProperties": false
+    },
+    "executionProfile": {
+      "type": "object",
+      "required": [
+        "profile_id",
+        "profile_version",
+        "profile_hash",
+        "model",
+        "quote_source",
+        "reference_type",
+        "latency_ms",
+        "minimum_package_size",
+        "tick_size",
+        "midpoint_to_adverse_fraction",
+        "additional_cost_per_package",
+        "queue_model",
+        "market_impact_model",
+        "atomic_package"
+      ],
+      "properties": {
+        "profile_id": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "profile_version": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "profile_hash": {
+          "$ref": "#/$defs/contentId"
+        },
+        "model": {
+          "enum": [
+            "QUOTE_LIMIT_TOUCH",
+            "QUOTE_CROSS",
+            "QUOTE_PRICE_IMPROVEMENT",
+            "REFERENCE_COST"
+          ]
+        },
+        "quote_source": {
+          "oneOf": [
+            {
+              "enum": [
+                "NATIVE_PACKAGE",
+                "ALIGNED_LEG_QUOTES"
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "reference_type": {
+          "oneOf": [
+            {
+              "enum": [
+                "TRADE_REFERENCE",
+                "CANDLE_REFERENCE",
+                "MODEL_REFERENCE"
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "latency_ms": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "minimum_package_size": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "tick_size": {
+          "$ref": "#/$defs/decimal"
+        },
+        "midpoint_to_adverse_fraction": {
+          "$ref": "#/$defs/nullableDecimal"
+        },
+        "additional_cost_per_package": {
+          "$ref": "#/$defs/decimal"
+        },
+        "queue_model": {
+          "const": "NOT_MODELED"
+        },
+        "market_impact_model": {
+          "const": "NOT_MODELED"
+        },
+        "atomic_package": {
+          "const": true
+        }
+      },
+      "additionalProperties": false
+    },
+    "feeModel": {
+      "type": "object",
+      "required": [
+        "fee_model_id",
+        "fee_model_version",
+        "fee_model_hash",
+        "scope",
+        "amount_per_contract_per_leg_side"
+      ],
+      "properties": {
+        "fee_model_id": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "fee_model_version": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "fee_model_hash": {
+          "$ref": "#/$defs/contentId"
+        },
+        "scope": {
+          "const": "PER_CONTRACT_PER_LEG_PER_SIDE"
+        },
+        "amount_per_contract_per_leg_side": {
+          "$ref": "#/$defs/decimal"
+        }
+      },
+      "additionalProperties": false
+    },
+    "phase": {
+      "type": "object",
+      "required": [
+        "phase",
+        "status",
+        "window_start",
+        "window_end",
+        "signed_limit",
+        "fill_price",
+        "filled_at",
+        "evidence_id",
+        "evidence_kind",
+        "evidence_coverage",
+        "first_touch_window",
+        "selected_observation_count",
+        "skipped_for_latency",
+        "skipped_for_size",
+        "warnings"
+      ],
+      "properties": {
+        "phase": {
+          "enum": [
+            "ENTRY",
+            "EXIT"
+          ]
+        },
+        "status": {
+          "enum": [
+            "SIMULATED_FILLED",
+            "NO_FILL_UNDER_MODEL",
+            "NOT_ASSESSABLE",
+            "NOT_EVALUATED"
+          ]
+        },
+        "window_start": {
+          "$ref": "#/$defs/timestamp"
+        },
+        "window_end": {
+          "$ref": "#/$defs/timestamp"
+        },
+        "signed_limit": {
+          "$ref": "#/$defs/decimal"
+        },
+        "fill_price": {
+          "$ref": "#/$defs/nullableDecimal"
+        },
+        "filled_at": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/timestamp"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "evidence_id": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/contentId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "evidence_kind": {
+          "oneOf": [
+            {
+              "enum": [
+                "NATIVE_PACKAGE",
+                "ALIGNED_LEG_QUOTES",
+                "TRADE_REFERENCE",
+                "CANDLE_REFERENCE",
+                "MODEL_REFERENCE"
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "evidence_coverage": {
+          "$ref": "#/$defs/coverage"
+        },
+        "first_touch_window": {
+          "oneOf": [
+            {
+              "type": "object",
+              "required": [
+                "start",
+                "end"
+              ],
+              "properties": {
+                "start": {
+                  "$ref": "#/$defs/timestamp"
+                },
+                "end": {
+                  "$ref": "#/$defs/timestamp"
+                }
+              },
+              "additionalProperties": false
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "selected_observation_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "skipped_for_latency": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "skipped_for_size": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "warnings": {
+          "$ref": "#/$defs/stringArray"
+        }
+      },
+      "additionalProperties": false
+    },
+    "pnl": {
+      "type": "object",
+      "required": [
+        "formula",
+        "signed_entry_cost",
+        "signed_exit_receipt",
+        "multiplier",
+        "quantity",
+        "gross_pnl",
+        "entry_fees",
+        "exit_fees",
+        "total_fees",
+        "net_pnl"
+      ],
+      "properties": {
+        "formula": {
+          "const": "(signed_exit_receipt - signed_entry_cost) * multiplier * quantity"
+        },
+        "signed_entry_cost": {
+          "$ref": "#/$defs/nullableDecimal"
+        },
+        "signed_exit_receipt": {
+          "$ref": "#/$defs/nullableDecimal"
+        },
+        "multiplier": {
+          "$ref": "#/$defs/decimal"
+        },
+        "quantity": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "gross_pnl": {
+          "$ref": "#/$defs/nullableDecimal"
+        },
+        "entry_fees": {
+          "$ref": "#/$defs/nullableDecimal"
+        },
+        "exit_fees": {
+          "$ref": "#/$defs/nullableDecimal"
+        },
+        "total_fees": {
+          "$ref": "#/$defs/nullableDecimal"
+        },
+        "net_pnl": {
+          "$ref": "#/$defs/nullableDecimal"
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}

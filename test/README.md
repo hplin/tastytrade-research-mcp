@@ -34,6 +34,12 @@ The suite builds the TypeScript project before running Jest and covers:
   preservation;
 - deterministic regeneration of the grading/regression handoff fixture
   without embedding downstream bucket or routing policy;
+- provider-neutral exact-leg quote evidence with signed cash-flow, independent
+  quote/reference coverage, immutable lineage, and fail-closed size/timing
+  checks;
+- caller-frozen historical execution profiles with shared DV/CV/IC/DD golden
+  fixtures, exact tick rounding, fees, no-fill/open/insufficient-evidence
+  states, and no live-state mutation;
 - immutable content-addressed evidence objects and revision manifests;
 - approval-gated provider-neutral bounded history, including exact-symbol
   entitlement checks, seven-day-style sharding, pagination, DST, partial and

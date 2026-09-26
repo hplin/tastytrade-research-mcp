@@ -1,0 +1,76 @@
+{
+  "contract_version": "1.0.0",
+  "hash_vectors": {
+    "baseline_profile": {
+      "profile_id": "baseline-profile",
+      "profile_version": "1.0.0",
+      "model": "QUOTE_LIMIT_TOUCH",
+      "quote_source": "ALIGNED_LEG_QUOTES",
+      "reference_type": null,
+      "latency_ms": 0,
+      "minimum_package_size": 1,
+      "tick_size": "0.05",
+      "midpoint_to_adverse_fraction": null,
+      "additional_cost_per_package": "0",
+      "queue_model": "NOT_MODELED",
+      "market_impact_model": "NOT_MODELED",
+      "atomic_package": true,
+      "expected_hash": "sha256:36a04a70410b33a0896a6ca2da1c325be23473aef72cdfcd6bc02efe99f0badc"
+    },
+    "fee_model": {
+      "fee_model_id": "fixture-fees",
+      "fee_model_version": "1.0.0",
+      "scope": "PER_CONTRACT_PER_LEG_PER_SIDE",
+      "amount_per_contract_per_leg_side": "0.65",
+      "expected_hash": "sha256:b87c150e511a454c4ce6c9d0d06acdfb4624c799f2f2972620cf6df49d8542d6"
+    }
+  },
+  "cases": [
+    {
+      "name": "debit-vertical-limit-touch",
+      "family": "DEBIT_VERTICAL",
+      "model": "QUOTE_LIMIT_TOUCH",
+      "quote_source": "ALIGNED_LEG_QUOTES",
+      "entry_limit": "3.1",
+      "exit_limit": "3.8",
+      "expected_entry_fill": "3.1",
+      "expected_exit_fill": "3.8",
+      "expected_gross_pnl": "70"
+    },
+    {
+      "name": "credit-vertical-cross",
+      "family": "CREDIT_VERTICAL",
+      "model": "QUOTE_CROSS",
+      "quote_source": "ALIGNED_LEG_QUOTES",
+      "entry_limit": "-2.7",
+      "exit_limit": "-1.2",
+      "expected_entry_fill": "-2.8",
+      "expected_exit_fill": "-1.1",
+      "expected_gross_pnl": "170"
+    },
+    {
+      "name": "iron-condor-limit-touch",
+      "family": "IRON_CONDOR",
+      "model": "QUOTE_LIMIT_TOUCH",
+      "quote_source": "ALIGNED_LEG_QUOTES",
+      "entry_limit": "-2.4",
+      "exit_limit": "-1.5",
+      "expected_entry_fill": "-2.4",
+      "expected_exit_fill": "-1.5",
+      "expected_gross_pnl": "90"
+    },
+    {
+      "name": "double-diagonal-price-improvement",
+      "family": "DOUBLE_DIAGONAL",
+      "model": "QUOTE_PRICE_IMPROVEMENT",
+      "quote_source": "NATIVE_PACKAGE",
+      "entry_limit": "1.5",
+      "exit_limit": "2",
+      "expected_entry_fill": "1.35",
+      "expected_exit_fill": "2.05",
+      "expected_gross_pnl": "70",
+      "expected_total_fees": "5.2",
+      "expected_net_pnl": "64.8"
+    }
+  ]
+}
