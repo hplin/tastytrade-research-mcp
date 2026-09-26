@@ -56,12 +56,28 @@ The adapter:
 5. excludes observations older than the caller's maximum age;
 6. treats a generated contract as historically verified only when DXLink
    returns evidence for that exact symbol; and
-7. derives delta when contract IV and a timestamp-aligned call/put parity pair
-   are available.
+7. derives delta with Black-76-style math when contract IV is available,
+   preferring a timestamp-aligned call/put parity forward for that expiration;
+   when no aligned parity pair exists, it uses the completed checkpoint SPX
+   price as an explicit zero-carry forward approximation.
 
 Missing contracts are excluded. Current quotes, current Greeks, later
 intraday data, and later Backtester selections are never used to repair the
 grid.
+
+The spot-forward fallback is limited to the candidate-universe response. It
+does not alter the stricter selector reconstruction used by
+`tastytrade_discover_historical_spx_candidates`. Contracts using the fallback
+carry:
+
+- provenance source
+  `tastytrade-research-mcp:spot-forward-zero-carry`;
+- `DELTA_DERIVED_FROM_CANDLE_IV_AND_SPOT_FORWARD_APPROXIMATION`; and
+- `SPOT_FORWARD_APPROXIMATION_ASSUMES_ZERO_CARRY`.
+
+The provenance timestamp is the completed SPX candle availability time.
+Contracts without historical IV retain `historical_delta: null`; the fallback
+does not fabricate volatility or use a later option observation.
 
 ## Output
 
@@ -126,6 +142,18 @@ returned 90 verified contracts across CALL and PUT for all three expirations.
 for every returned contract, while delta, IV, and OI capabilities remained
 false because their machine-readable field coverage was incomplete.
 
+For #32, the broader 7300-8050 acceptance grid returned 110 contracts. Delta
+coverage increased from 34 to 103 contracts:
+
+- 21 DTE: 39 available, 0 missing;
+- 28 DTE: 34 available, 2 missing; and
+- 35 DTE: 30 available, 5 missing.
+
+34 deltas retained timestamp-aligned parity forwards and 69 used the explicit
+spot-forward zero-carry approximation. The remaining seven contracts lacked
+historical IV and stayed null. No contract or provenance timestamp exceeded
+the checkpoint.
+
 The response `request_id` includes `as_of`, bounds, explicit expirations,
 freshness maximum, and references. Persisted replay evidence must be treated
 as immutable; a later call with broader freshness or newly available provider
@@ -151,8 +179,13 @@ provider-supported `2026-08-25T19:45:00Z` sampling boundary and returned
 simulation timestamps are replay outcome evidence and do not participate in
 the earlier candidate decision.
 
-Front and back contracts for the 21-DTE/35-DTE Double Diagonal profile are
-also present, but their historical deltas cannot be reconstructed from
-timestamp-aligned parity evidence. The acceptance path therefore reports
-`INSUFFICIENT_TIMESTAMP_SAFE_CONTRACTS` for all four target-delta legs rather
-than substituting future data or estimating unsupported deltas.
+Front and back contracts for the 21-DTE/35-DTE Double Diagonal profile now
+receive reconstructed delta when historical IV is present. The focused
+fixture deterministically selects:
+
+- front short 7400P / 7850C near absolute 20 delta; and
+- back long 7500P / 7825C near absolute 30 delta.
+
+The live 7300-8050 grid selected Sep-15 front short 7400P / 7825C and Sep-29
+back long 7500P / 7825C. Contracts such as the fixture's 7450P with missing
+IV remain null and are excluded from delta-based selection.

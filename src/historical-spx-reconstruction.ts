@@ -175,10 +175,17 @@ type CandleObservation = {
   implied_volatility: number | null;
 };
 
-type ForwardObservation = {
+type DeltaForwardObservation = {
   value: number;
   source_timestamp: string;
+};
+
+type ForwardObservation = DeltaForwardObservation & {
   strike: number;
+};
+
+type UniverseDeltaForward = DeltaForwardObservation & {
+  basis: "PUT_CALL_PARITY" | "SPOT_FORWARD_ZERO_CARRY";
 };
 
 const CANDLE_INTERVAL = "5m";
@@ -629,7 +636,7 @@ function forwardByExpiration(
 
 function historicalDelta(
   observation: CandleObservation,
-  forward: ForwardObservation,
+  forward: DeltaForwardObservation,
   asOfMs: number,
 ): number | null {
   const volatility = observation.implied_volatility;
@@ -652,6 +659,24 @@ function historicalDelta(
   return observation.contract.option_side === "CALL"
     ? callDelta * 100
     : (callDelta - 1) * 100;
+}
+
+function universeDeltaForward(
+  parityForward: ForwardObservation | undefined,
+  underlyingPrice: number,
+  underlyingTimestamp: string,
+): UniverseDeltaForward {
+  if (parityForward) {
+    return {
+      ...parityForward,
+      basis: "PUT_CALL_PARITY",
+    };
+  }
+  return {
+    value: underlyingPrice,
+    source_timestamp: underlyingTimestamp,
+    basis: "SPOT_FORWARD_ZERO_CARRY",
+  };
 }
 
 function selectorScore(
@@ -1212,12 +1237,10 @@ function universeContract(
   observation: CandleObservation,
   underlyingPrice: string,
   underlyingTimestamp: string,
-  forward: ForwardObservation | undefined,
+  forward: UniverseDeltaForward,
   asOfMs: number,
 ): HistoricalSpxUniverseContract {
-  const delta = forward
-    ? historicalDelta(observation, forward, asOfMs)
-    : null;
+  const delta = historicalDelta(observation, forward, asOfMs);
   const stale = observation.age_ms > MAX_OBSERVATION_AGE_MS;
   const optionFields = ["historical_price", "source_timestamp"];
   if (observation.candle.implied_volatility !== null) {
@@ -1297,10 +1320,13 @@ function universeContract(
         ],
         documented_contract: true,
       },
-      ...(forward
+      ...(delta !== null
         ? [
             {
-              source: "tastytrade-research-mcp:put-call-parity",
+              source:
+                forward.basis === "PUT_CALL_PARITY"
+                  ? "tastytrade-research-mcp:put-call-parity"
+                  : "tastytrade-research-mcp:spot-forward-zero-carry",
               source_timestamp: forward.source_timestamp,
               fields: ["historical_delta"],
               documented_contract: true,
@@ -1317,7 +1343,12 @@ function universeContract(
         : []),
       ...(stale ? ["STALE_PRE_CHECKPOINT_OBSERVATION"] : []),
       ...(delta !== null
-        ? ["DELTA_DERIVED_FROM_CANDLE_IV_AND_PUT_CALL_PARITY_FORWARD"]
+        ? forward.basis === "PUT_CALL_PARITY"
+          ? ["DELTA_DERIVED_FROM_CANDLE_IV_AND_PUT_CALL_PARITY_FORWARD"]
+          : [
+              "DELTA_DERIVED_FROM_CANDLE_IV_AND_SPOT_FORWARD_APPROXIMATION",
+              "SPOT_FORWARD_APPROXIMATION_ASSUMES_ZERO_CARRY",
+            ]
         : []),
     ],
   };
@@ -1642,12 +1673,6 @@ export async function getHistoricalSpxCandidateUniverse(
     fetchContracts,
     underlying.price,
   );
-  if (forwards.size > 0) {
-    warnings.push(
-      "DELTA_DERIVED_FROM_CANDLE_IV_AND_PUT_CALL_PARITY_FORWARD",
-      "PUT_CALL_PARITY_FORWARD_OMITS_DISCOUNT_FACTOR",
-    );
-  }
   const underlyingPrice = normalizedDecimal(underlying.candle.close);
   const contracts = requestedContracts
     .map((contract) => {
@@ -1658,7 +1683,11 @@ export async function getHistoricalSpxCandidateUniverse(
         observation,
         underlyingPrice,
         underlying.available_at,
-        forwards.get(contract.expiration_date),
+        universeDeltaForward(
+          forwards.get(contract.expiration_date),
+          underlying.price,
+          underlying.available_at,
+        ),
         asOfMs,
       );
     })
@@ -1672,6 +1701,30 @@ export async function getHistoricalSpxCandidateUniverse(
         left.option_side.localeCompare(right.option_side) ||
         Number(left.strike) - Number(right.strike),
     );
+  if (
+    contracts.some((contract) =>
+      contract.warnings.includes(
+        "DELTA_DERIVED_FROM_CANDLE_IV_AND_PUT_CALL_PARITY_FORWARD",
+      ),
+    )
+  ) {
+    warnings.push(
+      "DELTA_DERIVED_FROM_CANDLE_IV_AND_PUT_CALL_PARITY_FORWARD",
+      "PUT_CALL_PARITY_FORWARD_OMITS_DISCOUNT_FACTOR",
+    );
+  }
+  if (
+    contracts.some((contract) =>
+      contract.warnings.includes(
+        "DELTA_DERIVED_FROM_CANDLE_IV_AND_SPOT_FORWARD_APPROXIMATION",
+      ),
+    )
+  ) {
+    warnings.push(
+      "DELTA_DERIVED_FROM_CANDLE_IV_AND_SPOT_FORWARD_APPROXIMATION",
+      "SPOT_FORWARD_APPROXIMATION_ASSUMES_ZERO_CARRY",
+    );
+  }
   const verifiedContractCount = contracts.length;
   const missingContractCount =
     plan.requested_contract_count - verifiedContractCount;
