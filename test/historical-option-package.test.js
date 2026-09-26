@@ -118,6 +118,13 @@ describe("historical exact-leg option packages", () => {
       service,
       checkpointRequest(),
     );
+    expect(service.getHistoricalCandlesBatch).toHaveBeenCalledWith(
+      expect.objectContaining({
+        max_output_candles: 20_000,
+        max_received_events: 20_000,
+        max_buffer_bytes: 32 * 1024 * 1024,
+      }),
+    );
 
     expect(result).toMatchObject({
       status: "AVAILABLE",
@@ -282,9 +289,13 @@ describe("historical exact-leg option packages", () => {
     const service = {
       getHistoricalCandlesBatch: jest.fn(async (request) => {
         if (request.interval === "1m") {
-          throw new Error(
-            "DXLink replays from start_time through the present and does not honor toTime; this request may require 42000 snapshot events, exceeding max_candles=20000.",
-          );
+          return request.instruments.map((instrument) => ({
+            ...candleResult(instrument, request.interval, []),
+            status: "NOT_AVAILABLE",
+            snapshot_complete: false,
+            provider_snapshot_complete: false,
+            failure_reasons: ["LOCAL_RECEIVE_BUDGET_EXCEEDED"],
+          }));
         }
         return request.instruments.map((instrument) =>
           candleResult(
@@ -326,7 +337,7 @@ describe("historical exact-leg option packages", () => {
       {
         resolution: "1m",
         status: "UNAVAILABLE",
-        reason: "DXLINK_SNAPSHOT_LIMIT",
+        reason: "LOCAL_CANDLE_BUDGET_EXCEEDED",
       },
       { resolution: "5m", status: "SELECTED", reason: null },
     ]);

@@ -75,6 +75,19 @@ describe("MCP research server", () => {
           "tastytrade_create_spx_spread_backtest",
         ]),
       );
+      const candleTool = tools.tools.find(
+        (tool) => tool.name === "tastytrade_get_historical_candles",
+      );
+      expect(
+        candleTool.inputSchema.properties.request.properties,
+      ).toMatchObject({
+        deadline_ms: { maximum: 60000 },
+        max_output_candles: { maximum: 250000 },
+        max_received_events: { maximum: 1000000 },
+        max_buffer_bytes: { maximum: 134217728 },
+        timeout_ms: { maximum: 60000 },
+        max_candles: { maximum: 20000 },
+      });
 
       const priced = textResult(
         await client.callTool({
@@ -124,12 +137,23 @@ describe("MCP research server", () => {
               interval: "5m",
               start_time: "2026-09-24T14:00:00.000Z",
               end_time: "2026-09-24T15:00:00.000Z",
+              deadline_ms: 5000,
+              max_output_candles: 1000,
+              max_received_events: 5000,
+              max_buffer_bytes: 1048576,
             },
           },
         }),
       );
       expect(candleResult.resampled).toBe(false);
-      expect(candles.getHistoricalCandles).toHaveBeenCalledTimes(1);
+      expect(candles.getHistoricalCandles).toHaveBeenCalledWith(
+        expect.objectContaining({
+          deadline_ms: 5000,
+          max_output_candles: 1000,
+          max_received_events: 5000,
+          max_buffer_bytes: 1048576,
+        }),
+      );
 
       const candidates = textResult(
         await client.callTool({

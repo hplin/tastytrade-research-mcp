@@ -189,9 +189,11 @@ age and temporal-skew limits fail closed. Candle-derived values are always
 
 `tastytrade_get_historical_option_package_path` emits a point only when every
 leg has an exact timestamp-aligned completed bar. It never interpolates or
-forward-fills missing legs. If a bounded old 1-minute DXLink replay exceeds
-the provider snapshot limit, the result records the failed attempt and
-explicitly selects the finest retrievable coarser resolution.
+forward-fills missing legs. If a bounded old 1-minute DXLink replay exhausts a
+configured local resource budget or the provider returns a clipped snapshot,
+the result records the failed attempt and explicitly selects the finest
+retrievable coarser resolution. A local budget result is not described as a
+provider limit.
 
 The returned `fill_verification_path` can be passed directly to
 `tastytrade_verify_historical_fill`. Full rules and the 2026-08-27 07:30 PT
@@ -247,11 +249,55 @@ that limitation.
 The server sends `fromTime` as epoch **milliseconds**, matching the current
 production DXLink service. The published AsyncAPI description currently says
 seconds, but seconds cause the service to replay the full available history.
-Production currently ignores `toTime`, so the client estimates and limits the
-entire snapshot from `start_time` through the present before opening a socket,
-then enforces the same limit while receiving data. Old fine-grained ranges
-must use a coarser interval rather than silently consuming an unbounded
-snapshot.
+Production currently appears to ignore `toTime`. The client reports a
+continuous-calendar replay estimate for planning, but that estimate is
+explicitly advisory: it does not account for sessions, closures, sparse
+options, or expiration, and never blocks a request before connecting.
+
+Streaming state is indexed and deduplicated per symbol, retains only rows in
+the requested range and session, serializes message processing, and does not
+infer completion from timestamp order. Completion still requires DXLink
+snapshot protocol evidence. Each result includes:
+
+- `status`, `snapshot_complete`, `snapshot_truncated`, and
+  `provider_snapshot_complete`;
+- machine-readable `failure_reasons`;
+- per-symbol and aggregate request counters for received events, valid events,
+  unique observations, retained rows/bytes, and returned rows;
+- configured limits and the advisory calendar-slot estimates.
+
+`snapshot_complete` means a provider END marker was observed without local or
+provider truncation. It does not assert that every interval traded;
+`status` and `failure_reasons` separately report missing or uncovered evidence.
+
+The independent client controls are:
+
+| Input | Scope | Default | Maximum |
+| --- | --- | ---: | ---: |
+| `max_output_candles` | retained/returned rows per symbol | 10,000 | 250,000 |
+| `max_received_events` | aggregate Candle protocol rows per request | 10,000 | 1,000,000 |
+| `max_buffer_bytes` | aggregate queued wire data plus accounted retained state | 16 MiB | 128 MiB |
+| `deadline_ms` | complete DXLink snapshot lifecycle | 15,000 ms | 60,000 ms |
+
+Received-event counts include marker, remove, invalid, duplicate, and unmatched
+Candle rows. Unique observations count distinct in-window indexed events
+admitted to bounded state; retained rows reflect removals, and returned rows
+reflect the final normalized output. Retained-byte accounting uses serialized
+field sizes plus conservative per-object/index overhead rather than claiming
+exact V8 heap usage.
+
+`max_candles` remains as a deprecated compatibility shorthand, capped at
+20,000, that applies the same value to per-symbol output and aggregate receive
+budgets. It cannot be combined with either explicit field. `timeout_ms` is a
+deprecated alias for `deadline_ms` and cannot be combined with it.
+
+`LOCAL_RECEIVE_BUDGET_EXCEEDED`, `LOCAL_BUFFER_BUDGET_EXCEEDED`, and
+`LOCAL_OUTPUT_BUDGET_EXCEEDED` are client facts. `PROVIDER_SNAPSHOT_SNIPPED`
+is provider protocol evidence. `REQUESTED_WINDOW_NOT_COVERED`,
+`SNAPSHOT_TIMEOUT`, and `MISSING_CONTRACT_EVIDENCE` describe observed
+availability; none is automatically classified as an entitlement failure.
+Completed symbols remain usable when another batch symbol fails locally or is
+snipped.
 
 ### Rate limits and retries
 
@@ -259,10 +305,11 @@ snapshot.
   lifetime.
 - The quote-token REST request retries network errors, `429`, and `5xx` up to
   three attempts with capped exponential backoff and jitter.
-- A candle snapshot has a configurable timeout (maximum 60 seconds).
+- A candle snapshot has a configurable `deadline_ms` (maximum 60 seconds).
 - WebSocket snapshot failures are returned explicitly and are not silently
   retried or merged.
-- Requests are bounded by `max_candles` (default 10,000; maximum 20,000).
+- Received events, returned rows, and memory are bounded independently as
+  documented above.
 - DXLink permits at most 5 concurrent sessions and 100 Candle subscriptions
   per session. Callers should batch work rather than fan out unbounded calls.
 
