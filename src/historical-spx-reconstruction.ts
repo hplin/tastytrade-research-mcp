@@ -1,5 +1,13 @@
 import { createHash } from "node:crypto";
 import { ExactDecimal } from "./decimal.js";
+import {
+  normalizeDdIvMeasurementRequest,
+  normalizeDdIvMeasurements,
+  type DdIvMeasurementHandoff,
+  type DdIvMeasurementRequest,
+  type DdIvMeasurementRequestInput,
+  type DdIvObservationInput,
+} from "./dd-iv-measurement.js";
 import type { ExecutionReferences } from "./execution-evidence.js";
 import type {
   HistoricalCandle,
@@ -62,6 +70,7 @@ export type HistoricalSpxCandidateUniverseInput = {
   max_observation_age_minutes?: number;
   resolution_profile?: ResolutionProfileInput;
   candidate_construction_profile?: Record<string, unknown>;
+  dd_iv_measurement?: DdIvMeasurementRequestInput;
   phase: "REGRESSION_RESEARCH";
   references?: ExecutionReferences;
 };
@@ -84,6 +93,7 @@ export type HistoricalSpxCandidateUniversePlan = {
   requested_contract_count: number;
   resolution_profile: ResolutionProfile;
   candidate_construction_profile: CandidateConstructionProfile | null;
+  dd_iv_measurement: DdIvMeasurementRequest | null;
   references: ExecutionReferences;
 };
 
@@ -103,6 +113,21 @@ export type HistoricalSpxUniverseContract = {
   retrieved_at: string | null;
   historical_price: string;
   historical_delta: string | null;
+  historical_delta_details: {
+    origin: "DERIVED";
+    model: "BLACK_76_FORWARD_DELTA";
+    delta_convention: "SIGNED_FORWARD_DELTA_PERCENT";
+    forward: {
+      value: string;
+      origin: "DERIVED";
+      basis: "PUT_CALL_PARITY" | "SPOT_FORWARD_ZERO_CARRY";
+      model:
+        | "PUT_CALL_PARITY_NO_DISCOUNT_FACTOR"
+        | "SPOT_FORWARD_ZERO_CARRY";
+      source_timestamp: string;
+      assumptions: string[];
+    };
+  } | null;
   historical_iv: string | null;
   historical_open_interest: string | null;
   historical_volume: string | null;
@@ -134,6 +159,7 @@ export type HistoricalSpxCandidateUniverseResult = {
   retrieved_at: string | null;
   resolution_profile: ResolutionProfile;
   candidate_construction_profile: CandidateConstructionProfile | null;
+  dd_iv_measurement_handoff: DdIvMeasurementHandoff | null;
   contracts: HistoricalSpxUniverseContract[];
   coverage: {
     requested_contract_count: number;
@@ -1309,6 +1335,10 @@ export function prepareHistoricalSpxCandidateUniverse(
     normalizeCandidateConstructionProfile(
       input.candidate_construction_profile,
     );
+  const ddIvMeasurement =
+    input.dd_iv_measurement === undefined
+      ? null
+      : normalizeDdIvMeasurementRequest(input.dd_iv_measurement);
   const optionSides = normalizeOptionSides(input.option_sides);
   const sessionDate = dateInTimezone(asOf, "America/New_York");
 
@@ -1363,6 +1393,40 @@ export function prepareHistoricalSpxCandidateUniverse(
   if (strikes.length === 0) {
     throw new Error("The strike range does not contain an aligned strike.");
   }
+  if (ddIvMeasurement !== null) {
+    for (const leg of ddIvMeasurement.selected_legs) {
+      if (!expirationDatesValue.includes(leg.expiration.slice(0, 10))) {
+        throw new Error(
+          `dd_iv_measurement selected leg ${leg.source_symbol} expiration is outside the requested universe.`,
+        );
+      }
+      if (!optionSides.includes(leg.option_side)) {
+        throw new Error(
+          `dd_iv_measurement selected leg ${leg.source_symbol} side is outside the requested universe.`,
+        );
+      }
+      if (!strikes.includes(Number(leg.strike))) {
+        throw new Error(
+          `dd_iv_measurement selected leg ${leg.source_symbol} strike is outside the requested universe grid.`,
+        );
+      }
+    }
+    for (const profile of ddIvMeasurement.measurement_profile.matched_coordinates) {
+      if (
+        !expirationDatesValue.includes(profile.front_expiration.slice(0, 10)) ||
+        !expirationDatesValue.includes(profile.back_expiration.slice(0, 10))
+      ) {
+        throw new Error(
+          `dd_iv_measurement matched rule ${profile.measurement_id} expirations must be included in the requested universe.`,
+        );
+      }
+      if (!optionSides.includes(profile.option_side)) {
+        throw new Error(
+          `dd_iv_measurement matched rule ${profile.measurement_id} side must be included in the requested universe.`,
+        );
+      }
+    }
+  }
   const requestedContractCount =
     strikes.length * expirationDatesValue.length * optionSides.length;
   if (requestedContractCount > maxContracts) {
@@ -1386,6 +1450,7 @@ export function prepareHistoricalSpxCandidateUniverse(
     checkpoint,
     resolution_profile: resolutionProfile,
     candidate_construction_profile: candidateConstructionProfile,
+    dd_iv_measurement: ddIvMeasurement,
     references,
   };
   return {
@@ -1406,6 +1471,7 @@ export function prepareHistoricalSpxCandidateUniverse(
     requested_contract_count: requestedContractCount,
     resolution_profile: resolutionProfile,
     candidate_construction_profile: candidateConstructionProfile,
+    dd_iv_measurement: ddIvMeasurement,
     references,
   };
 }
@@ -1447,6 +1513,28 @@ function universeContract(
     historical_price: normalizedDecimal(observation.candle.close),
     historical_delta:
       delta === null ? null : roundedDecimal(delta, 6),
+    historical_delta_details:
+      delta === null
+        ? null
+        : {
+            origin: "DERIVED",
+            model: "BLACK_76_FORWARD_DELTA",
+            delta_convention: "SIGNED_FORWARD_DELTA_PERCENT",
+            forward: {
+              value: ExactDecimal.parse(forward.value).toString(),
+              origin: "DERIVED",
+              basis: forward.basis,
+              model:
+                forward.basis === "PUT_CALL_PARITY"
+                  ? "PUT_CALL_PARITY_NO_DISCOUNT_FACTOR"
+                  : "SPOT_FORWARD_ZERO_CARRY",
+              source_timestamp: forward.source_timestamp,
+              assumptions:
+                forward.basis === "PUT_CALL_PARITY"
+                  ? ["DISCOUNT_FACTOR_OMITTED"]
+                  : ["ZERO_CARRY"],
+            },
+          },
     historical_iv:
       observation.candle.implied_volatility === null
         ? null
@@ -1649,12 +1737,155 @@ function universeFieldCoverage(
   };
 }
 
+const DD_IV_UNIVERSE_DATASET =
+  "historical-spx-candidate-universe/1.0.0";
+
+function ddIvLineageOrigin(
+  source: string,
+): "PROVIDER_OBSERVATION" | "DERIVED" {
+  return source.includes("dxlink")
+    ? "PROVIDER_OBSERVATION"
+    : "DERIVED";
+}
+
+function ddIvObservationFromUniverse(
+  contract: HistoricalSpxUniverseContract,
+  profile: ResolutionProfile,
+): DdIvObservationInput {
+  return {
+    source_symbol: contract.provider_symbol,
+    expiration: contract.expiration,
+    option_side: contract.option_side,
+    strike: contract.strike,
+    iv: contract.historical_iv,
+    delta: contract.historical_delta,
+    delta_convention:
+      contract.historical_delta_details?.delta_convention ?? null,
+    iv_origin: "PROVIDER_OBSERVATION",
+    delta_origin:
+      contract.historical_delta_details?.origin ?? null,
+    model: {
+      iv_model:
+        contract.historical_iv === null
+          ? null
+          : "PROVIDER_CANDLE_IMPLIED_VOLATILITY",
+      delta_model:
+        contract.historical_delta_details?.model ?? null,
+      forward_model:
+        contract.historical_delta_details?.forward.model ?? null,
+      assumptions:
+        contract.historical_delta_details?.forward.assumptions ?? [],
+    },
+    forward:
+      contract.historical_delta_details === null
+        ? null
+        : {
+            value:
+              contract.historical_delta_details.forward.value,
+            origin:
+              contract.historical_delta_details.forward.origin,
+            source_timestamp:
+              contract.historical_delta_details.forward
+                .source_timestamp,
+          },
+    bar_start: contract.bar_start,
+    bar_end: contract.bar_end,
+    available_at: contract.available_at,
+    retrieved_at: contract.retrieved_at,
+    bar_status: "COMPLETE",
+    freshness: contract.freshness,
+    provider: profile.provider_id,
+    dataset: DD_IV_UNIVERSE_DATASET,
+    resolution:
+      profile.effective_aggregation ?? profile.requested_aggregation,
+    alignment: profile.alignment,
+    source_cohort_id:
+      profile.effective_cohort_id ?? profile.cohort_id,
+    lineage: contract.provenance.map((item) => ({
+      source: item.source,
+      source_timestamp: item.source_timestamp,
+      fields: item.fields,
+      origin: ddIvLineageOrigin(item.source),
+    })),
+    warnings: contract.warnings,
+  };
+}
+
+function missingDdIvObservation(
+  reference: DdIvMeasurementRequest["selected_legs"][number],
+  profile: ResolutionProfile,
+): DdIvObservationInput {
+  return {
+    source_symbol: reference.source_symbol,
+    expiration: reference.expiration,
+    option_side: reference.option_side,
+    strike: reference.strike,
+    iv: null,
+    delta: null,
+    delta_convention: null,
+    iv_origin: "PROVIDER_OBSERVATION",
+    delta_origin: null,
+    model: {
+      iv_model: null,
+      delta_model: null,
+      forward_model: null,
+      assumptions: [],
+    },
+    forward: null,
+    bar_start: null,
+    bar_end: null,
+    available_at: null,
+    retrieved_at: null,
+    bar_status: "MISSING",
+    freshness: "UNKNOWN",
+    provider: profile.provider_id,
+    dataset: DD_IV_UNIVERSE_DATASET,
+    resolution:
+      profile.effective_aggregation ?? profile.requested_aggregation,
+    alignment: profile.alignment,
+    source_cohort_id:
+      profile.effective_cohort_id ?? profile.cohort_id,
+    lineage: [],
+    warnings: [
+      `SELECTED_LEG_NOT_PRESENT_IN_TIMESTAMP_SAFE_UNIVERSE:${reference.source_symbol}`,
+    ],
+  };
+}
+
+function ddIvMeasurementHandoff(
+  plan: HistoricalSpxCandidateUniversePlan,
+  profile: ResolutionProfile,
+  contracts: HistoricalSpxUniverseContract[],
+): DdIvMeasurementHandoff | null {
+  if (plan.dd_iv_measurement === null) return null;
+  const observations = contracts.map((contract) =>
+    ddIvObservationFromUniverse(contract, profile),
+  );
+  const availableSymbols = new Set(
+    observations.map((observation) => observation.source_symbol),
+  );
+  for (const reference of plan.dd_iv_measurement.selected_legs) {
+    if (!availableSymbols.has(reference.source_symbol)) {
+      observations.push(missingDdIvObservation(reference, profile));
+    }
+  }
+  return normalizeDdIvMeasurements({
+    checkpoint: plan.as_of,
+    request: plan.dd_iv_measurement,
+    observations,
+  });
+}
+
 function emptyUniverseResult(
   plan: HistoricalSpxCandidateUniversePlan,
   status: "NOT_AVAILABLE" | "PROVIDER_ERROR",
   warnings: string[],
   providerErrors: UniverseProviderError[],
 ): HistoricalSpxCandidateUniverseResult {
+  const effectiveProfile = withEffectiveAggregation(
+    plan.resolution_profile,
+    plan.resolution_profile.requested_aggregation,
+  );
   return {
     contract_version: "1.0.0",
     request_id: plan.request_id,
@@ -1676,12 +1907,14 @@ function emptyUniverseResult(
     max_observation_age_minutes: plan.max_observation_age_minutes,
     freshness_threshold_minutes: 60,
     retrieved_at: null,
-    resolution_profile: withEffectiveAggregation(
-      plan.resolution_profile,
-      plan.resolution_profile.requested_aggregation,
-    ),
+    resolution_profile: effectiveProfile,
     candidate_construction_profile:
       plan.candidate_construction_profile,
+    dd_iv_measurement_handoff: ddIvMeasurementHandoff(
+      plan,
+      effectiveProfile,
+      [],
+    ),
     contracts: [],
     coverage: {
       requested_contract_count: plan.requested_contract_count,
@@ -1983,6 +2216,10 @@ export async function getHistoricalSpxCandidateUniverse(
       : missingContractCount === 0
         ? "COMPLETE"
         : "PARTIAL";
+  const effectiveProfile = withEffectiveAggregation(
+    resolutionProfile,
+    interval,
+  );
   return {
     contract_version: "1.0.0",
     request_id: plan.request_id,
@@ -2009,12 +2246,14 @@ export async function getHistoricalSpxCandidateUniverse(
         .filter((value): value is string => value !== null)
         .sort()
         .at(-1) ?? null,
-    resolution_profile: withEffectiveAggregation(
-      resolutionProfile,
-      interval,
-    ),
+    resolution_profile: effectiveProfile,
     candidate_construction_profile:
       plan.candidate_construction_profile,
+    dd_iv_measurement_handoff: ddIvMeasurementHandoff(
+      plan,
+      effectiveProfile,
+      contracts,
+    ),
     contracts,
     coverage: {
       requested_contract_count: plan.requested_contract_count,

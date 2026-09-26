@@ -1,0 +1,681 @@
+{
+  "dataset_version": "dd-iv-handoff/1.0.0",
+  "generated_from": "test/fixtures/dd-iv-measurement-input-v1.json",
+  "method_document": "docs/dd-iv-measurements.md",
+  "intended_consumers": [
+    "spx-spread-grading",
+    "spx-spread-regression"
+  ],
+  "policy_fields_included": false,
+  "handoff": {
+    "contract_version": "1.0.0",
+    "handoff_dataset_version": "1.0.0",
+    "handoff_id": "d9985340b9066f637621a92fff3c8fd44a164fb32874531c6b9224a1fb0bfe23",
+    "grading_role": "RESEARCH_ONLY",
+    "checkpoint": "2026-08-25T14:30:00.000Z",
+    "candidate_id": "dd-fixture-2026-08-25",
+    "measurement_profile_version": "1.0.0",
+    "measurement_profile": {
+      "profile_version": "1.0.0",
+      "selected_leg": {
+        "max_front_back_skew_ms": 600000,
+        "combined": {
+          "aggregation": "WEIGHTED_ARITHMETIC_MEAN",
+          "put_weight": "0.5",
+          "call_weight": "0.5"
+        }
+      },
+      "matched_coordinates": [
+        {
+          "measurement_id": "put-25-absolute-forward-delta",
+          "measurement_basis": "MATCHED_DELTA",
+          "front_expiration": "2026-09-15T20:00:00.000Z",
+          "back_expiration": "2026-09-29T20:00:00.000Z",
+          "option_side": "PUT",
+          "target_delta": "25",
+          "delta_convention": "ABSOLUTE_FORWARD_DELTA_PERCENT",
+          "tolerance": "0.25",
+          "missing_policy": "NOT_AVAILABLE",
+          "max_front_back_skew_ms": 600000,
+          "interpolation": null
+        },
+        {
+          "measurement_id": "call-25-absolute-forward-delta",
+          "measurement_basis": "MATCHED_DELTA",
+          "front_expiration": "2026-09-15T20:00:00.000Z",
+          "back_expiration": "2026-09-29T20:00:00.000Z",
+          "option_side": "CALL",
+          "target_delta": "25",
+          "delta_convention": "ABSOLUTE_FORWARD_DELTA_PERCENT",
+          "tolerance": "0.25",
+          "missing_policy": "NOT_AVAILABLE",
+          "max_front_back_skew_ms": 600000,
+          "interpolation": null
+        }
+      ]
+    },
+    "legacy_term_structure_replaced": false,
+    "selected_leg_measurement": {
+      "contract_version": "1.0.0",
+      "measurement_basis": "SELECTED_LEG_IV_DIFFERENCE",
+      "measurement_profile_version": "1.0.0",
+      "grading_role": "RESEARCH_ONLY",
+      "candidate_id": "dd-fixture-2026-08-25",
+      "cohort_id": "e240eb6d28c6c304d7aa4c71a75679929f36b99c4cfa27d7ef79e7a8a0b7a947",
+      "status": "AVAILABLE",
+      "iv_unit": "DECIMAL",
+      "frozen_legs": [
+        {
+          "source_symbol": "FRONT-PUT-20D",
+          "expiration": "2026-09-15T20:00:00.000Z",
+          "option_side": "PUT",
+          "strike": "7400",
+          "iv": "0.2",
+          "delta": "-20",
+          "delta_convention": "SIGNED_FORWARD_DELTA_PERCENT",
+          "iv_origin": "PROVIDER_OBSERVATION",
+          "delta_origin": "DERIVED",
+          "model": {
+            "iv_model": "PROVIDER_CANDLE_IMPLIED_VOLATILITY",
+            "delta_model": "BLACK_76_FORWARD_DELTA",
+            "forward_model": "SPOT_FORWARD_ZERO_CARRY",
+            "assumptions": [
+              "ZERO_CARRY"
+            ]
+          },
+          "forward": {
+            "value": "7665",
+            "origin": "DERIVED",
+            "source_timestamp": "2026-08-25T14:25:00.000Z"
+          },
+          "bar_start": "2026-08-25T14:20:00.000Z",
+          "bar_end": "2026-08-25T14:25:00.000Z",
+          "available_at": "2026-08-25T14:25:00.000Z",
+          "retrieved_at": "2026-08-25T16:00:00.000Z",
+          "bar_status": "COMPLETE",
+          "freshness": "FRESH",
+          "provider": "tastytrade-dxlink",
+          "dataset": "historical-spx-candidate-universe/1.0.0",
+          "resolution": "5m",
+          "alignment": "MIDNIGHT",
+          "source_cohort_id": "fixture-5m-cohort",
+          "lineage": [
+            {
+              "source": "fixture:front-put",
+              "source_timestamp": "2026-08-25T14:25:00.000Z",
+              "fields": [
+                "iv",
+                "delta"
+              ],
+              "origin": "PROVIDER_OBSERVATION"
+            }
+          ],
+          "warnings": [
+            "SPOT_FORWARD_APPROXIMATION_ASSUMES_ZERO_CARRY"
+          ],
+          "candidate_id": "dd-fixture-2026-08-25",
+          "role": "FRONT_PUT_SHORT",
+          "eligibility_warnings": []
+        },
+        {
+          "source_symbol": "FRONT-CALL-20D",
+          "expiration": "2026-09-15T20:00:00.000Z",
+          "option_side": "CALL",
+          "strike": "7850",
+          "iv": "0.18",
+          "delta": "20",
+          "delta_convention": "SIGNED_FORWARD_DELTA_PERCENT",
+          "iv_origin": "PROVIDER_OBSERVATION",
+          "delta_origin": "DERIVED",
+          "model": {
+            "iv_model": "PROVIDER_CANDLE_IMPLIED_VOLATILITY",
+            "delta_model": "BLACK_76_FORWARD_DELTA",
+            "forward_model": "SPOT_FORWARD_ZERO_CARRY",
+            "assumptions": [
+              "ZERO_CARRY"
+            ]
+          },
+          "forward": {
+            "value": "7665",
+            "origin": "DERIVED",
+            "source_timestamp": "2026-08-25T14:25:00.000Z"
+          },
+          "bar_start": "2026-08-25T14:20:00.000Z",
+          "bar_end": "2026-08-25T14:25:00.000Z",
+          "available_at": "2026-08-25T14:25:00.000Z",
+          "retrieved_at": "2026-08-25T16:00:00.000Z",
+          "bar_status": "COMPLETE",
+          "freshness": "FRESH",
+          "provider": "tastytrade-dxlink",
+          "dataset": "historical-spx-candidate-universe/1.0.0",
+          "resolution": "5m",
+          "alignment": "MIDNIGHT",
+          "source_cohort_id": "fixture-5m-cohort",
+          "lineage": [
+            {
+              "source": "fixture:front-call",
+              "source_timestamp": "2026-08-25T14:25:00.000Z",
+              "fields": [
+                "iv",
+                "delta"
+              ],
+              "origin": "PROVIDER_OBSERVATION"
+            }
+          ],
+          "warnings": [
+            "SPOT_FORWARD_APPROXIMATION_ASSUMES_ZERO_CARRY"
+          ],
+          "candidate_id": "dd-fixture-2026-08-25",
+          "role": "FRONT_CALL_SHORT",
+          "eligibility_warnings": []
+        },
+        {
+          "source_symbol": "BACK-PUT-30D",
+          "expiration": "2026-09-29T20:00:00.000Z",
+          "option_side": "PUT",
+          "strike": "7500",
+          "iv": "0.215",
+          "delta": "-30",
+          "delta_convention": "SIGNED_FORWARD_DELTA_PERCENT",
+          "iv_origin": "PROVIDER_OBSERVATION",
+          "delta_origin": "DERIVED",
+          "model": {
+            "iv_model": "PROVIDER_CANDLE_IMPLIED_VOLATILITY",
+            "delta_model": "BLACK_76_FORWARD_DELTA",
+            "forward_model": "SPOT_FORWARD_ZERO_CARRY",
+            "assumptions": [
+              "ZERO_CARRY"
+            ]
+          },
+          "forward": {
+            "value": "7665",
+            "origin": "DERIVED",
+            "source_timestamp": "2026-08-25T14:25:00.000Z"
+          },
+          "bar_start": "2026-08-25T14:20:00.000Z",
+          "bar_end": "2026-08-25T14:25:00.000Z",
+          "available_at": "2026-08-25T14:25:00.000Z",
+          "retrieved_at": "2026-08-25T16:00:00.000Z",
+          "bar_status": "COMPLETE",
+          "freshness": "FRESH",
+          "provider": "tastytrade-dxlink",
+          "dataset": "historical-spx-candidate-universe/1.0.0",
+          "resolution": "5m",
+          "alignment": "MIDNIGHT",
+          "source_cohort_id": "fixture-5m-cohort",
+          "lineage": [
+            {
+              "source": "fixture:back-put",
+              "source_timestamp": "2026-08-25T14:25:00.000Z",
+              "fields": [
+                "iv",
+                "delta"
+              ],
+              "origin": "PROVIDER_OBSERVATION"
+            }
+          ],
+          "warnings": [
+            "SPOT_FORWARD_APPROXIMATION_ASSUMES_ZERO_CARRY"
+          ],
+          "candidate_id": "dd-fixture-2026-08-25",
+          "role": "BACK_PUT_LONG",
+          "eligibility_warnings": []
+        },
+        {
+          "source_symbol": "BACK-CALL-30D",
+          "expiration": "2026-09-29T20:00:00.000Z",
+          "option_side": "CALL",
+          "strike": "7825",
+          "iv": "0.17",
+          "delta": "30",
+          "delta_convention": "SIGNED_FORWARD_DELTA_PERCENT",
+          "iv_origin": "PROVIDER_OBSERVATION",
+          "delta_origin": "DERIVED",
+          "model": {
+            "iv_model": "PROVIDER_CANDLE_IMPLIED_VOLATILITY",
+            "delta_model": "BLACK_76_FORWARD_DELTA",
+            "forward_model": "SPOT_FORWARD_ZERO_CARRY",
+            "assumptions": [
+              "ZERO_CARRY"
+            ]
+          },
+          "forward": {
+            "value": "7665",
+            "origin": "DERIVED",
+            "source_timestamp": "2026-08-25T14:25:00.000Z"
+          },
+          "bar_start": "2026-08-25T14:20:00.000Z",
+          "bar_end": "2026-08-25T14:25:00.000Z",
+          "available_at": "2026-08-25T14:25:00.000Z",
+          "retrieved_at": "2026-08-25T16:00:00.000Z",
+          "bar_status": "COMPLETE",
+          "freshness": "FRESH",
+          "provider": "tastytrade-dxlink",
+          "dataset": "historical-spx-candidate-universe/1.0.0",
+          "resolution": "5m",
+          "alignment": "MIDNIGHT",
+          "source_cohort_id": "fixture-5m-cohort",
+          "lineage": [
+            {
+              "source": "fixture:back-call",
+              "source_timestamp": "2026-08-25T14:25:00.000Z",
+              "fields": [
+                "iv",
+                "delta"
+              ],
+              "origin": "PROVIDER_OBSERVATION"
+            }
+          ],
+          "warnings": [
+            "SPOT_FORWARD_APPROXIMATION_ASSUMES_ZERO_CARRY"
+          ],
+          "candidate_id": "dd-fixture-2026-08-25",
+          "role": "BACK_CALL_LONG",
+          "eligibility_warnings": []
+        }
+      ],
+      "sides": {
+        "PUT": {
+          "option_side": "PUT",
+          "status": "AVAILABLE",
+          "front_role": "FRONT_PUT_SHORT",
+          "back_role": "BACK_PUT_LONG",
+          "front_iv_decimal": "0.2",
+          "back_iv_decimal": "0.215",
+          "iv_unit": "DECIMAL",
+          "spread_decimal": "0.015",
+          "spread_vol_points": "1.50",
+          "temporal_skew_ms": 0,
+          "source_cohort_ids": [
+            "fixture-5m-cohort"
+          ],
+          "quality": "COMPLETE",
+          "warnings": [
+            "SPOT_FORWARD_APPROXIMATION_ASSUMES_ZERO_CARRY"
+          ]
+        },
+        "CALL": {
+          "option_side": "CALL",
+          "status": "AVAILABLE",
+          "front_role": "FRONT_CALL_SHORT",
+          "back_role": "BACK_CALL_LONG",
+          "front_iv_decimal": "0.18",
+          "back_iv_decimal": "0.17",
+          "iv_unit": "DECIMAL",
+          "spread_decimal": "-0.01",
+          "spread_vol_points": "-1.00",
+          "temporal_skew_ms": 0,
+          "source_cohort_ids": [
+            "fixture-5m-cohort"
+          ],
+          "quality": "COMPLETE",
+          "warnings": [
+            "SPOT_FORWARD_APPROXIMATION_ASSUMES_ZERO_CARRY"
+          ]
+        }
+      },
+      "combined": {
+        "status": "AVAILABLE",
+        "aggregation": "WEIGHTED_ARITHMETIC_MEAN",
+        "weights": {
+          "PUT": "0.5",
+          "CALL": "0.5"
+        },
+        "component_spreads": {
+          "PUT": "0.015",
+          "CALL": "-0.01"
+        },
+        "spread_decimal": "0.0025",
+        "spread_vol_points": "0.25",
+        "iv_unit": "DECIMAL",
+        "warnings": [
+          "COMBINED_VALUE_RETAINS_EXPLICIT_OPPOSING_SIDE_COMPONENTS"
+        ]
+      },
+      "quality": "COMPLETE",
+      "warnings": [
+        "SPOT_FORWARD_APPROXIMATION_ASSUMES_ZERO_CARRY",
+        "SELECTED_LEG_SIDE_SPREADS_HAVE_OPPOSING_SIGNS",
+        "COMBINED_VALUE_RETAINS_EXPLICIT_OPPOSING_SIDE_COMPONENTS"
+      ]
+    },
+    "matched_measurements": [
+      {
+        "contract_version": "1.0.0",
+        "measurement_basis": "MATCHED_DELTA",
+        "measurement_id": "put-25-absolute-forward-delta",
+        "measurement_profile_version": "1.0.0",
+        "grading_role": "RESEARCH_ONLY",
+        "cohort_id": "d631bd2e7818d7517af8237c2a77df3747a5a0e07c95ce174bf6be6ceaeda64f",
+        "option_side": "PUT",
+        "front_expiration": "2026-09-15T20:00:00.000Z",
+        "back_expiration": "2026-09-29T20:00:00.000Z",
+        "target_delta": "25",
+        "delta_convention": "ABSOLUTE_FORWARD_DELTA_PERCENT",
+        "tolerance": "0.25",
+        "missing_policy": "NOT_AVAILABLE",
+        "status": "AVAILABLE",
+        "iv_unit": "DECIMAL",
+        "front": {
+          "status": "AVAILABLE",
+          "expiration": "2026-09-15T20:00:00.000Z",
+          "option_side": "PUT",
+          "target_coordinate": "25",
+          "achieved_coordinate": "25",
+          "delta_error": "0",
+          "coverage_gap": "0",
+          "iv_decimal": "0.21",
+          "iv_unit": "DECIMAL",
+          "value_origin": "PROVIDER_OBSERVATION",
+          "method": "DIRECT_WITHIN_TOLERANCE",
+          "source_symbols": [
+            "FRONT-PUT-25D"
+          ],
+          "source_strikes": [
+            "7450"
+          ],
+          "source_cohort_ids": [
+            "fixture-5m-cohort"
+          ],
+          "effective_available_at": "2026-08-25T14:25:00.000Z",
+          "interpolation": null,
+          "inputs": [
+            {
+              "source_symbol": "FRONT-PUT-25D",
+              "strike": "7450",
+              "coordinate": "25",
+              "delta": "-25",
+              "delta_convention": "SIGNED_FORWARD_DELTA_PERCENT",
+              "delta_origin": "DERIVED",
+              "iv_decimal": "0.21",
+              "weight": "1",
+              "available_at": "2026-08-25T14:25:00.000Z",
+              "iv_origin": "PROVIDER_OBSERVATION",
+              "model": {
+                "iv_model": "PROVIDER_CANDLE_IMPLIED_VOLATILITY",
+                "delta_model": "BLACK_76_FORWARD_DELTA",
+                "forward_model": "SPOT_FORWARD_ZERO_CARRY",
+                "assumptions": [
+                  "ZERO_CARRY"
+                ]
+              },
+              "forward": {
+                "value": "7665",
+                "origin": "DERIVED",
+                "source_timestamp": "2026-08-25T14:25:00.000Z"
+              },
+              "lineage": [
+                {
+                  "source": "fixture:front-put-25",
+                  "source_timestamp": "2026-08-25T14:25:00.000Z",
+                  "fields": [
+                    "iv",
+                    "delta"
+                  ],
+                  "origin": "PROVIDER_OBSERVATION"
+                }
+              ]
+            }
+          ],
+          "quality": "COMPLETE",
+          "warnings": [
+            "SPOT_FORWARD_APPROXIMATION_ASSUMES_ZERO_CARRY"
+          ]
+        },
+        "back": {
+          "status": "AVAILABLE",
+          "expiration": "2026-09-29T20:00:00.000Z",
+          "option_side": "PUT",
+          "target_coordinate": "25",
+          "achieved_coordinate": "25",
+          "delta_error": "0",
+          "coverage_gap": "0",
+          "iv_decimal": "0.21",
+          "iv_unit": "DECIMAL",
+          "value_origin": "PROVIDER_OBSERVATION",
+          "method": "DIRECT_WITHIN_TOLERANCE",
+          "source_symbols": [
+            "BACK-PUT-25D"
+          ],
+          "source_strikes": [
+            "7475"
+          ],
+          "source_cohort_ids": [
+            "fixture-5m-cohort"
+          ],
+          "effective_available_at": "2026-08-25T14:25:00.000Z",
+          "interpolation": null,
+          "inputs": [
+            {
+              "source_symbol": "BACK-PUT-25D",
+              "strike": "7475",
+              "coordinate": "25",
+              "delta": "-25",
+              "delta_convention": "SIGNED_FORWARD_DELTA_PERCENT",
+              "delta_origin": "DERIVED",
+              "iv_decimal": "0.21",
+              "weight": "1",
+              "available_at": "2026-08-25T14:25:00.000Z",
+              "iv_origin": "PROVIDER_OBSERVATION",
+              "model": {
+                "iv_model": "PROVIDER_CANDLE_IMPLIED_VOLATILITY",
+                "delta_model": "BLACK_76_FORWARD_DELTA",
+                "forward_model": "SPOT_FORWARD_ZERO_CARRY",
+                "assumptions": [
+                  "ZERO_CARRY"
+                ]
+              },
+              "forward": {
+                "value": "7665",
+                "origin": "DERIVED",
+                "source_timestamp": "2026-08-25T14:25:00.000Z"
+              },
+              "lineage": [
+                {
+                  "source": "fixture:back-put-25",
+                  "source_timestamp": "2026-08-25T14:25:00.000Z",
+                  "fields": [
+                    "iv",
+                    "delta"
+                  ],
+                  "origin": "PROVIDER_OBSERVATION"
+                }
+              ]
+            }
+          ],
+          "quality": "COMPLETE",
+          "warnings": [
+            "SPOT_FORWARD_APPROXIMATION_ASSUMES_ZERO_CARRY"
+          ]
+        },
+        "spread_decimal": "0",
+        "spread_vol_points": "0.00",
+        "temporal_skew_ms": 0,
+        "source_cohort_ids": [
+          "fixture-5m-cohort"
+        ],
+        "quality": "COMPLETE",
+        "warnings": [
+          "SPOT_FORWARD_APPROXIMATION_ASSUMES_ZERO_CARRY"
+        ]
+      },
+      {
+        "contract_version": "1.0.0",
+        "measurement_basis": "MATCHED_DELTA",
+        "measurement_id": "call-25-absolute-forward-delta",
+        "measurement_profile_version": "1.0.0",
+        "grading_role": "RESEARCH_ONLY",
+        "cohort_id": "70701e2b59072397e6d9319a1172db7e4a62611aa579a3247bf3c2c51cbc49f9",
+        "option_side": "CALL",
+        "front_expiration": "2026-09-15T20:00:00.000Z",
+        "back_expiration": "2026-09-29T20:00:00.000Z",
+        "target_delta": "25",
+        "delta_convention": "ABSOLUTE_FORWARD_DELTA_PERCENT",
+        "tolerance": "0.25",
+        "missing_policy": "NOT_AVAILABLE",
+        "status": "AVAILABLE",
+        "iv_unit": "DECIMAL",
+        "front": {
+          "status": "AVAILABLE",
+          "expiration": "2026-09-15T20:00:00.000Z",
+          "option_side": "CALL",
+          "target_coordinate": "25",
+          "achieved_coordinate": "25",
+          "delta_error": "0",
+          "coverage_gap": "0",
+          "iv_decimal": "0.19",
+          "iv_unit": "DECIMAL",
+          "value_origin": "PROVIDER_OBSERVATION",
+          "method": "DIRECT_WITHIN_TOLERANCE",
+          "source_symbols": [
+            "FRONT-CALL-25D"
+          ],
+          "source_strikes": [
+            "7800"
+          ],
+          "source_cohort_ids": [
+            "fixture-5m-cohort"
+          ],
+          "effective_available_at": "2026-08-25T14:25:00.000Z",
+          "interpolation": null,
+          "inputs": [
+            {
+              "source_symbol": "FRONT-CALL-25D",
+              "strike": "7800",
+              "coordinate": "25",
+              "delta": "25",
+              "delta_convention": "SIGNED_FORWARD_DELTA_PERCENT",
+              "delta_origin": "DERIVED",
+              "iv_decimal": "0.19",
+              "weight": "1",
+              "available_at": "2026-08-25T14:25:00.000Z",
+              "iv_origin": "PROVIDER_OBSERVATION",
+              "model": {
+                "iv_model": "PROVIDER_CANDLE_IMPLIED_VOLATILITY",
+                "delta_model": "BLACK_76_FORWARD_DELTA",
+                "forward_model": "SPOT_FORWARD_ZERO_CARRY",
+                "assumptions": [
+                  "ZERO_CARRY"
+                ]
+              },
+              "forward": {
+                "value": "7665",
+                "origin": "DERIVED",
+                "source_timestamp": "2026-08-25T14:25:00.000Z"
+              },
+              "lineage": [
+                {
+                  "source": "fixture:front-call-25",
+                  "source_timestamp": "2026-08-25T14:25:00.000Z",
+                  "fields": [
+                    "iv",
+                    "delta"
+                  ],
+                  "origin": "PROVIDER_OBSERVATION"
+                }
+              ]
+            }
+          ],
+          "quality": "COMPLETE",
+          "warnings": [
+            "SPOT_FORWARD_APPROXIMATION_ASSUMES_ZERO_CARRY"
+          ]
+        },
+        "back": {
+          "status": "AVAILABLE",
+          "expiration": "2026-09-29T20:00:00.000Z",
+          "option_side": "CALL",
+          "target_coordinate": "25",
+          "achieved_coordinate": "25",
+          "delta_error": "0",
+          "coverage_gap": "0",
+          "iv_decimal": "0.195",
+          "iv_unit": "DECIMAL",
+          "value_origin": "PROVIDER_OBSERVATION",
+          "method": "DIRECT_WITHIN_TOLERANCE",
+          "source_symbols": [
+            "BACK-CALL-25D"
+          ],
+          "source_strikes": [
+            "7875"
+          ],
+          "source_cohort_ids": [
+            "fixture-5m-cohort"
+          ],
+          "effective_available_at": "2026-08-25T14:25:00.000Z",
+          "interpolation": null,
+          "inputs": [
+            {
+              "source_symbol": "BACK-CALL-25D",
+              "strike": "7875",
+              "coordinate": "25",
+              "delta": "25",
+              "delta_convention": "SIGNED_FORWARD_DELTA_PERCENT",
+              "delta_origin": "DERIVED",
+              "iv_decimal": "0.195",
+              "weight": "1",
+              "available_at": "2026-08-25T14:25:00.000Z",
+              "iv_origin": "PROVIDER_OBSERVATION",
+              "model": {
+                "iv_model": "PROVIDER_CANDLE_IMPLIED_VOLATILITY",
+                "delta_model": "BLACK_76_FORWARD_DELTA",
+                "forward_model": "SPOT_FORWARD_ZERO_CARRY",
+                "assumptions": [
+                  "ZERO_CARRY"
+                ]
+              },
+              "forward": {
+                "value": "7665",
+                "origin": "DERIVED",
+                "source_timestamp": "2026-08-25T14:25:00.000Z"
+              },
+              "lineage": [
+                {
+                  "source": "fixture:back-call-25",
+                  "source_timestamp": "2026-08-25T14:25:00.000Z",
+                  "fields": [
+                    "iv",
+                    "delta"
+                  ],
+                  "origin": "PROVIDER_OBSERVATION"
+                }
+              ]
+            }
+          ],
+          "quality": "COMPLETE",
+          "warnings": [
+            "SPOT_FORWARD_APPROXIMATION_ASSUMES_ZERO_CARRY"
+          ]
+        },
+        "spread_decimal": "0.005",
+        "spread_vol_points": "0.50",
+        "temporal_skew_ms": 0,
+        "source_cohort_ids": [
+          "fixture-5m-cohort"
+        ],
+        "quality": "COMPLETE",
+        "warnings": [
+          "SPOT_FORWARD_APPROXIMATION_ASSUMES_ZERO_CARRY"
+        ]
+      }
+    ],
+    "cohort_identity": {
+      "selected_leg": "e240eb6d28c6c304d7aa4c71a75679929f36b99c4cfa27d7ef79e7a8a0b7a947",
+      "matched": [
+        "d631bd2e7818d7517af8237c2a77df3747a5a0e07c95ce174bf6be6ceaeda64f",
+        "70701e2b59072397e6d9319a1172db7e4a62611aa579a3247bf3c2c51cbc49f9"
+      ],
+      "source_cohort_ids": [
+        "fixture-5m-cohort"
+      ]
+    },
+    "quality": "COMPLETE",
+    "warnings": [
+      "SPOT_FORWARD_APPROXIMATION_ASSUMES_ZERO_CARRY",
+      "SELECTED_LEG_SIDE_SPREADS_HAVE_OPPOSING_SIGNS",
+      "COMBINED_VALUE_RETAINS_EXPLICIT_OPPOSING_SIDE_COMPONENTS",
+      "RESEARCH_ONLY_DOES_NOT_REPLACE_PRODUCTION_TERM_STRUCTURE",
+      "NO_GRADING_ROUTING_FILL_OR_PNL_POLICY_APPLIED"
+    ]
+  }
+}

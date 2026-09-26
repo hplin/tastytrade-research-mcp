@@ -460,6 +460,112 @@ describe("historical SPX candidate universe", () => {
     });
   });
 
+  test("attaches a research-only DD IV handoff without replacing legacy term structure", async () => {
+    const result = await getHistoricalSpxCandidateUniverse(
+      fixtureCandles(),
+      {
+        ...REQUEST,
+        dd_iv_measurement: {
+          contract_version: "1.0.0",
+          candidate_id: "fixture-dd-candidate",
+          selected_legs: [
+            {
+              role: "FRONT_PUT_SHORT",
+              source_symbol: "SPXW  260915P07425000",
+              expiration: "2026-09-15T20:00:00.000Z",
+              option_side: "PUT",
+              strike: "7425",
+            },
+            {
+              role: "FRONT_CALL_SHORT",
+              source_symbol: "SPXW  260915C07900000",
+              expiration: "2026-09-15T20:00:00.000Z",
+              option_side: "CALL",
+              strike: "7900",
+            },
+            {
+              role: "BACK_PUT_LONG",
+              source_symbol: "SPXW  260929P07475000",
+              expiration: "2026-09-29T20:00:00.000Z",
+              option_side: "PUT",
+              strike: "7475",
+            },
+            {
+              role: "BACK_CALL_LONG",
+              source_symbol: "SPXW  260929C07850000",
+              expiration: "2026-09-29T20:00:00.000Z",
+              option_side: "CALL",
+              strike: "7850",
+            },
+          ],
+          measurement_profile: {
+            profile_version: "1.0.0",
+            selected_leg: {
+              max_front_back_skew_ms: 900000,
+            },
+            matched_coordinates: [
+              {
+                measurement_id: "put-25d",
+                measurement_basis: "MATCHED_DELTA",
+                front_expiration: "2026-09-15T20:00:00.000Z",
+                back_expiration: "2026-09-29T20:00:00.000Z",
+                option_side: "PUT",
+                target_delta: "25",
+                delta_convention: "ABSOLUTE_FORWARD_DELTA_PERCENT",
+                tolerance: "10",
+                missing_policy: "NOT_AVAILABLE",
+                max_front_back_skew_ms: 900000,
+              },
+            ],
+          },
+        },
+      },
+    );
+
+    expect(result.dd_iv_measurement_handoff).toMatchObject({
+      contract_version: "1.0.0",
+      grading_role: "RESEARCH_ONLY",
+      candidate_id: "fixture-dd-candidate",
+      legacy_term_structure_replaced: false,
+      selected_leg_measurement: {
+        measurement_basis: "SELECTED_LEG_IV_DIFFERENCE",
+        status: "AVAILABLE",
+        sides: {
+          PUT: {
+            spread_decimal: "-0.006",
+            spread_vol_points: "-0.60",
+          },
+          CALL: {
+            spread_decimal: "0.01",
+            spread_vol_points: "1.00",
+          },
+        },
+      },
+      matched_measurements: [
+        {
+          measurement_basis: "MATCHED_DELTA",
+          measurement_id: "put-25d",
+          status: "AVAILABLE",
+        },
+      ],
+    });
+    expect(
+      result.dd_iv_measurement_handoff.selected_leg_measurement.cohort_id,
+    ).not.toBe(
+      result.dd_iv_measurement_handoff.matched_measurements[0].cohort_id,
+    );
+    expect(
+      result.dd_iv_measurement_handoff.selected_leg_measurement.frozen_legs
+        .every(
+          (leg) =>
+            leg.model.delta_model === "BLACK_76_FORWARD_DELTA" &&
+            leg.forward.origin === "DERIVED" &&
+            leg.available_at <= REQUEST.as_of,
+        ),
+    ).toBe(true);
+    expect(result).not.toHaveProperty("term_structure");
+  });
+
   test("reconstructs the universe with completed native-hour RTH evidence", async () => {
     const source = structuredClone(fixture);
     source.underlying.candle.source_time = "2026-08-25T13:30:00.000Z";

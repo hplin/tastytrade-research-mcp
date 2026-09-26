@@ -26,6 +26,12 @@ The suite builds the TypeScript project before running Jest and covers:
   rejection of ambiguous and nonexistent local instants;
 - preservation of bar start/end, availability, retrieval, and opaque
   candidate-construction metadata;
+- versioned Double Diagonal selected-leg versus matched-delta IV cohorts;
+- exact decimal-to-vol-point conversion, PUT/CALL divergence, null/NaN,
+  stale/incomplete/future-bar rejection, delta coverage gaps, bounded
+  interpolation, no extrapolation, and ambiguous legacy-unit preservation;
+- deterministic regeneration of the grading/regression handoff fixture
+  without embedding downstream bucket or routing policy;
 - `LIMIT_TOUCH` and `CONSERVATIVE_CROSS`;
 - sparse first-touch intervals, complete no-touch paths, and
   `NOT_VERIFIABLE`/`NOT_ASSESSABLE`;

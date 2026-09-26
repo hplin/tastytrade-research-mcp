@@ -63,6 +63,12 @@ alignment, age/skew limits, and fallback policy are returned with the result.
 does not grade contracts, assign Double Diagonal buckets, or choose final
 legs.
 
+An optional `dd_iv_measurement` object may freeze one exact four-leg Double
+Diagonal candidate plus a versioned matched-delta profile. Every selected leg
+must be inside the requested expiration/side/strike grid. The result then
+adds `dd_iv_measurement_handoff`; omitting the request returns that field as
+`null`. The tool count remains unchanged.
+
 ## Evidence reconstruction
 
 The adapter:
@@ -107,6 +113,8 @@ Each verified contract includes:
 - `bar_start`, `bar_end`, `available_at`, `retrieved_at`, and observation age;
 - historical close;
 - reconstructed delta when available;
+- the delta convention, Black-76 model, forward value/basis/source timestamp,
+  and zero-carry or parity assumptions used for that delta;
 - contract IV, interval volume, and open interest when available;
 - reconstructed-identity marker;
 - field-level provenance; and
@@ -141,6 +149,11 @@ Identity semantics are explicit:
 
 This is a bounded candidate universe, not a historical full-chain claim.
 Historical bid/ask remains unavailable.
+
+The optional DD handoff keeps selected-leg and matched-delta cohorts
+independent. It never writes `term_structure`, grading buckets, router
+thresholds, fill assumptions, or P&L. Full measurement and migration rules
+are in [`dd-iv-measurements.md`](./dd-iv-measurements.md).
 
 ## Live checkpoint finding
 

@@ -13,6 +13,8 @@
     "build": "tsc",
     "start": "node dist/index.js",
     "start:http": "node dist/http.js",
+    "handoff:dd-iv": "npm run build --silent && node scripts/generate-dd-iv-handoff.mjs",
+    "handoff:dd-iv:check": "npm run build --silent && node scripts/generate-dd-iv-handoff.mjs --check",
     "live:resolution-gate": "npm run build --silent && node --env-file-if-exists=.env scripts/live-resolution-profile-gate.mjs",
     "typecheck": "tsc --noEmit",
     "test": "npm run build --silent && node --experimental-vm-modules node_modules/jest/bin/jest.js --runInBand"

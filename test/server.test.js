@@ -103,6 +103,15 @@ describe("MCP research server", () => {
         resolution_profile: expect.any(Object),
         candidate_construction_profile: expect.any(Object),
       });
+      const universeTool = tools.tools.find(
+        (tool) =>
+          tool.name === "tastytrade_get_historical_spx_candidate_universe",
+      );
+      expect(
+        universeTool.inputSchema.properties.request.properties,
+      ).toMatchObject({
+        dd_iv_measurement: expect.any(Object),
+      });
 
       const priced = textResult(
         await client.callTool({
@@ -253,11 +262,67 @@ describe("MCP research server", () => {
               underlying: "SPX",
               as_of: "2026-04-15T14:30:00.000Z",
               min_dte: 21,
-              max_dte: 21,
+              max_dte: 35,
+              expirations: ["2026-05-06", "2026-05-20"],
               strike_min: 5200,
               strike_max: 5400,
               strike_step: 100,
               option_sides: ["CALL", "PUT"],
+              dd_iv_measurement: {
+                contract_version: "1.0.0",
+                candidate_id: "mcp-dd-fixture",
+                selected_legs: [
+                  {
+                    role: "FRONT_PUT_SHORT",
+                    source_symbol: "FRONT-PUT",
+                    expiration: "2026-05-06T20:00:00.000Z",
+                    option_side: "PUT",
+                    strike: "5200",
+                  },
+                  {
+                    role: "FRONT_CALL_SHORT",
+                    source_symbol: "FRONT-CALL",
+                    expiration: "2026-05-06T20:00:00.000Z",
+                    option_side: "CALL",
+                    strike: "5400",
+                  },
+                  {
+                    role: "BACK_PUT_LONG",
+                    source_symbol: "BACK-PUT",
+                    expiration: "2026-05-20T20:00:00.000Z",
+                    option_side: "PUT",
+                    strike: "5200",
+                  },
+                  {
+                    role: "BACK_CALL_LONG",
+                    source_symbol: "BACK-CALL",
+                    expiration: "2026-05-20T20:00:00.000Z",
+                    option_side: "CALL",
+                    strike: "5400",
+                  },
+                ],
+                measurement_profile: {
+                  profile_version: "1.0.0",
+                  selected_leg: {
+                    max_front_back_skew_ms: 600000,
+                  },
+                  matched_coordinates: [
+                    {
+                      measurement_id: "put-25d",
+                      measurement_basis: "MATCHED_DELTA",
+                      front_expiration: "2026-05-06T20:00:00.000Z",
+                      back_expiration: "2026-05-20T20:00:00.000Z",
+                      option_side: "PUT",
+                      target_delta: "25",
+                      delta_convention:
+                        "ABSOLUTE_FORWARD_DELTA_PERCENT",
+                      tolerance: "1",
+                      missing_policy: "NOT_AVAILABLE",
+                      max_front_back_skew_ms: 600000,
+                    },
+                  ],
+                },
+              },
               phase: "REGRESSION_RESEARCH",
             },
           },
@@ -267,9 +332,24 @@ describe("MCP research server", () => {
         status: "NOT_AVAILABLE",
         evidence_type: "HISTORICAL_SPX_CANDIDATE_UNIVERSE",
         coverage: {
-          requested_contract_count: 6,
+          requested_contract_count: 12,
           verified_contract_count: 0,
-          missing_contract_count: 6,
+          missing_contract_count: 12,
+        },
+        dd_iv_measurement_handoff: {
+          contract_version: "1.0.0",
+          grading_role: "RESEARCH_ONLY",
+          candidate_id: "mcp-dd-fixture",
+          legacy_term_structure_replaced: false,
+          selected_leg_measurement: {
+            status: "NOT_AVAILABLE",
+          },
+          matched_measurements: [
+            {
+              measurement_id: "put-25d",
+              status: "NOT_AVAILABLE",
+            },
+          ],
         },
       });
 
