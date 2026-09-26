@@ -1,0 +1,1918 @@
+{
+  "contract_version": "1.0.0",
+  "probe": "HISTORICAL_REPLAY_WEEK_SMOKE",
+  "smoke_id": "sha256:613f547f072bd4cc2837f22f06efd599130868780af3fbb2ef3057c09f9bc172",
+  "generated_at": "2026-09-26T21:26:12.972Z",
+  "status": "NOT_ASSESSABLE",
+  "complete_performance_acceptance": false,
+  "provider_enablement_changed": false,
+  "external_provider_used": false,
+  "replay_report_built": false,
+  "replay_blockers": [
+    "HISTORICAL_BID_ASK_AND_SIZE_UNSUPPORTED",
+    "QUOTE_BACKED_ENTRY_AND_EXIT_EVIDENCE_UNAVAILABLE",
+    "FROZEN_UPSTREAM_GRADING_OUTPUTS_NOT_SUPPLIED"
+  ],
+  "request": {
+    "window": {
+      "start_date": "2026-08-24",
+      "end_date": "2026-08-28",
+      "checkpoint_local_time": "07:30",
+      "timezone": "America/Los_Angeles"
+    },
+    "horizons": [
+      {
+        "horizon_id": "PLUS_3_TRADING_DAYS",
+        "trading_days": 3
+      },
+      {
+        "horizon_id": "PLUS_5_TRADING_DAYS",
+        "trading_days": 5
+      }
+    ],
+    "per_entry_scheduled_exit_dates": [
+      {
+        "local_date": "2026-08-24",
+        "plus_3_date": "2026-08-27",
+        "plus_5_date": "2026-08-31"
+      },
+      {
+        "local_date": "2026-08-25",
+        "plus_3_date": "2026-08-28",
+        "plus_5_date": "2026-09-01"
+      },
+      {
+        "local_date": "2026-08-26",
+        "plus_3_date": "2026-08-31",
+        "plus_5_date": "2026-09-02"
+      },
+      {
+        "local_date": "2026-08-27",
+        "plus_3_date": "2026-09-01",
+        "plus_5_date": "2026-09-03"
+      },
+      {
+        "local_date": "2026-08-28",
+        "plus_3_date": "2026-09-02",
+        "plus_5_date": "2026-09-04"
+      }
+    ],
+    "selectors": [
+      {
+        "method": "DELTA",
+        "value": "20",
+        "days_until_expiration": 28
+      },
+      {
+        "method": "PERCENTAGE_OTM",
+        "value": "0.01",
+        "days_until_expiration": 28
+      }
+    ],
+    "resolution_profile": {
+      "profile_id": "DEFAULT_5M",
+      "profile_version": "1.0.0",
+      "max_observation_age_minutes": 60,
+      "max_temporal_skew_minutes": 10
+    },
+    "candidate_construction_profile": {
+      "version": "issue-49-live-smoke/1.0.0",
+      "baseline_policy_version": "SPX-SPREAD-V1",
+      "research_policy_version": "DD_MILD_BACK_RICH_V1",
+      "purpose": "timestamp-safe candidate discovery only; downstream grading is not implemented in this MCP"
+    },
+    "source": {
+      "provider_id": "tastytrade-dxlink",
+      "dataset_id": "dxlink-candles",
+      "license_scope_id": "authorized-private-research",
+      "source_revision": "dxlink-candle-api/2026-09-26"
+    },
+    "study_stage": "IN_SAMPLE",
+    "prior_outcome_accessed": true,
+    "later_selector_fallback_used": false
+  },
+  "summary": {
+    "requested_trading_days": 5,
+    "days_with_any_reconstructed_candidate": 5,
+    "failed_day_count": 0,
+    "exact_candidate_count": 16,
+    "quote_backed_simulation_count": 0,
+    "valuation_only_outcome_count": 0
+  },
+  "daily_results": [
+    {
+      "local_date": "2026-08-24",
+      "checkpoint": "2026-08-24T14:30:00.000Z",
+      "checkpoint_source": "DIRECT_PATH_B_RECONSTRUCTION",
+      "later_selector_fallback_used": false,
+      "requested_selector_count": 4,
+      "reconstructed_candidate_count": 2,
+      "candidate_status": "PARTIAL",
+      "candidate_construction_profile": {
+        "version": "issue-49-live-smoke/1.0.0",
+        "baseline_policy_version": "SPX-SPREAD-V1",
+        "research_policy_version": "DD_MILD_BACK_RICH_V1",
+        "purpose": "timestamp-safe candidate discovery only; downstream grading is not implemented in this MCP"
+      },
+      "resolution_profile": {
+        "contract_version": "1.0.0",
+        "profile_id": "DEFAULT_5M",
+        "profile_version": "1.0.0",
+        "provider_id": "tastytrade-dxlink",
+        "requested_aggregation": "5m",
+        "native_aggregation": "5m",
+        "session": {
+          "kind": "ALL",
+          "timezone": "UTC",
+          "start_time": null,
+          "end_time": null
+        },
+        "alignment": "MIDNIGHT",
+        "max_observation_age_minutes": 60,
+        "max_temporal_skew_minutes": 10,
+        "fallback_policy": {
+          "allowed": false,
+          "aggregations": [],
+          "selection_rule": "FIRST_AVAILABLE_IN_DECLARED_ORDER"
+        },
+        "cohort_id": "2efa8aa1d5e7663d0679a7316fe119ed6d19e578d07af66c36a6645cffa36731",
+        "effective_cohort_id": null,
+        "effective_aggregation": null
+      },
+      "entry_source_evidence_ids": {
+        "manifest_ids": [
+          "sha256:21bcf75214fa16d023551fb29c79f7c18b0f746cb8bd4f0385ca9ea93708face",
+          "sha256:515d22231b34729cad00d260858d31cbaaf9170acf09ac5fea2db7d432b1c007",
+          "sha256:7f9b33e89268a709ba16c042367a4d95e797d5a4afe805d477635b28a49d6656",
+          "sha256:8090576686e4b634851b55088136bf10ba57703c48776366b95a727c99844f24",
+          "sha256:8d7ec67d02b4ed4192d4724474a0a560b1ecba5f27274fff19cb4646caeea2a2",
+          "sha256:a3ddbad6da5e8c2975d152c99130b3696d2b50407cee725aa8e89825ff7b3241",
+          "sha256:fb6147f3aac97dbfa69d7767559d04d65537a2b72158d83b0eb5efbd61713f19"
+        ],
+        "normalized_content_ids": [
+          "sha256:4b6ed9e0d637d951c810b89ec80903505ca257312840fe45a1b2d5e32ef95318",
+          "sha256:636514a3149835c2b3df51ca919018b140f1566e5a3cb2abc67904419ff6df29",
+          "sha256:7ded8837f43b0b9de944762b1d3efcc5a6b05f26e2aa1b51c2a0935bcc23a37b",
+          "sha256:8ae871fac2729af589d2c74331785f015fed629b6041a874aa8b54efac8a03e9",
+          "sha256:efc7b7221d7b806f8fb5e973bad0da71c896c01212127a265c68c1170b20eb20",
+          "sha256:fc9c5d7b73e37053e741f1dec03fc2acf1993ec19f7cf6e6c82e73b89800abef",
+          "sha256:fe93a511455cafbaa83b8ff0f716a1fd0a307e5c20bd689214c65feff1d0240b"
+        ],
+        "provider_payload_content_ids": [
+          "sha256:0f5a339d8e2a5655849caa959905a8ec70aa11fe1f88efd4c78aa5b1d8dedec2",
+          "sha256:29890d390ee86af8476b06af203775d9414badb31fc181caab9ee7326d20b1e5",
+          "sha256:804b79bc83ca85313ae3bee67cdf172d17958e13d35d68fe9cce6f36a45d741a",
+          "sha256:88c97d593f5332495d27d185d158e4f5c63a0be80dd82cbf3984be18c71c1c02",
+          "sha256:92629a4770f86886b96d5c685669d619c6146d2d9f720f2e31427d2adc1a3ffc",
+          "sha256:d4f8c0460e9ba097deaaabd0ba1a8975173d0b06389c53f9d8ec07884587d442",
+          "sha256:edfd881b3c79db4a5133d614d8155f30f133405c3cbddd482cbf6c8487181986"
+        ]
+      },
+      "selected_candidates": [
+        {
+          "selector": {
+            "option_side": "CALL",
+            "method": "PERCENTAGE_OTM",
+            "value": "0.01",
+            "days_until_expiration": 28
+          },
+          "provider_symbol": "SPXW  260921C07725000",
+          "simulation_symbol": "SPXW  260921C07725000",
+          "expiration": "2026-09-21T20:00:00.000Z",
+          "strike": "7725",
+          "selected_at": "2026-08-24T14:30:00.000Z",
+          "bar_start": "2026-08-24T14:05:00.000Z",
+          "bar_end": "2026-08-24T14:10:00.000Z",
+          "available_at": "2026-08-24T14:10:00.000Z",
+          "retrieved_at": "2026-09-26T19:50:09.477Z",
+          "historical_price": "72.24",
+          "historical_delta": null,
+          "historical_iv": "0.1183033898794031",
+          "evidence_class": "VALUATION_ONLY",
+          "entry_fill_status": "NOT_ASSESSABLE",
+          "exit_fill_status": {
+            "PLUS_3_TRADING_DAYS": "NOT_ASSESSABLE",
+            "PLUS_5_TRADING_DAYS": "NOT_ASSESSABLE"
+          }
+        },
+        {
+          "selector": {
+            "option_side": "PUT",
+            "method": "PERCENTAGE_OTM",
+            "value": "0.01",
+            "days_until_expiration": 28
+          },
+          "provider_symbol": "SPXW  260921P07570000",
+          "simulation_symbol": "SPXW  260921P07570000",
+          "expiration": "2026-09-21T20:00:00.000Z",
+          "strike": "7570",
+          "selected_at": "2026-08-24T14:30:00.000Z",
+          "bar_start": "2026-08-24T14:05:00.000Z",
+          "bar_end": "2026-08-24T14:10:00.000Z",
+          "available_at": "2026-08-24T14:10:00.000Z",
+          "retrieved_at": "2026-09-26T19:50:12.794Z",
+          "historical_price": "74.23",
+          "historical_delta": null,
+          "historical_iv": "0.1357924165573743",
+          "evidence_class": "VALUATION_ONLY",
+          "entry_fill_status": "NOT_ASSESSABLE",
+          "exit_fill_status": {
+            "PLUS_3_TRADING_DAYS": "NOT_ASSESSABLE",
+            "PLUS_5_TRADING_DAYS": "NOT_ASSESSABLE"
+          }
+        }
+      ],
+      "outcomes": [
+        {
+          "horizon_id": "PLUS_3_TRADING_DAYS",
+          "trading_days": 3,
+          "local_date": "2026-08-27",
+          "scheduled_exit_at": "2026-08-27T14:30:00.000Z",
+          "status": "NOT_AVAILABLE",
+          "source_evidence_ids": {
+            "manifest_ids": [
+              "sha256:ec6b55cb70e01e98640a7c23294ceec49aa63733f16d1ffde0a9f5068e884e97"
+            ],
+            "normalized_content_ids": [
+              "sha256:0beeb3812886b55d030f367e2a0f69dfb386f49ff79cba92c28ba1b21a327147"
+            ],
+            "provider_payload_content_ids": [
+              "sha256:828621b5c4b5fa43b23f4a521e0253847fa9e4fdcbccc922ffff96752deaddbf"
+            ]
+          },
+          "observations": [
+            {
+              "provider_symbol": "SPXW  260921C07725000",
+              "streamer_symbol": "SPXW  260921C07725000",
+              "provider_status": "NOT_AVAILABLE",
+              "evidence_class": "VALUATION_ONLY",
+              "observed_reference": null,
+              "source_evidence_ids": {
+                "manifest_ids": [
+                  "sha256:ec6b55cb70e01e98640a7c23294ceec49aa63733f16d1ffde0a9f5068e884e97"
+                ],
+                "normalized_content_ids": [
+                  "sha256:0beeb3812886b55d030f367e2a0f69dfb386f49ff79cba92c28ba1b21a327147"
+                ],
+                "provider_payload_content_ids": [
+                  "sha256:828621b5c4b5fa43b23f4a521e0253847fa9e4fdcbccc922ffff96752deaddbf"
+                ]
+              },
+              "failure_reasons": [
+                "SNAPSHOT_TIMEOUT",
+                "MISSING_CONTRACT_EVIDENCE"
+              ]
+            },
+            {
+              "provider_symbol": "SPXW  260921P07570000",
+              "streamer_symbol": "SPXW  260921P07570000",
+              "provider_status": "NOT_AVAILABLE",
+              "evidence_class": "VALUATION_ONLY",
+              "observed_reference": null,
+              "source_evidence_ids": {
+                "manifest_ids": [
+                  "sha256:ec6b55cb70e01e98640a7c23294ceec49aa63733f16d1ffde0a9f5068e884e97"
+                ],
+                "normalized_content_ids": [
+                  "sha256:0beeb3812886b55d030f367e2a0f69dfb386f49ff79cba92c28ba1b21a327147"
+                ],
+                "provider_payload_content_ids": [
+                  "sha256:828621b5c4b5fa43b23f4a521e0253847fa9e4fdcbccc922ffff96752deaddbf"
+                ]
+              },
+              "failure_reasons": [
+                "SNAPSHOT_TIMEOUT",
+                "MISSING_CONTRACT_EVIDENCE"
+              ]
+            }
+          ],
+          "warnings": [
+            "CANDLE_CLOSE_IS_VALUATION_ONLY",
+            "HISTORICAL_BID_ASK_AND_SIZE_UNSUPPORTED"
+          ]
+        },
+        {
+          "horizon_id": "PLUS_5_TRADING_DAYS",
+          "trading_days": 5,
+          "local_date": "2026-08-31",
+          "scheduled_exit_at": "2026-08-31T14:30:00.000Z",
+          "status": "NOT_AVAILABLE",
+          "source_evidence_ids": {
+            "manifest_ids": [
+              "sha256:86d22da9bc64f11c614b5a7a8e06cd0ab973d57ee8108932ef378190d8821c09"
+            ],
+            "normalized_content_ids": [
+              "sha256:39e952a22c9f36ed9c110b5e821e428a9bfb508ece25c11e37d58aebb69e8b35"
+            ],
+            "provider_payload_content_ids": [
+              "sha256:e1c11ddce5f22cea1d7d05dc5085e1a56bd4569c0dc88ec1c4022f4c70ee6aca"
+            ]
+          },
+          "observations": [
+            {
+              "provider_symbol": "SPXW  260921C07725000",
+              "streamer_symbol": "SPXW  260921C07725000",
+              "provider_status": "NOT_AVAILABLE",
+              "evidence_class": "VALUATION_ONLY",
+              "observed_reference": null,
+              "source_evidence_ids": {
+                "manifest_ids": [
+                  "sha256:86d22da9bc64f11c614b5a7a8e06cd0ab973d57ee8108932ef378190d8821c09"
+                ],
+                "normalized_content_ids": [
+                  "sha256:39e952a22c9f36ed9c110b5e821e428a9bfb508ece25c11e37d58aebb69e8b35"
+                ],
+                "provider_payload_content_ids": [
+                  "sha256:e1c11ddce5f22cea1d7d05dc5085e1a56bd4569c0dc88ec1c4022f4c70ee6aca"
+                ]
+              },
+              "failure_reasons": [
+                "SNAPSHOT_TIMEOUT",
+                "MISSING_CONTRACT_EVIDENCE"
+              ]
+            },
+            {
+              "provider_symbol": "SPXW  260921P07570000",
+              "streamer_symbol": "SPXW  260921P07570000",
+              "provider_status": "NOT_AVAILABLE",
+              "evidence_class": "VALUATION_ONLY",
+              "observed_reference": null,
+              "source_evidence_ids": {
+                "manifest_ids": [
+                  "sha256:86d22da9bc64f11c614b5a7a8e06cd0ab973d57ee8108932ef378190d8821c09"
+                ],
+                "normalized_content_ids": [
+                  "sha256:39e952a22c9f36ed9c110b5e821e428a9bfb508ece25c11e37d58aebb69e8b35"
+                ],
+                "provider_payload_content_ids": [
+                  "sha256:e1c11ddce5f22cea1d7d05dc5085e1a56bd4569c0dc88ec1c4022f4c70ee6aca"
+                ]
+              },
+              "failure_reasons": [
+                "SNAPSHOT_TIMEOUT",
+                "MISSING_CONTRACT_EVIDENCE"
+              ]
+            }
+          ],
+          "warnings": [
+            "CANDLE_CLOSE_IS_VALUATION_ONLY",
+            "HISTORICAL_BID_ASK_AND_SIZE_UNSUPPORTED"
+          ]
+        }
+      ],
+      "quote_execution_status": "NOT_ASSESSABLE",
+      "quote_execution_reason_codes": [
+        "HISTORICAL_BID_UNSUPPORTED",
+        "HISTORICAL_ASK_UNSUPPORTED",
+        "HISTORICAL_BID_SIZE_UNSUPPORTED",
+        "HISTORICAL_ASK_SIZE_UNSUPPORTED",
+        "NO_QUOTE_BACKED_SIMULATED_EXECUTION"
+      ],
+      "warnings": [
+        "CALL:DELTA:20:28:NO_TIMESTAMP_SAFE_RECONSTRUCTED_CANDIDATE",
+        "CONTRACT_EXISTENCE_INFERRED_FROM_HISTORICAL_CANDLE",
+        "HISTORICAL_CONTRACT_UNIVERSE_RECONSTRUCTED_FROM_DXLINK",
+        "OPTION_CANDLE_SOURCE_TIME_IS_INTERVAL_START",
+        "OPTION_OBSERVATION_MAX_AGE_MINUTES:60",
+        "PUT:DELTA:20:28:NO_TIMESTAMP_SAFE_RECONSTRUCTED_CANDIDATE"
+      ]
+    },
+    {
+      "local_date": "2026-08-25",
+      "checkpoint": "2026-08-25T14:30:00.000Z",
+      "checkpoint_source": "DIRECT_PATH_B_RECONSTRUCTION",
+      "later_selector_fallback_used": false,
+      "requested_selector_count": 4,
+      "reconstructed_candidate_count": 4,
+      "candidate_status": "COMPLETE",
+      "candidate_construction_profile": {
+        "version": "issue-49-live-smoke/1.0.0",
+        "baseline_policy_version": "SPX-SPREAD-V1",
+        "research_policy_version": "DD_MILD_BACK_RICH_V1",
+        "purpose": "timestamp-safe candidate discovery only; downstream grading is not implemented in this MCP"
+      },
+      "resolution_profile": {
+        "contract_version": "1.0.0",
+        "profile_id": "DEFAULT_5M",
+        "profile_version": "1.0.0",
+        "provider_id": "tastytrade-dxlink",
+        "requested_aggregation": "5m",
+        "native_aggregation": "5m",
+        "session": {
+          "kind": "ALL",
+          "timezone": "UTC",
+          "start_time": null,
+          "end_time": null
+        },
+        "alignment": "MIDNIGHT",
+        "max_observation_age_minutes": 60,
+        "max_temporal_skew_minutes": 10,
+        "fallback_policy": {
+          "allowed": false,
+          "aggregations": [],
+          "selection_rule": "FIRST_AVAILABLE_IN_DECLARED_ORDER"
+        },
+        "cohort_id": "2efa8aa1d5e7663d0679a7316fe119ed6d19e578d07af66c36a6645cffa36731",
+        "effective_cohort_id": null,
+        "effective_aggregation": null
+      },
+      "entry_source_evidence_ids": {
+        "manifest_ids": [
+          "sha256:02db6415fca6665930cd67efaa47d16d269802aa31b300401df3dcae13875de8",
+          "sha256:0878cd73af0905a233e3a92205cdb61f9a8a69874127bd5c499a4c10811beefc",
+          "sha256:5ac9f9227dd357a42fccf78d61d73c4a966a7c4be8a44cdef3b6725f1a247bb8",
+          "sha256:75d463400b4f0e5606b58dffcfd1a177f47cd14083af1a419b91d4fd8ad0927b",
+          "sha256:c9335ba170542ef956f4e602eab1cefa7c7010c0ae2114aaaa1c10c2dec8722d",
+          "sha256:d8d20e319d1a05413a25acc249df31505455092b8ae89b27ade35b88f71420d0",
+          "sha256:ff2daa11f14cfb084e4eee5118e7d6237c800006a614174e7a753476c5116f44"
+        ],
+        "normalized_content_ids": [
+          "sha256:0401b3040b3bb11c1b2cc674eeb40d92f454c5b55fa9404550e3eb1fb218643d",
+          "sha256:0ecce82869f28ac6d65cc15b2efe2b7607cd84d383229666ad7fa5bc7daf30ff",
+          "sha256:53a71f6e423e2bba81262188aa0b281ddde989e9f62e5380b0e361755f3bc3be",
+          "sha256:7cb46fb7cbad0032c6bb317da8d3cdddc81640c01d95a3c18012ee7d9cecd8a8",
+          "sha256:8701cb0a126874a3de06d9c6279e86f6f57d51369abf9765410d681f88bb1e44",
+          "sha256:90875304f30f3ef5ffa3cf87c6bf1afedc01a914380a8ecdc2e50b56d708af01",
+          "sha256:f3fbfee2a5765e99ee3155c166facf2c504cecabed4f8e315c72b008d75ba5e5"
+        ],
+        "provider_payload_content_ids": [
+          "sha256:08b66890a2bf3b6b2a8a0731e9ddaa971c7c20903e3a59dcf87c80a5f6793f1f",
+          "sha256:376cc34966e47902ce7511688107d6e3a15e07c3a8d4c05d1ab531381ed02a28",
+          "sha256:3a5db8bdd02316a39ac7b76a253f87fcaea01dd0f9dea5fe0d1a39f258bf5d3b",
+          "sha256:5f6ced3f60d959a0cdd004725fdded0c1ce739ff39b15385a6ab194882c76141",
+          "sha256:6ed30fcfd4903e024d59d99d9cecede1c14523ce8a4d80b575ddbb94e406bf4c",
+          "sha256:d1d6192b1bdc339545ee235ca6cfb2f33dc2e40f7b468097fbbf0b74d7e8194b",
+          "sha256:fd847122434375d5de629fdbb2136d318b2374b47c2483f6dca990df9b615108"
+        ]
+      },
+      "selected_candidates": [
+        {
+          "selector": {
+            "option_side": "CALL",
+            "method": "DELTA",
+            "value": "20",
+            "days_until_expiration": 28
+          },
+          "provider_symbol": "SPXW  260922C07900000",
+          "simulation_symbol": "SPXW  260922C07900000",
+          "expiration": "2026-09-22T20:00:00.000Z",
+          "strike": "7900",
+          "selected_at": "2026-08-25T14:30:00.000Z",
+          "bar_start": "2026-08-25T13:55:00.000Z",
+          "bar_end": "2026-08-25T14:00:00.000Z",
+          "available_at": "2026-08-25T14:00:00.000Z",
+          "retrieved_at": "2026-09-26T19:50:14.861Z",
+          "historical_price": "24.52",
+          "historical_delta": "18.766569",
+          "historical_iv": "0.1083390992764817",
+          "evidence_class": "VALUATION_ONLY",
+          "entry_fill_status": "NOT_ASSESSABLE",
+          "exit_fill_status": {
+            "PLUS_3_TRADING_DAYS": "NOT_ASSESSABLE",
+            "PLUS_5_TRADING_DAYS": "NOT_ASSESSABLE"
+          }
+        },
+        {
+          "selector": {
+            "option_side": "CALL",
+            "method": "PERCENTAGE_OTM",
+            "value": "0.01",
+            "days_until_expiration": 28
+          },
+          "provider_symbol": "SPXW  260922C07740000",
+          "simulation_symbol": "SPXW  260922C07740000",
+          "expiration": "2026-09-22T20:00:00.000Z",
+          "strike": "7740",
+          "selected_at": "2026-08-25T14:30:00.000Z",
+          "bar_start": "2026-08-25T13:45:00.000Z",
+          "bar_end": "2026-08-25T13:50:00.000Z",
+          "available_at": "2026-08-25T13:50:00.000Z",
+          "retrieved_at": "2026-09-26T19:50:18.071Z",
+          "historical_price": "82.09",
+          "historical_delta": "42.64285",
+          "historical_iv": "0.1192894253387136",
+          "evidence_class": "VALUATION_ONLY",
+          "entry_fill_status": "NOT_ASSESSABLE",
+          "exit_fill_status": {
+            "PLUS_3_TRADING_DAYS": "NOT_ASSESSABLE",
+            "PLUS_5_TRADING_DAYS": "NOT_ASSESSABLE"
+          }
+        },
+        {
+          "selector": {
+            "option_side": "PUT",
+            "method": "DELTA",
+            "value": "20",
+            "days_until_expiration": 28
+          },
+          "provider_symbol": "SPXW  260922P07425000",
+          "simulation_symbol": "SPXW  260922P07425000",
+          "expiration": "2026-09-22T20:00:00.000Z",
+          "strike": "7425",
+          "selected_at": "2026-08-25T14:30:00.000Z",
+          "bar_start": "2026-08-25T13:50:00.000Z",
+          "bar_end": "2026-08-25T13:55:00.000Z",
+          "available_at": "2026-08-25T13:55:00.000Z",
+          "retrieved_at": "2026-09-26T19:50:19.150Z",
+          "historical_price": "38.5",
+          "historical_delta": "-20.71288",
+          "historical_iv": "0.1577087636780021",
+          "evidence_class": "VALUATION_ONLY",
+          "entry_fill_status": "NOT_ASSESSABLE",
+          "exit_fill_status": {
+            "PLUS_3_TRADING_DAYS": "NOT_ASSESSABLE",
+            "PLUS_5_TRADING_DAYS": "NOT_ASSESSABLE"
+          }
+        },
+        {
+          "selector": {
+            "option_side": "PUT",
+            "method": "PERCENTAGE_OTM",
+            "value": "0.01",
+            "days_until_expiration": 28
+          },
+          "provider_symbol": "SPXW  260922P07590000",
+          "simulation_symbol": "SPXW  260922P07590000",
+          "expiration": "2026-09-22T20:00:00.000Z",
+          "strike": "7590",
+          "selected_at": "2026-08-25T14:30:00.000Z",
+          "bar_start": "2026-08-25T14:05:00.000Z",
+          "bar_end": "2026-08-25T14:10:00.000Z",
+          "available_at": "2026-08-25T14:10:00.000Z",
+          "retrieved_at": "2026-09-26T19:50:20.263Z",
+          "historical_price": "71.58",
+          "historical_delta": "-35.88412",
+          "historical_iv": "0.1349706689275798",
+          "evidence_class": "VALUATION_ONLY",
+          "entry_fill_status": "NOT_ASSESSABLE",
+          "exit_fill_status": {
+            "PLUS_3_TRADING_DAYS": "NOT_ASSESSABLE",
+            "PLUS_5_TRADING_DAYS": "NOT_ASSESSABLE"
+          }
+        }
+      ],
+      "outcomes": [
+        {
+          "horizon_id": "PLUS_3_TRADING_DAYS",
+          "trading_days": 3,
+          "local_date": "2026-08-28",
+          "scheduled_exit_at": "2026-08-28T14:30:00.000Z",
+          "status": "NOT_AVAILABLE",
+          "source_evidence_ids": {
+            "manifest_ids": [
+              "sha256:2b8101a098a35def6f47554d83c28356d82637d978960172647066188bc891fa"
+            ],
+            "normalized_content_ids": [
+              "sha256:8412844d95639cd77d475af1dfee48b17e3aa98076f836c4bf6d7e3c29e9e750"
+            ],
+            "provider_payload_content_ids": [
+              "sha256:1c0355c97da269e91255d76083a3a937cc3c638db56bd90a02cfa80a48e4b562"
+            ]
+          },
+          "observations": [
+            {
+              "provider_symbol": "SPXW  260922C07900000",
+              "streamer_symbol": "SPXW  260922C07900000",
+              "provider_status": "NOT_AVAILABLE",
+              "evidence_class": "VALUATION_ONLY",
+              "observed_reference": null,
+              "source_evidence_ids": {
+                "manifest_ids": [
+                  "sha256:2b8101a098a35def6f47554d83c28356d82637d978960172647066188bc891fa"
+                ],
+                "normalized_content_ids": [
+                  "sha256:8412844d95639cd77d475af1dfee48b17e3aa98076f836c4bf6d7e3c29e9e750"
+                ],
+                "provider_payload_content_ids": [
+                  "sha256:1c0355c97da269e91255d76083a3a937cc3c638db56bd90a02cfa80a48e4b562"
+                ]
+              },
+              "failure_reasons": [
+                "SNAPSHOT_TIMEOUT",
+                "MISSING_CONTRACT_EVIDENCE"
+              ]
+            },
+            {
+              "provider_symbol": "SPXW  260922C07740000",
+              "streamer_symbol": "SPXW  260922C07740000",
+              "provider_status": "NOT_AVAILABLE",
+              "evidence_class": "VALUATION_ONLY",
+              "observed_reference": null,
+              "source_evidence_ids": {
+                "manifest_ids": [
+                  "sha256:2b8101a098a35def6f47554d83c28356d82637d978960172647066188bc891fa"
+                ],
+                "normalized_content_ids": [
+                  "sha256:8412844d95639cd77d475af1dfee48b17e3aa98076f836c4bf6d7e3c29e9e750"
+                ],
+                "provider_payload_content_ids": [
+                  "sha256:1c0355c97da269e91255d76083a3a937cc3c638db56bd90a02cfa80a48e4b562"
+                ]
+              },
+              "failure_reasons": [
+                "SNAPSHOT_TIMEOUT",
+                "MISSING_CONTRACT_EVIDENCE"
+              ]
+            },
+            {
+              "provider_symbol": "SPXW  260922P07425000",
+              "streamer_symbol": "SPXW  260922P07425000",
+              "provider_status": "NOT_AVAILABLE",
+              "evidence_class": "VALUATION_ONLY",
+              "observed_reference": null,
+              "source_evidence_ids": {
+                "manifest_ids": [
+                  "sha256:2b8101a098a35def6f47554d83c28356d82637d978960172647066188bc891fa"
+                ],
+                "normalized_content_ids": [
+                  "sha256:8412844d95639cd77d475af1dfee48b17e3aa98076f836c4bf6d7e3c29e9e750"
+                ],
+                "provider_payload_content_ids": [
+                  "sha256:1c0355c97da269e91255d76083a3a937cc3c638db56bd90a02cfa80a48e4b562"
+                ]
+              },
+              "failure_reasons": [
+                "SNAPSHOT_TIMEOUT",
+                "MISSING_CONTRACT_EVIDENCE"
+              ]
+            },
+            {
+              "provider_symbol": "SPXW  260922P07590000",
+              "streamer_symbol": "SPXW  260922P07590000",
+              "provider_status": "NOT_AVAILABLE",
+              "evidence_class": "VALUATION_ONLY",
+              "observed_reference": null,
+              "source_evidence_ids": {
+                "manifest_ids": [
+                  "sha256:2b8101a098a35def6f47554d83c28356d82637d978960172647066188bc891fa"
+                ],
+                "normalized_content_ids": [
+                  "sha256:8412844d95639cd77d475af1dfee48b17e3aa98076f836c4bf6d7e3c29e9e750"
+                ],
+                "provider_payload_content_ids": [
+                  "sha256:1c0355c97da269e91255d76083a3a937cc3c638db56bd90a02cfa80a48e4b562"
+                ]
+              },
+              "failure_reasons": [
+                "SNAPSHOT_TIMEOUT",
+                "MISSING_CONTRACT_EVIDENCE"
+              ]
+            }
+          ],
+          "warnings": [
+            "CANDLE_CLOSE_IS_VALUATION_ONLY",
+            "HISTORICAL_BID_ASK_AND_SIZE_UNSUPPORTED"
+          ]
+        },
+        {
+          "horizon_id": "PLUS_5_TRADING_DAYS",
+          "trading_days": 5,
+          "local_date": "2026-09-01",
+          "scheduled_exit_at": "2026-09-01T14:30:00.000Z",
+          "status": "NOT_AVAILABLE",
+          "source_evidence_ids": {
+            "manifest_ids": [
+              "sha256:44fe528fb3dd3e901c390949cc3fc476e89133889902053271b20385b757ff3d"
+            ],
+            "normalized_content_ids": [
+              "sha256:b428290734029099d3274eb65f4e7c7a4460716b4fcfd0b3a7876ebe573c82e8"
+            ],
+            "provider_payload_content_ids": [
+              "sha256:8feebae5427c03eb26648b804c79c3cc1518ecf4cd7961b56a826a764f29b8b7"
+            ]
+          },
+          "observations": [
+            {
+              "provider_symbol": "SPXW  260922C07900000",
+              "streamer_symbol": "SPXW  260922C07900000",
+              "provider_status": "NOT_AVAILABLE",
+              "evidence_class": "VALUATION_ONLY",
+              "observed_reference": null,
+              "source_evidence_ids": {
+                "manifest_ids": [
+                  "sha256:44fe528fb3dd3e901c390949cc3fc476e89133889902053271b20385b757ff3d"
+                ],
+                "normalized_content_ids": [
+                  "sha256:b428290734029099d3274eb65f4e7c7a4460716b4fcfd0b3a7876ebe573c82e8"
+                ],
+                "provider_payload_content_ids": [
+                  "sha256:8feebae5427c03eb26648b804c79c3cc1518ecf4cd7961b56a826a764f29b8b7"
+                ]
+              },
+              "failure_reasons": [
+                "SNAPSHOT_TIMEOUT",
+                "MISSING_CONTRACT_EVIDENCE"
+              ]
+            },
+            {
+              "provider_symbol": "SPXW  260922C07740000",
+              "streamer_symbol": "SPXW  260922C07740000",
+              "provider_status": "NOT_AVAILABLE",
+              "evidence_class": "VALUATION_ONLY",
+              "observed_reference": null,
+              "source_evidence_ids": {
+                "manifest_ids": [
+                  "sha256:44fe528fb3dd3e901c390949cc3fc476e89133889902053271b20385b757ff3d"
+                ],
+                "normalized_content_ids": [
+                  "sha256:b428290734029099d3274eb65f4e7c7a4460716b4fcfd0b3a7876ebe573c82e8"
+                ],
+                "provider_payload_content_ids": [
+                  "sha256:8feebae5427c03eb26648b804c79c3cc1518ecf4cd7961b56a826a764f29b8b7"
+                ]
+              },
+              "failure_reasons": [
+                "SNAPSHOT_TIMEOUT",
+                "MISSING_CONTRACT_EVIDENCE"
+              ]
+            },
+            {
+              "provider_symbol": "SPXW  260922P07425000",
+              "streamer_symbol": "SPXW  260922P07425000",
+              "provider_status": "NOT_AVAILABLE",
+              "evidence_class": "VALUATION_ONLY",
+              "observed_reference": null,
+              "source_evidence_ids": {
+                "manifest_ids": [
+                  "sha256:44fe528fb3dd3e901c390949cc3fc476e89133889902053271b20385b757ff3d"
+                ],
+                "normalized_content_ids": [
+                  "sha256:b428290734029099d3274eb65f4e7c7a4460716b4fcfd0b3a7876ebe573c82e8"
+                ],
+                "provider_payload_content_ids": [
+                  "sha256:8feebae5427c03eb26648b804c79c3cc1518ecf4cd7961b56a826a764f29b8b7"
+                ]
+              },
+              "failure_reasons": [
+                "SNAPSHOT_TIMEOUT",
+                "MISSING_CONTRACT_EVIDENCE"
+              ]
+            },
+            {
+              "provider_symbol": "SPXW  260922P07590000",
+              "streamer_symbol": "SPXW  260922P07590000",
+              "provider_status": "NOT_AVAILABLE",
+              "evidence_class": "VALUATION_ONLY",
+              "observed_reference": null,
+              "source_evidence_ids": {
+                "manifest_ids": [
+                  "sha256:44fe528fb3dd3e901c390949cc3fc476e89133889902053271b20385b757ff3d"
+                ],
+                "normalized_content_ids": [
+                  "sha256:b428290734029099d3274eb65f4e7c7a4460716b4fcfd0b3a7876ebe573c82e8"
+                ],
+                "provider_payload_content_ids": [
+                  "sha256:8feebae5427c03eb26648b804c79c3cc1518ecf4cd7961b56a826a764f29b8b7"
+                ]
+              },
+              "failure_reasons": [
+                "SNAPSHOT_TIMEOUT",
+                "MISSING_CONTRACT_EVIDENCE"
+              ]
+            }
+          ],
+          "warnings": [
+            "CANDLE_CLOSE_IS_VALUATION_ONLY",
+            "HISTORICAL_BID_ASK_AND_SIZE_UNSUPPORTED"
+          ]
+        }
+      ],
+      "quote_execution_status": "NOT_ASSESSABLE",
+      "quote_execution_reason_codes": [
+        "HISTORICAL_BID_UNSUPPORTED",
+        "HISTORICAL_ASK_UNSUPPORTED",
+        "HISTORICAL_BID_SIZE_UNSUPPORTED",
+        "HISTORICAL_ASK_SIZE_UNSUPPORTED",
+        "NO_QUOTE_BACKED_SIMULATED_EXECUTION"
+      ],
+      "warnings": [
+        "CONTRACT_EXISTENCE_INFERRED_FROM_HISTORICAL_CANDLE",
+        "DELTA_DERIVED_FROM_CANDLE_IV_AND_PUT_CALL_PARITY_FORWARD",
+        "HISTORICAL_CONTRACT_UNIVERSE_RECONSTRUCTED_FROM_DXLINK",
+        "OPTION_CANDLE_SOURCE_TIME_IS_INTERVAL_START",
+        "OPTION_OBSERVATION_MAX_AGE_MINUTES:60",
+        "PUT_CALL_PARITY_FORWARD_OMITS_DISCOUNT_FACTOR"
+      ]
+    },
+    {
+      "local_date": "2026-08-26",
+      "checkpoint": "2026-08-26T14:30:00.000Z",
+      "checkpoint_source": "DIRECT_PATH_B_RECONSTRUCTION",
+      "later_selector_fallback_used": false,
+      "requested_selector_count": 4,
+      "reconstructed_candidate_count": 4,
+      "candidate_status": "COMPLETE",
+      "candidate_construction_profile": {
+        "version": "issue-49-live-smoke/1.0.0",
+        "baseline_policy_version": "SPX-SPREAD-V1",
+        "research_policy_version": "DD_MILD_BACK_RICH_V1",
+        "purpose": "timestamp-safe candidate discovery only; downstream grading is not implemented in this MCP"
+      },
+      "resolution_profile": {
+        "contract_version": "1.0.0",
+        "profile_id": "DEFAULT_5M",
+        "profile_version": "1.0.0",
+        "provider_id": "tastytrade-dxlink",
+        "requested_aggregation": "5m",
+        "native_aggregation": "5m",
+        "session": {
+          "kind": "ALL",
+          "timezone": "UTC",
+          "start_time": null,
+          "end_time": null
+        },
+        "alignment": "MIDNIGHT",
+        "max_observation_age_minutes": 60,
+        "max_temporal_skew_minutes": 10,
+        "fallback_policy": {
+          "allowed": false,
+          "aggregations": [],
+          "selection_rule": "FIRST_AVAILABLE_IN_DECLARED_ORDER"
+        },
+        "cohort_id": "2efa8aa1d5e7663d0679a7316fe119ed6d19e578d07af66c36a6645cffa36731",
+        "effective_cohort_id": null,
+        "effective_aggregation": null
+      },
+      "entry_source_evidence_ids": {
+        "manifest_ids": [
+          "sha256:6087c467933f68ea66a6d32e494d3d699902654b7f303e644837e92c7a43d5ef",
+          "sha256:639503c09c8ad6c4dd16f973c46a840c05e8d2fc99217a8649538df6b1aebb9f",
+          "sha256:7cd834b4da29522d12e519fd98ac53de7b35154b69ab47fbd2d94e99984ddfd2",
+          "sha256:85ac422fe88422e0a02d918cbc44d6e75c239364e27d6a006c0ae92d931ab748",
+          "sha256:8cdb5ec15c68dd5b7a52b64500bdb3e76ac3548531297bbcbad620f9443a07d1",
+          "sha256:b38248e5f5985aa1abb8fa6625eb25abec6d4f2c3ba07bdb7488abda3445abcf",
+          "sha256:e3c59da363006feb903ee211113a62d18ed59306a9277193397448f24ca7b800"
+        ],
+        "normalized_content_ids": [
+          "sha256:038a3b6033bbe5891b196e621f0f427ebd7eef21f6a11116401b30d87f6063c8",
+          "sha256:57cdcffae37d3beae3f43c41a2569207ee2dc2ada441588da40523ad99145804",
+          "sha256:6ae8417b892696cd2d6d5afba747c4f97fece1e7a9a729761c2975569e1449a2",
+          "sha256:8fab463b67c7c8019b25da27dfa383c3f5b757f5d45aa87342e0133f6121c6e3",
+          "sha256:b99150e0622bb601d6f4463b6969e899ed9527f34576f0477bb9bd4d8f10f197",
+          "sha256:d3a43ff8969df3ad1aade984471913bba1125d7d912d4de18224e57153378862",
+          "sha256:e14f517d62bb71aef4c0e99e7a1a249fa05851d85ed119f5bc1dac2cfafe8006"
+        ],
+        "provider_payload_content_ids": [
+          "sha256:035d7cd35e9c125703fe051e038803eac8d809a8d97a5185d9065c59f928a616",
+          "sha256:07f05921b9079f28ab7e199f2cda32815d9c240dafcef445c4432817d2fe1bbe",
+          "sha256:503e244809bf763708ce901721939994c5b68217c91bafcde852ce3d6a10471b",
+          "sha256:5700539654407726390fdfe084cebdfab2231a4fe6a5d87a142d3684567bd92f",
+          "sha256:8281009b17f00b3f89bd3ff52154788879374cbd53cea66125687547a34a4c1c",
+          "sha256:8a0a34011f5004aad1be322a3dc2a9f415ec378f2079ba1204cf11e4feffe60d",
+          "sha256:adae8d581a1860fb5753dfe55dd565a946591b6acfdfeb92320f8e74ab7d91e5"
+        ]
+      },
+      "selected_candidates": [
+        {
+          "selector": {
+            "option_side": "CALL",
+            "method": "DELTA",
+            "value": "20",
+            "days_until_expiration": 28
+          },
+          "provider_symbol": "SPXW  260923C07925000",
+          "simulation_symbol": "SPXW  260923C07925000",
+          "expiration": "2026-09-23T20:00:00.000Z",
+          "strike": "7925",
+          "selected_at": "2026-08-26T14:30:00.000Z",
+          "bar_start": "2026-08-26T13:45:00.000Z",
+          "bar_end": "2026-08-26T13:50:00.000Z",
+          "available_at": "2026-08-26T13:50:00.000Z",
+          "retrieved_at": "2026-09-26T19:50:22.377Z",
+          "historical_price": "20.68",
+          "historical_delta": "17.560342",
+          "historical_iv": "0.1081951022672162",
+          "evidence_class": "VALUATION_ONLY",
+          "entry_fill_status": "NOT_ASSESSABLE",
+          "exit_fill_status": {
+            "PLUS_3_TRADING_DAYS": "NOT_ASSESSABLE",
+            "PLUS_5_TRADING_DAYS": "NOT_ASSESSABLE"
+          }
+        },
+        {
+          "selector": {
+            "option_side": "CALL",
+            "method": "PERCENTAGE_OTM",
+            "value": "0.01",
+            "days_until_expiration": 28
+          },
+          "provider_symbol": "SPXW  260923C07760000",
+          "simulation_symbol": "SPXW  260923C07760000",
+          "expiration": "2026-09-23T20:00:00.000Z",
+          "strike": "7760",
+          "selected_at": "2026-08-26T14:30:00.000Z",
+          "bar_start": "2026-08-26T13:50:00.000Z",
+          "bar_end": "2026-08-26T13:55:00.000Z",
+          "available_at": "2026-08-26T13:55:00.000Z",
+          "retrieved_at": "2026-09-26T19:50:25.632Z",
+          "historical_price": "72.55",
+          "historical_delta": "41.648774",
+          "historical_iv": "0.1180657206387767",
+          "evidence_class": "VALUATION_ONLY",
+          "entry_fill_status": "NOT_ASSESSABLE",
+          "exit_fill_status": {
+            "PLUS_3_TRADING_DAYS": "NOT_ASSESSABLE",
+            "PLUS_5_TRADING_DAYS": "NOT_ASSESSABLE"
+          }
+        },
+        {
+          "selector": {
+            "option_side": "PUT",
+            "method": "DELTA",
+            "value": "20",
+            "days_until_expiration": 28
+          },
+          "provider_symbol": "SPXW  260923P07400000",
+          "simulation_symbol": "SPXW  260923P07400000",
+          "expiration": "2026-09-23T20:00:00.000Z",
+          "strike": "7400",
+          "selected_at": "2026-08-26T14:30:00.000Z",
+          "bar_start": "2026-08-26T14:25:00.000Z",
+          "bar_end": "2026-08-26T14:30:00.000Z",
+          "available_at": "2026-08-26T14:30:00.000Z",
+          "retrieved_at": "2026-09-26T19:50:26.697Z",
+          "historical_price": "36.13",
+          "historical_delta": "-17.607853",
+          "historical_iv": "0.1584949767661104",
+          "evidence_class": "VALUATION_ONLY",
+          "entry_fill_status": "NOT_ASSESSABLE",
+          "exit_fill_status": {
+            "PLUS_3_TRADING_DAYS": "NOT_ASSESSABLE",
+            "PLUS_5_TRADING_DAYS": "NOT_ASSESSABLE"
+          }
+        },
+        {
+          "selector": {
+            "option_side": "PUT",
+            "method": "PERCENTAGE_OTM",
+            "value": "0.01",
+            "days_until_expiration": 28
+          },
+          "provider_symbol": "SPXW  260923P07590000",
+          "simulation_symbol": "SPXW  260923P07590000",
+          "expiration": "2026-09-23T20:00:00.000Z",
+          "strike": "7590",
+          "selected_at": "2026-08-26T14:30:00.000Z",
+          "bar_start": "2026-08-26T14:10:00.000Z",
+          "bar_end": "2026-08-26T14:15:00.000Z",
+          "available_at": "2026-08-26T14:15:00.000Z",
+          "retrieved_at": "2026-09-26T19:50:27.770Z",
+          "historical_price": "69.13",
+          "historical_delta": "-34.082013",
+          "historical_iv": "0.1349110428088813",
+          "evidence_class": "VALUATION_ONLY",
+          "entry_fill_status": "NOT_ASSESSABLE",
+          "exit_fill_status": {
+            "PLUS_3_TRADING_DAYS": "NOT_ASSESSABLE",
+            "PLUS_5_TRADING_DAYS": "NOT_ASSESSABLE"
+          }
+        }
+      ],
+      "outcomes": [
+        {
+          "horizon_id": "PLUS_3_TRADING_DAYS",
+          "trading_days": 3,
+          "local_date": "2026-08-31",
+          "scheduled_exit_at": "2026-08-31T14:30:00.000Z",
+          "status": "NOT_AVAILABLE",
+          "source_evidence_ids": {
+            "manifest_ids": [
+              "sha256:aa48c04cac380c0b628107c6c8c9587490336661fd4ad00e9ccba555747d0c0a"
+            ],
+            "normalized_content_ids": [
+              "sha256:37e174efa862f5803ea3fca58f0ebece2ea93f31e58821d5e34753f478daf05e"
+            ],
+            "provider_payload_content_ids": [
+              "sha256:3247d17502edc2665e6d51cd5d5726b9177bee95dd8af04d7a476e174e6aa5d6"
+            ]
+          },
+          "observations": [
+            {
+              "provider_symbol": "SPXW  260923C07925000",
+              "streamer_symbol": "SPXW  260923C07925000",
+              "provider_status": "NOT_AVAILABLE",
+              "evidence_class": "VALUATION_ONLY",
+              "observed_reference": null,
+              "source_evidence_ids": {
+                "manifest_ids": [
+                  "sha256:aa48c04cac380c0b628107c6c8c9587490336661fd4ad00e9ccba555747d0c0a"
+                ],
+                "normalized_content_ids": [
+                  "sha256:37e174efa862f5803ea3fca58f0ebece2ea93f31e58821d5e34753f478daf05e"
+                ],
+                "provider_payload_content_ids": [
+                  "sha256:3247d17502edc2665e6d51cd5d5726b9177bee95dd8af04d7a476e174e6aa5d6"
+                ]
+              },
+              "failure_reasons": [
+                "SNAPSHOT_TIMEOUT",
+                "MISSING_CONTRACT_EVIDENCE"
+              ]
+            },
+            {
+              "provider_symbol": "SPXW  260923C07760000",
+              "streamer_symbol": "SPXW  260923C07760000",
+              "provider_status": "NOT_AVAILABLE",
+              "evidence_class": "VALUATION_ONLY",
+              "observed_reference": null,
+              "source_evidence_ids": {
+                "manifest_ids": [
+                  "sha256:aa48c04cac380c0b628107c6c8c9587490336661fd4ad00e9ccba555747d0c0a"
+                ],
+                "normalized_content_ids": [
+                  "sha256:37e174efa862f5803ea3fca58f0ebece2ea93f31e58821d5e34753f478daf05e"
+                ],
+                "provider_payload_content_ids": [
+                  "sha256:3247d17502edc2665e6d51cd5d5726b9177bee95dd8af04d7a476e174e6aa5d6"
+                ]
+              },
+              "failure_reasons": [
+                "SNAPSHOT_TIMEOUT",
+                "MISSING_CONTRACT_EVIDENCE"
+              ]
+            },
+            {
+              "provider_symbol": "SPXW  260923P07400000",
+              "streamer_symbol": "SPXW  260923P07400000",
+              "provider_status": "NOT_AVAILABLE",
+              "evidence_class": "VALUATION_ONLY",
+              "observed_reference": null,
+              "source_evidence_ids": {
+                "manifest_ids": [
+                  "sha256:aa48c04cac380c0b628107c6c8c9587490336661fd4ad00e9ccba555747d0c0a"
+                ],
+                "normalized_content_ids": [
+                  "sha256:37e174efa862f5803ea3fca58f0ebece2ea93f31e58821d5e34753f478daf05e"
+                ],
+                "provider_payload_content_ids": [
+                  "sha256:3247d17502edc2665e6d51cd5d5726b9177bee95dd8af04d7a476e174e6aa5d6"
+                ]
+              },
+              "failure_reasons": [
+                "SNAPSHOT_TIMEOUT",
+                "MISSING_CONTRACT_EVIDENCE"
+              ]
+            },
+            {
+              "provider_symbol": "SPXW  260923P07590000",
+              "streamer_symbol": "SPXW  260923P07590000",
+              "provider_status": "NOT_AVAILABLE",
+              "evidence_class": "VALUATION_ONLY",
+              "observed_reference": null,
+              "source_evidence_ids": {
+                "manifest_ids": [
+                  "sha256:aa48c04cac380c0b628107c6c8c9587490336661fd4ad00e9ccba555747d0c0a"
+                ],
+                "normalized_content_ids": [
+                  "sha256:37e174efa862f5803ea3fca58f0ebece2ea93f31e58821d5e34753f478daf05e"
+                ],
+                "provider_payload_content_ids": [
+                  "sha256:3247d17502edc2665e6d51cd5d5726b9177bee95dd8af04d7a476e174e6aa5d6"
+                ]
+              },
+              "failure_reasons": [
+                "SNAPSHOT_TIMEOUT",
+                "MISSING_CONTRACT_EVIDENCE"
+              ]
+            }
+          ],
+          "warnings": [
+            "CANDLE_CLOSE_IS_VALUATION_ONLY",
+            "HISTORICAL_BID_ASK_AND_SIZE_UNSUPPORTED"
+          ]
+        },
+        {
+          "horizon_id": "PLUS_5_TRADING_DAYS",
+          "trading_days": 5,
+          "local_date": "2026-09-02",
+          "scheduled_exit_at": "2026-09-02T14:30:00.000Z",
+          "status": "NOT_AVAILABLE",
+          "source_evidence_ids": {
+            "manifest_ids": [
+              "sha256:22c7f19b354256e960ea21cc84798b0c2a96265a8064de5293f6e08d4253e410"
+            ],
+            "normalized_content_ids": [
+              "sha256:f77819b914a69fc40656307389882f73432f3e38c28d16c92b3d20b83ebe1ccf"
+            ],
+            "provider_payload_content_ids": [
+              "sha256:3a6e430bdb4f54062caee446986755a44dd93717e5e07ff222644f2101e910ff"
+            ]
+          },
+          "observations": [
+            {
+              "provider_symbol": "SPXW  260923C07925000",
+              "streamer_symbol": "SPXW  260923C07925000",
+              "provider_status": "NOT_AVAILABLE",
+              "evidence_class": "VALUATION_ONLY",
+              "observed_reference": null,
+              "source_evidence_ids": {
+                "manifest_ids": [
+                  "sha256:22c7f19b354256e960ea21cc84798b0c2a96265a8064de5293f6e08d4253e410"
+                ],
+                "normalized_content_ids": [
+                  "sha256:f77819b914a69fc40656307389882f73432f3e38c28d16c92b3d20b83ebe1ccf"
+                ],
+                "provider_payload_content_ids": [
+                  "sha256:3a6e430bdb4f54062caee446986755a44dd93717e5e07ff222644f2101e910ff"
+                ]
+              },
+              "failure_reasons": [
+                "SNAPSHOT_TIMEOUT",
+                "MISSING_CONTRACT_EVIDENCE"
+              ]
+            },
+            {
+              "provider_symbol": "SPXW  260923C07760000",
+              "streamer_symbol": "SPXW  260923C07760000",
+              "provider_status": "NOT_AVAILABLE",
+              "evidence_class": "VALUATION_ONLY",
+              "observed_reference": null,
+              "source_evidence_ids": {
+                "manifest_ids": [
+                  "sha256:22c7f19b354256e960ea21cc84798b0c2a96265a8064de5293f6e08d4253e410"
+                ],
+                "normalized_content_ids": [
+                  "sha256:f77819b914a69fc40656307389882f73432f3e38c28d16c92b3d20b83ebe1ccf"
+                ],
+                "provider_payload_content_ids": [
+                  "sha256:3a6e430bdb4f54062caee446986755a44dd93717e5e07ff222644f2101e910ff"
+                ]
+              },
+              "failure_reasons": [
+                "SNAPSHOT_TIMEOUT",
+                "MISSING_CONTRACT_EVIDENCE"
+              ]
+            },
+            {
+              "provider_symbol": "SPXW  260923P07400000",
+              "streamer_symbol": "SPXW  260923P07400000",
+              "provider_status": "NOT_AVAILABLE",
+              "evidence_class": "VALUATION_ONLY",
+              "observed_reference": null,
+              "source_evidence_ids": {
+                "manifest_ids": [
+                  "sha256:22c7f19b354256e960ea21cc84798b0c2a96265a8064de5293f6e08d4253e410"
+                ],
+                "normalized_content_ids": [
+                  "sha256:f77819b914a69fc40656307389882f73432f3e38c28d16c92b3d20b83ebe1ccf"
+                ],
+                "provider_payload_content_ids": [
+                  "sha256:3a6e430bdb4f54062caee446986755a44dd93717e5e07ff222644f2101e910ff"
+                ]
+              },
+              "failure_reasons": [
+                "SNAPSHOT_TIMEOUT",
+                "MISSING_CONTRACT_EVIDENCE"
+              ]
+            },
+            {
+              "provider_symbol": "SPXW  260923P07590000",
+              "streamer_symbol": "SPXW  260923P07590000",
+              "provider_status": "NOT_AVAILABLE",
+              "evidence_class": "VALUATION_ONLY",
+              "observed_reference": null,
+              "source_evidence_ids": {
+                "manifest_ids": [
+                  "sha256:22c7f19b354256e960ea21cc84798b0c2a96265a8064de5293f6e08d4253e410"
+                ],
+                "normalized_content_ids": [
+                  "sha256:f77819b914a69fc40656307389882f73432f3e38c28d16c92b3d20b83ebe1ccf"
+                ],
+                "provider_payload_content_ids": [
+                  "sha256:3a6e430bdb4f54062caee446986755a44dd93717e5e07ff222644f2101e910ff"
+                ]
+              },
+              "failure_reasons": [
+                "SNAPSHOT_TIMEOUT",
+                "MISSING_CONTRACT_EVIDENCE"
+              ]
+            }
+          ],
+          "warnings": [
+            "CANDLE_CLOSE_IS_VALUATION_ONLY",
+            "HISTORICAL_BID_ASK_AND_SIZE_UNSUPPORTED"
+          ]
+        }
+      ],
+      "quote_execution_status": "NOT_ASSESSABLE",
+      "quote_execution_reason_codes": [
+        "HISTORICAL_BID_UNSUPPORTED",
+        "HISTORICAL_ASK_UNSUPPORTED",
+        "HISTORICAL_BID_SIZE_UNSUPPORTED",
+        "HISTORICAL_ASK_SIZE_UNSUPPORTED",
+        "NO_QUOTE_BACKED_SIMULATED_EXECUTION"
+      ],
+      "warnings": [
+        "CONTRACT_EXISTENCE_INFERRED_FROM_HISTORICAL_CANDLE",
+        "DELTA_DERIVED_FROM_CANDLE_IV_AND_PUT_CALL_PARITY_FORWARD",
+        "HISTORICAL_CONTRACT_UNIVERSE_RECONSTRUCTED_FROM_DXLINK",
+        "OPTION_CANDLE_SOURCE_TIME_IS_INTERVAL_START",
+        "OPTION_OBSERVATION_MAX_AGE_MINUTES:60",
+        "PUT_CALL_PARITY_FORWARD_OMITS_DISCOUNT_FACTOR"
+      ]
+    },
+    {
+      "local_date": "2026-08-27",
+      "checkpoint": "2026-08-27T14:30:00.000Z",
+      "checkpoint_source": "DIRECT_PATH_B_RECONSTRUCTION",
+      "later_selector_fallback_used": false,
+      "requested_selector_count": 4,
+      "reconstructed_candidate_count": 2,
+      "candidate_status": "PARTIAL",
+      "candidate_construction_profile": {
+        "version": "issue-49-live-smoke/1.0.0",
+        "baseline_policy_version": "SPX-SPREAD-V1",
+        "research_policy_version": "DD_MILD_BACK_RICH_V1",
+        "purpose": "timestamp-safe candidate discovery only; downstream grading is not implemented in this MCP"
+      },
+      "resolution_profile": {
+        "contract_version": "1.0.0",
+        "profile_id": "DEFAULT_5M",
+        "profile_version": "1.0.0",
+        "provider_id": "tastytrade-dxlink",
+        "requested_aggregation": "5m",
+        "native_aggregation": "5m",
+        "session": {
+          "kind": "ALL",
+          "timezone": "UTC",
+          "start_time": null,
+          "end_time": null
+        },
+        "alignment": "MIDNIGHT",
+        "max_observation_age_minutes": 60,
+        "max_temporal_skew_minutes": 10,
+        "fallback_policy": {
+          "allowed": false,
+          "aggregations": [],
+          "selection_rule": "FIRST_AVAILABLE_IN_DECLARED_ORDER"
+        },
+        "cohort_id": "2efa8aa1d5e7663d0679a7316fe119ed6d19e578d07af66c36a6645cffa36731",
+        "effective_cohort_id": null,
+        "effective_aggregation": null
+      },
+      "entry_source_evidence_ids": {
+        "manifest_ids": [
+          "sha256:118b3885fa88121667e6834f7e3c7c70333e5d7aebd199cbbd169f7154674b23",
+          "sha256:24c370001d29edde0493e0836ea9a57fc7321706ea91f067863603c63da1f272",
+          "sha256:73c011859c582c107663df4cee22aa573210d2ed7bcde2573cb11fc01df42d69",
+          "sha256:b5370b60d66529e2152e9aa777ed7e6254c208c6c978fc4927f0048b686c6013",
+          "sha256:d58db4aeb0672112466ae0a05fa59fe5e60f0ac152d79a977101be849e9f3bac",
+          "sha256:d9847f29a119f2ddd776be67fd63c73890430e4081ff360775fb1a963fd3d623",
+          "sha256:fd7de4e48a7905fd23ac184316feb06f3a1b6d317e97a89979ae63f025c3a7bf"
+        ],
+        "normalized_content_ids": [
+          "sha256:0364236f034b449358f2b5bcb5dbcf5c20b898f4544a772a09ab8a716171714c",
+          "sha256:3c78f8b445a7064619e3c339a7888fcf8c82383032c913d9570840799026bb58",
+          "sha256:48c8e5fda6da906faceedfde7d9bfc274fe47671f173903b914e2bb4c7a3883b",
+          "sha256:5b0743a80ca0b01cfe7bad189ff3961f38d6dca9f015a142447a1ae70758d732",
+          "sha256:5b73433fd0d2e978cde253e690bc1407992c4a1fb29d02563d0150458a11b796",
+          "sha256:c744ebdfe8b284754f97c978bbf80b28eea0ea42814a46ba3db74543ac3a5e98",
+          "sha256:f77007e5b1253654fec56bc2fcf360a28f6a554a2a415c7ed8871bcede8ee7d3"
+        ],
+        "provider_payload_content_ids": [
+          "sha256:427a6983a9a75b61f38d13980ea46067452f96398ebfe51927f895135476cdab",
+          "sha256:5134178d87d968894e848f0491702c32dda1c5988c7a9d28e67e74c98e1359e9",
+          "sha256:767ac12d70919f020ebb643143bacf8aca7a59f1b724c972e105210ca9e44c95",
+          "sha256:bda11e069766b847d69dd017c93f35862919390672eb6e8c6767c2f311c1e117",
+          "sha256:de77ded97d10311a27cc73458b30fb1b3463a614f90b3b4ed44c3b3024db118a",
+          "sha256:e7a9cdaa31175e3eb9d17ad4b5470d6102b72150ff2099a8071f7166d8ecdce5",
+          "sha256:ef28554c2bfb773da026d60091805c2aa52b69fb335d2bbbb7a773256fbb7ca6"
+        ]
+      },
+      "selected_candidates": [
+        {
+          "selector": {
+            "option_side": "CALL",
+            "method": "PERCENTAGE_OTM",
+            "value": "0.01",
+            "days_until_expiration": 28
+          },
+          "provider_symbol": "SPXW  260924C07800000",
+          "simulation_symbol": "SPXW  260924C07800000",
+          "expiration": "2026-09-24T20:00:00.000Z",
+          "strike": "7800",
+          "selected_at": "2026-08-27T14:30:00.000Z",
+          "bar_start": "2026-08-27T14:05:00.000Z",
+          "bar_end": "2026-08-27T14:10:00.000Z",
+          "available_at": "2026-08-27T14:10:00.000Z",
+          "retrieved_at": "2026-09-26T19:50:32.055Z",
+          "historical_price": "60.25",
+          "historical_delta": null,
+          "historical_iv": "0.111001015516424",
+          "evidence_class": "VALUATION_ONLY",
+          "entry_fill_status": "NOT_ASSESSABLE",
+          "exit_fill_status": {
+            "PLUS_3_TRADING_DAYS": "NOT_ASSESSABLE",
+            "PLUS_5_TRADING_DAYS": "NOT_ASSESSABLE"
+          }
+        },
+        {
+          "selector": {
+            "option_side": "PUT",
+            "method": "PERCENTAGE_OTM",
+            "value": "0.01",
+            "days_until_expiration": 28
+          },
+          "provider_symbol": "SPXW  260924P07625000",
+          "simulation_symbol": "SPXW  260924P07625000",
+          "expiration": "2026-09-24T20:00:00.000Z",
+          "strike": "7625",
+          "selected_at": "2026-08-27T14:30:00.000Z",
+          "bar_start": "2026-08-27T13:50:00.000Z",
+          "bar_end": "2026-08-27T13:55:00.000Z",
+          "available_at": "2026-08-27T13:55:00.000Z",
+          "retrieved_at": "2026-09-26T19:50:32.055Z",
+          "historical_price": "68.39",
+          "historical_delta": null,
+          "historical_iv": "0.1294419216170583",
+          "evidence_class": "VALUATION_ONLY",
+          "entry_fill_status": "NOT_ASSESSABLE",
+          "exit_fill_status": {
+            "PLUS_3_TRADING_DAYS": "NOT_ASSESSABLE",
+            "PLUS_5_TRADING_DAYS": "NOT_ASSESSABLE"
+          }
+        }
+      ],
+      "outcomes": [
+        {
+          "horizon_id": "PLUS_3_TRADING_DAYS",
+          "trading_days": 3,
+          "local_date": "2026-09-01",
+          "scheduled_exit_at": "2026-09-01T14:30:00.000Z",
+          "status": "NOT_AVAILABLE",
+          "source_evidence_ids": {
+            "manifest_ids": [
+              "sha256:2c3d7e8325dca1e9be0a92e5b145dfe8dccbbb429f88dd804d076472bedeb4d8"
+            ],
+            "normalized_content_ids": [
+              "sha256:9b465d61f588425c405d255ba87666185df26d7ba2c0a934d4984ba93d7f8420"
+            ],
+            "provider_payload_content_ids": [
+              "sha256:3a84594190821ba4d7adadc18bb44d017430824839dd6589d3cd27220bbcf0a7"
+            ]
+          },
+          "observations": [
+            {
+              "provider_symbol": "SPXW  260924C07800000",
+              "streamer_symbol": "SPXW  260924C07800000",
+              "provider_status": "NOT_AVAILABLE",
+              "evidence_class": "VALUATION_ONLY",
+              "observed_reference": null,
+              "source_evidence_ids": {
+                "manifest_ids": [
+                  "sha256:2c3d7e8325dca1e9be0a92e5b145dfe8dccbbb429f88dd804d076472bedeb4d8"
+                ],
+                "normalized_content_ids": [
+                  "sha256:9b465d61f588425c405d255ba87666185df26d7ba2c0a934d4984ba93d7f8420"
+                ],
+                "provider_payload_content_ids": [
+                  "sha256:3a84594190821ba4d7adadc18bb44d017430824839dd6589d3cd27220bbcf0a7"
+                ]
+              },
+              "failure_reasons": [
+                "SNAPSHOT_TIMEOUT",
+                "MISSING_CONTRACT_EVIDENCE"
+              ]
+            },
+            {
+              "provider_symbol": "SPXW  260924P07625000",
+              "streamer_symbol": "SPXW  260924P07625000",
+              "provider_status": "NOT_AVAILABLE",
+              "evidence_class": "VALUATION_ONLY",
+              "observed_reference": null,
+              "source_evidence_ids": {
+                "manifest_ids": [
+                  "sha256:2c3d7e8325dca1e9be0a92e5b145dfe8dccbbb429f88dd804d076472bedeb4d8"
+                ],
+                "normalized_content_ids": [
+                  "sha256:9b465d61f588425c405d255ba87666185df26d7ba2c0a934d4984ba93d7f8420"
+                ],
+                "provider_payload_content_ids": [
+                  "sha256:3a84594190821ba4d7adadc18bb44d017430824839dd6589d3cd27220bbcf0a7"
+                ]
+              },
+              "failure_reasons": [
+                "SNAPSHOT_TIMEOUT",
+                "MISSING_CONTRACT_EVIDENCE"
+              ]
+            }
+          ],
+          "warnings": [
+            "CANDLE_CLOSE_IS_VALUATION_ONLY",
+            "HISTORICAL_BID_ASK_AND_SIZE_UNSUPPORTED"
+          ]
+        },
+        {
+          "horizon_id": "PLUS_5_TRADING_DAYS",
+          "trading_days": 5,
+          "local_date": "2026-09-03",
+          "scheduled_exit_at": "2026-09-03T14:30:00.000Z",
+          "status": "NOT_AVAILABLE",
+          "source_evidence_ids": {
+            "manifest_ids": [
+              "sha256:051793e4d072ded2408f9140e439dc9ea2c2b98186799dce51702aa181dfc6c4"
+            ],
+            "normalized_content_ids": [
+              "sha256:253eb4d05645dc33ba92722af7be4fd63f448f77a7cef3cb7406c5bbcbd5aecc"
+            ],
+            "provider_payload_content_ids": [
+              "sha256:c5e26b78bada810c12d334efb2cc5343556a72d9751dae7cf48379d6e615181b"
+            ]
+          },
+          "observations": [
+            {
+              "provider_symbol": "SPXW  260924C07800000",
+              "streamer_symbol": "SPXW  260924C07800000",
+              "provider_status": "NOT_AVAILABLE",
+              "evidence_class": "VALUATION_ONLY",
+              "observed_reference": null,
+              "source_evidence_ids": {
+                "manifest_ids": [
+                  "sha256:051793e4d072ded2408f9140e439dc9ea2c2b98186799dce51702aa181dfc6c4"
+                ],
+                "normalized_content_ids": [
+                  "sha256:253eb4d05645dc33ba92722af7be4fd63f448f77a7cef3cb7406c5bbcbd5aecc"
+                ],
+                "provider_payload_content_ids": [
+                  "sha256:c5e26b78bada810c12d334efb2cc5343556a72d9751dae7cf48379d6e615181b"
+                ]
+              },
+              "failure_reasons": [
+                "SNAPSHOT_TIMEOUT",
+                "MISSING_CONTRACT_EVIDENCE"
+              ]
+            },
+            {
+              "provider_symbol": "SPXW  260924P07625000",
+              "streamer_symbol": "SPXW  260924P07625000",
+              "provider_status": "NOT_AVAILABLE",
+              "evidence_class": "VALUATION_ONLY",
+              "observed_reference": null,
+              "source_evidence_ids": {
+                "manifest_ids": [
+                  "sha256:051793e4d072ded2408f9140e439dc9ea2c2b98186799dce51702aa181dfc6c4"
+                ],
+                "normalized_content_ids": [
+                  "sha256:253eb4d05645dc33ba92722af7be4fd63f448f77a7cef3cb7406c5bbcbd5aecc"
+                ],
+                "provider_payload_content_ids": [
+                  "sha256:c5e26b78bada810c12d334efb2cc5343556a72d9751dae7cf48379d6e615181b"
+                ]
+              },
+              "failure_reasons": [
+                "SNAPSHOT_TIMEOUT",
+                "MISSING_CONTRACT_EVIDENCE"
+              ]
+            }
+          ],
+          "warnings": [
+            "CANDLE_CLOSE_IS_VALUATION_ONLY",
+            "HISTORICAL_BID_ASK_AND_SIZE_UNSUPPORTED"
+          ]
+        }
+      ],
+      "quote_execution_status": "NOT_ASSESSABLE",
+      "quote_execution_reason_codes": [
+        "HISTORICAL_BID_UNSUPPORTED",
+        "HISTORICAL_ASK_UNSUPPORTED",
+        "HISTORICAL_BID_SIZE_UNSUPPORTED",
+        "HISTORICAL_ASK_SIZE_UNSUPPORTED",
+        "NO_QUOTE_BACKED_SIMULATED_EXECUTION"
+      ],
+      "warnings": [
+        "CALL:DELTA:20:28:NO_TIMESTAMP_SAFE_RECONSTRUCTED_CANDIDATE",
+        "CONTRACT_EXISTENCE_INFERRED_FROM_HISTORICAL_CANDLE",
+        "HISTORICAL_CONTRACT_UNIVERSE_RECONSTRUCTED_FROM_DXLINK",
+        "OPTION_CANDLE_SOURCE_TIME_IS_INTERVAL_START",
+        "OPTION_OBSERVATION_MAX_AGE_MINUTES:60",
+        "PUT:DELTA:20:28:NO_TIMESTAMP_SAFE_RECONSTRUCTED_CANDIDATE"
+      ]
+    },
+    {
+      "local_date": "2026-08-28",
+      "checkpoint": "2026-08-28T14:30:00.000Z",
+      "checkpoint_source": "DIRECT_PATH_B_RECONSTRUCTION",
+      "later_selector_fallback_used": false,
+      "requested_selector_count": 4,
+      "reconstructed_candidate_count": 4,
+      "candidate_status": "COMPLETE",
+      "candidate_construction_profile": {
+        "version": "issue-49-live-smoke/1.0.0",
+        "baseline_policy_version": "SPX-SPREAD-V1",
+        "research_policy_version": "DD_MILD_BACK_RICH_V1",
+        "purpose": "timestamp-safe candidate discovery only; downstream grading is not implemented in this MCP"
+      },
+      "resolution_profile": {
+        "contract_version": "1.0.0",
+        "profile_id": "DEFAULT_5M",
+        "profile_version": "1.0.0",
+        "provider_id": "tastytrade-dxlink",
+        "requested_aggregation": "5m",
+        "native_aggregation": "5m",
+        "session": {
+          "kind": "ALL",
+          "timezone": "UTC",
+          "start_time": null,
+          "end_time": null
+        },
+        "alignment": "MIDNIGHT",
+        "max_observation_age_minutes": 60,
+        "max_temporal_skew_minutes": 10,
+        "fallback_policy": {
+          "allowed": false,
+          "aggregations": [],
+          "selection_rule": "FIRST_AVAILABLE_IN_DECLARED_ORDER"
+        },
+        "cohort_id": "2efa8aa1d5e7663d0679a7316fe119ed6d19e578d07af66c36a6645cffa36731",
+        "effective_cohort_id": null,
+        "effective_aggregation": null
+      },
+      "entry_source_evidence_ids": {
+        "manifest_ids": [
+          "sha256:28eb26d590c362aa5c5e26953adfc89aa386121496439055a5ff921a9414ed93",
+          "sha256:7f36a3abb15067dbf5fc03a2dd637c7b1f99755a39fadb91f953428c24f3de8e",
+          "sha256:93c61f4c2f83561d4c31f09d8954dd550b4938315ee9159b45ebdd6e5c4be90e",
+          "sha256:97d6ea1ef6f41b0321289c15c296e236c50fb6bd04578776036b436874b5a996",
+          "sha256:d60a47af990f84225ed474096cb25309adc0c218e98c285b282c0f80273fe13b",
+          "sha256:d8c4faa063772607f9b4068035e4fc0dd8e49e0fb8791389a03c526d3b4d1efe",
+          "sha256:f14dc64c340dfdac0e428002be21c2284fe51924cf4a9df9e32f292ec940a1a9"
+        ],
+        "normalized_content_ids": [
+          "sha256:1f2922b755bb19cdd8374472c2400b6799ebe28496abce0fe2296290e37de680",
+          "sha256:5a00ea21b645497f26a5b233556d2321f84b22cfd4abc360b723c8e1687328ee",
+          "sha256:62933fea82bb73bbc16094bfad2f018aa715afe444ca0b9e0ba64ebfbe9855f8",
+          "sha256:ae3390222123971fbd0396633eaa0935d749be81afecc77a68e0a57432d840f1",
+          "sha256:cd23f6dc66978722d538a7db82708d02ab317a6463f6ed80b9422c4e5ca374ba",
+          "sha256:f0ccd143fdb224227c3a0840ccb3ffd2529869224bd3c689d9bc1054e2fea180",
+          "sha256:f6f9d9d924cc5b606540013ed596028ddf38d4e97584289fb8658fced8f99062"
+        ],
+        "provider_payload_content_ids": [
+          "sha256:2b3d7f6f10095b01f7e6e155669c4422f172a3513facad2bb90a9badd49d5d32",
+          "sha256:6ff135f768ceb0b92ed28f00207234dd1022658ef96c5f8d9af9822806395338",
+          "sha256:805bbb4178a86fc0cc575dbaa3ce9f49a5e10eb21764bc1e826e9f4c0cedc229",
+          "sha256:b7782927bc5788fa03ccc876b433a8e153222a72ca95f62e23a203a9e6284701",
+          "sha256:c091b048fb44161811e4bbc273a4770f5dd391f721a38314606e2697c1e0e377",
+          "sha256:d7acfc222f02e73d3e924cdf90b6bece5683c49bd43a42b06a80d556bc93062f",
+          "sha256:e019716c7952fdccd0f926948ae099fd390d31c88941e69974f8dfd9a84f1ed0"
+        ]
+      },
+      "selected_candidates": [
+        {
+          "selector": {
+            "option_side": "CALL",
+            "method": "DELTA",
+            "value": "20",
+            "days_until_expiration": 28
+          },
+          "provider_symbol": "SPXW  260925C07930000",
+          "simulation_symbol": "SPXW  260925C07930000",
+          "expiration": "2026-09-25T20:00:00.000Z",
+          "strike": "7930",
+          "selected_at": "2026-08-28T14:30:00.000Z",
+          "bar_start": "2026-08-28T14:10:00.000Z",
+          "bar_end": "2026-08-28T14:15:00.000Z",
+          "available_at": "2026-08-28T14:15:00.000Z",
+          "retrieved_at": "2026-09-26T19:50:37.474Z",
+          "historical_price": "23.6",
+          "historical_delta": "20.382155",
+          "historical_iv": "0.1030246649056241",
+          "evidence_class": "VALUATION_ONLY",
+          "entry_fill_status": "NOT_ASSESSABLE",
+          "exit_fill_status": {
+            "PLUS_3_TRADING_DAYS": "NOT_ASSESSABLE",
+            "PLUS_5_TRADING_DAYS": "NOT_ASSESSABLE"
+          }
+        },
+        {
+          "selector": {
+            "option_side": "CALL",
+            "method": "PERCENTAGE_OTM",
+            "value": "0.01",
+            "days_until_expiration": 28
+          },
+          "provider_symbol": "SPXW  260925C07810000",
+          "simulation_symbol": "SPXW  260925C07810000",
+          "expiration": "2026-09-25T20:00:00.000Z",
+          "strike": "7810",
+          "selected_at": "2026-08-28T14:30:00.000Z",
+          "bar_start": "2026-08-28T13:35:00.000Z",
+          "bar_end": "2026-08-28T13:40:00.000Z",
+          "available_at": "2026-08-28T13:40:00.000Z",
+          "retrieved_at": "2026-09-26T19:50:40.964Z",
+          "historical_price": "71.68",
+          "historical_delta": "39.233742",
+          "historical_iv": "0.1107171999305039",
+          "evidence_class": "VALUATION_ONLY",
+          "entry_fill_status": "NOT_ASSESSABLE",
+          "exit_fill_status": {
+            "PLUS_3_TRADING_DAYS": "NOT_ASSESSABLE",
+            "PLUS_5_TRADING_DAYS": "NOT_ASSESSABLE"
+          }
+        },
+        {
+          "selector": {
+            "option_side": "PUT",
+            "method": "DELTA",
+            "value": "20",
+            "days_until_expiration": 28
+          },
+          "provider_symbol": "SPXW  260925P07490000",
+          "simulation_symbol": "SPXW  260925P07490000",
+          "expiration": "2026-09-25T20:00:00.000Z",
+          "strike": "7490",
+          "selected_at": "2026-08-28T14:30:00.000Z",
+          "bar_start": "2026-08-28T13:35:00.000Z",
+          "bar_end": "2026-08-28T13:40:00.000Z",
+          "available_at": "2026-08-28T13:40:00.000Z",
+          "retrieved_at": "2026-09-26T19:50:42.174Z",
+          "historical_price": "33.4",
+          "historical_delta": "-20.246143",
+          "historical_iv": "0.1458048249856352",
+          "evidence_class": "VALUATION_ONLY",
+          "entry_fill_status": "NOT_ASSESSABLE",
+          "exit_fill_status": {
+            "PLUS_3_TRADING_DAYS": "NOT_ASSESSABLE",
+            "PLUS_5_TRADING_DAYS": "NOT_ASSESSABLE"
+          }
+        },
+        {
+          "selector": {
+            "option_side": "PUT",
+            "method": "PERCENTAGE_OTM",
+            "value": "0.01",
+            "days_until_expiration": 28
+          },
+          "provider_symbol": "SPXW  260925P07650000",
+          "simulation_symbol": "SPXW  260925P07650000",
+          "expiration": "2026-09-25T20:00:00.000Z",
+          "strike": "7650",
+          "selected_at": "2026-08-28T14:30:00.000Z",
+          "bar_start": "2026-08-28T14:15:00.000Z",
+          "bar_end": "2026-08-28T14:20:00.000Z",
+          "available_at": "2026-08-28T14:20:00.000Z",
+          "retrieved_at": "2026-09-26T19:50:39.767Z",
+          "historical_price": "65.05",
+          "historical_delta": "-36.065299",
+          "historical_iv": "0.1251810918711183",
+          "evidence_class": "VALUATION_ONLY",
+          "entry_fill_status": "NOT_ASSESSABLE",
+          "exit_fill_status": {
+            "PLUS_3_TRADING_DAYS": "NOT_ASSESSABLE",
+            "PLUS_5_TRADING_DAYS": "NOT_ASSESSABLE"
+          }
+        }
+      ],
+      "outcomes": [
+        {
+          "horizon_id": "PLUS_3_TRADING_DAYS",
+          "trading_days": 3,
+          "local_date": "2026-09-02",
+          "scheduled_exit_at": "2026-09-02T14:30:00.000Z",
+          "status": "NOT_AVAILABLE",
+          "source_evidence_ids": {
+            "manifest_ids": [
+              "sha256:909b9625928b5549f150e96f41a9b5fd5818c852ea01fa589cbda5006d972687"
+            ],
+            "normalized_content_ids": [
+              "sha256:518a73a5c91d329ac945ad40a34d5f231e59ead372dafd67e58f69605ba9504e"
+            ],
+            "provider_payload_content_ids": [
+              "sha256:6108d79643c8fe322557c9fe81848de5a4008aa048fa4f7061a41350836589e5"
+            ]
+          },
+          "observations": [
+            {
+              "provider_symbol": "SPXW  260925C07930000",
+              "streamer_symbol": "SPXW  260925C07930000",
+              "provider_status": "NOT_AVAILABLE",
+              "evidence_class": "VALUATION_ONLY",
+              "observed_reference": null,
+              "source_evidence_ids": {
+                "manifest_ids": [
+                  "sha256:909b9625928b5549f150e96f41a9b5fd5818c852ea01fa589cbda5006d972687"
+                ],
+                "normalized_content_ids": [
+                  "sha256:518a73a5c91d329ac945ad40a34d5f231e59ead372dafd67e58f69605ba9504e"
+                ],
+                "provider_payload_content_ids": [
+                  "sha256:6108d79643c8fe322557c9fe81848de5a4008aa048fa4f7061a41350836589e5"
+                ]
+              },
+              "failure_reasons": [
+                "SNAPSHOT_TIMEOUT",
+                "MISSING_CONTRACT_EVIDENCE"
+              ]
+            },
+            {
+              "provider_symbol": "SPXW  260925C07810000",
+              "streamer_symbol": "SPXW  260925C07810000",
+              "provider_status": "NOT_AVAILABLE",
+              "evidence_class": "VALUATION_ONLY",
+              "observed_reference": null,
+              "source_evidence_ids": {
+                "manifest_ids": [
+                  "sha256:909b9625928b5549f150e96f41a9b5fd5818c852ea01fa589cbda5006d972687"
+                ],
+                "normalized_content_ids": [
+                  "sha256:518a73a5c91d329ac945ad40a34d5f231e59ead372dafd67e58f69605ba9504e"
+                ],
+                "provider_payload_content_ids": [
+                  "sha256:6108d79643c8fe322557c9fe81848de5a4008aa048fa4f7061a41350836589e5"
+                ]
+              },
+              "failure_reasons": [
+                "SNAPSHOT_TIMEOUT",
+                "MISSING_CONTRACT_EVIDENCE"
+              ]
+            },
+            {
+              "provider_symbol": "SPXW  260925P07490000",
+              "streamer_symbol": "SPXW  260925P07490000",
+              "provider_status": "NOT_AVAILABLE",
+              "evidence_class": "VALUATION_ONLY",
+              "observed_reference": null,
+              "source_evidence_ids": {
+                "manifest_ids": [
+                  "sha256:909b9625928b5549f150e96f41a9b5fd5818c852ea01fa589cbda5006d972687"
+                ],
+                "normalized_content_ids": [
+                  "sha256:518a73a5c91d329ac945ad40a34d5f231e59ead372dafd67e58f69605ba9504e"
+                ],
+                "provider_payload_content_ids": [
+                  "sha256:6108d79643c8fe322557c9fe81848de5a4008aa048fa4f7061a41350836589e5"
+                ]
+              },
+              "failure_reasons": [
+                "SNAPSHOT_TIMEOUT",
+                "MISSING_CONTRACT_EVIDENCE"
+              ]
+            },
+            {
+              "provider_symbol": "SPXW  260925P07650000",
+              "streamer_symbol": "SPXW  260925P07650000",
+              "provider_status": "NOT_AVAILABLE",
+              "evidence_class": "VALUATION_ONLY",
+              "observed_reference": null,
+              "source_evidence_ids": {
+                "manifest_ids": [
+                  "sha256:909b9625928b5549f150e96f41a9b5fd5818c852ea01fa589cbda5006d972687"
+                ],
+                "normalized_content_ids": [
+                  "sha256:518a73a5c91d329ac945ad40a34d5f231e59ead372dafd67e58f69605ba9504e"
+                ],
+                "provider_payload_content_ids": [
+                  "sha256:6108d79643c8fe322557c9fe81848de5a4008aa048fa4f7061a41350836589e5"
+                ]
+              },
+              "failure_reasons": [
+                "SNAPSHOT_TIMEOUT",
+                "MISSING_CONTRACT_EVIDENCE"
+              ]
+            }
+          ],
+          "warnings": [
+            "CANDLE_CLOSE_IS_VALUATION_ONLY",
+            "HISTORICAL_BID_ASK_AND_SIZE_UNSUPPORTED"
+          ]
+        },
+        {
+          "horizon_id": "PLUS_5_TRADING_DAYS",
+          "trading_days": 5,
+          "local_date": "2026-09-04",
+          "scheduled_exit_at": "2026-09-04T14:30:00.000Z",
+          "status": "NOT_AVAILABLE",
+          "source_evidence_ids": {
+            "manifest_ids": [
+              "sha256:346fd163c00908d5ff7cccbfeec276339ee6b6521845b3946b8da338484dfee8"
+            ],
+            "normalized_content_ids": [
+              "sha256:d7b4f26f19afb9570719f6fd556c2235713c21041bfe9b3db396d831bc31de16"
+            ],
+            "provider_payload_content_ids": [
+              "sha256:3020bc0198976a45cd4f3d7deeb20a635ccdd97510dec891556a76921ed6733f"
+            ]
+          },
+          "observations": [
+            {
+              "provider_symbol": "SPXW  260925C07930000",
+              "streamer_symbol": "SPXW  260925C07930000",
+              "provider_status": "NOT_AVAILABLE",
+              "evidence_class": "VALUATION_ONLY",
+              "observed_reference": null,
+              "source_evidence_ids": {
+                "manifest_ids": [
+                  "sha256:346fd163c00908d5ff7cccbfeec276339ee6b6521845b3946b8da338484dfee8"
+                ],
+                "normalized_content_ids": [
+                  "sha256:d7b4f26f19afb9570719f6fd556c2235713c21041bfe9b3db396d831bc31de16"
+                ],
+                "provider_payload_content_ids": [
+                  "sha256:3020bc0198976a45cd4f3d7deeb20a635ccdd97510dec891556a76921ed6733f"
+                ]
+              },
+              "failure_reasons": [
+                "SNAPSHOT_TIMEOUT",
+                "MISSING_CONTRACT_EVIDENCE"
+              ]
+            },
+            {
+              "provider_symbol": "SPXW  260925C07810000",
+              "streamer_symbol": "SPXW  260925C07810000",
+              "provider_status": "NOT_AVAILABLE",
+              "evidence_class": "VALUATION_ONLY",
+              "observed_reference": null,
+              "source_evidence_ids": {
+                "manifest_ids": [
+                  "sha256:346fd163c00908d5ff7cccbfeec276339ee6b6521845b3946b8da338484dfee8"
+                ],
+                "normalized_content_ids": [
+                  "sha256:d7b4f26f19afb9570719f6fd556c2235713c21041bfe9b3db396d831bc31de16"
+                ],
+                "provider_payload_content_ids": [
+                  "sha256:3020bc0198976a45cd4f3d7deeb20a635ccdd97510dec891556a76921ed6733f"
+                ]
+              },
+              "failure_reasons": [
+                "SNAPSHOT_TIMEOUT",
+                "MISSING_CONTRACT_EVIDENCE"
+              ]
+            },
+            {
+              "provider_symbol": "SPXW  260925P07490000",
+              "streamer_symbol": "SPXW  260925P07490000",
+              "provider_status": "NOT_AVAILABLE",
+              "evidence_class": "VALUATION_ONLY",
+              "observed_reference": null,
+              "source_evidence_ids": {
+                "manifest_ids": [
+                  "sha256:346fd163c00908d5ff7cccbfeec276339ee6b6521845b3946b8da338484dfee8"
+                ],
+                "normalized_content_ids": [
+                  "sha256:d7b4f26f19afb9570719f6fd556c2235713c21041bfe9b3db396d831bc31de16"
+                ],
+                "provider_payload_content_ids": [
+                  "sha256:3020bc0198976a45cd4f3d7deeb20a635ccdd97510dec891556a76921ed6733f"
+                ]
+              },
+              "failure_reasons": [
+                "SNAPSHOT_TIMEOUT",
+                "MISSING_CONTRACT_EVIDENCE"
+              ]
+            },
+            {
+              "provider_symbol": "SPXW  260925P07650000",
+              "streamer_symbol": "SPXW  260925P07650000",
+              "provider_status": "NOT_AVAILABLE",
+              "evidence_class": "VALUATION_ONLY",
+              "observed_reference": null,
+              "source_evidence_ids": {
+                "manifest_ids": [
+                  "sha256:346fd163c00908d5ff7cccbfeec276339ee6b6521845b3946b8da338484dfee8"
+                ],
+                "normalized_content_ids": [
+                  "sha256:d7b4f26f19afb9570719f6fd556c2235713c21041bfe9b3db396d831bc31de16"
+                ],
+                "provider_payload_content_ids": [
+                  "sha256:3020bc0198976a45cd4f3d7deeb20a635ccdd97510dec891556a76921ed6733f"
+                ]
+              },
+              "failure_reasons": [
+                "SNAPSHOT_TIMEOUT",
+                "MISSING_CONTRACT_EVIDENCE"
+              ]
+            }
+          ],
+          "warnings": [
+            "CANDLE_CLOSE_IS_VALUATION_ONLY",
+            "HISTORICAL_BID_ASK_AND_SIZE_UNSUPPORTED"
+          ]
+        }
+      ],
+      "quote_execution_status": "NOT_ASSESSABLE",
+      "quote_execution_reason_codes": [
+        "HISTORICAL_BID_UNSUPPORTED",
+        "HISTORICAL_ASK_UNSUPPORTED",
+        "HISTORICAL_BID_SIZE_UNSUPPORTED",
+        "HISTORICAL_ASK_SIZE_UNSUPPORTED",
+        "NO_QUOTE_BACKED_SIMULATED_EXECUTION"
+      ],
+      "warnings": [
+        "CONTRACT_EXISTENCE_INFERRED_FROM_HISTORICAL_CANDLE",
+        "DELTA_DERIVED_FROM_CANDLE_IV_AND_PUT_CALL_PARITY_FORWARD",
+        "HISTORICAL_CONTRACT_UNIVERSE_RECONSTRUCTED_FROM_DXLINK",
+        "OPTION_CANDLE_SOURCE_TIME_IS_INTERVAL_START",
+        "OPTION_OBSERVATION_MAX_AGE_MINUTES:60",
+        "PUT_CALL_PARITY_FORWARD_OMITS_DISCOUNT_FACTOR"
+      ]
+    }
+  ],
+  "warnings": [
+    "ORIGINAL_2026_08_24_TO_2026_08_28_WINDOW_PRESERVED",
+    "OLD_12_45_BACKTESTER_PATH_NOT_USED",
+    "CANDLE_REFERENCES_ARE_VALUATION_ONLY",
+    "PARTIAL_OR_VALUATION_ONLY_OUTPUT_IS_NOT_PERFORMANCE_ACCEPTANCE",
+    "NO_WINNER_SELECTED",
+    "NO_GRADING_CHANGED",
+    "NO_FORWARD_PAPER_OR_MONTHLY_STATE_WRITTEN"
+  ]
+}

@@ -67,7 +67,7 @@ describe("MCP research server", () => {
     await client.connect(clientTransport);
     try {
       const tools = await client.listTools();
-      expect(tools.tools).toHaveLength(19);
+      expect(tools.tools).toHaveLength(20);
       expect(tools.tools.map((tool) => tool.name)).toEqual(
         expect.arrayContaining([
           "tastytrade_price_option_package",
@@ -77,6 +77,7 @@ describe("MCP research server", () => {
           "tastytrade_get_historical_option_package_path",
           "tastytrade_normalize_historical_execution_evidence",
           "tastytrade_simulate_historical_execution",
+          "tastytrade_build_historical_replay_report",
           "tastytrade_verify_historical_fill",
           "tastytrade_get_historical_candles",
           "tastytrade_prepare_spx_spread",
@@ -176,6 +177,19 @@ describe("MCP research server", () => {
           "atomic_package",
         ]),
       );
+      const replayTool = tools.tools.find(
+        (tool) =>
+          tool.name === "tastytrade_build_historical_replay_report",
+      );
+      expect(
+        replayTool.inputSchema.properties.request.properties,
+      ).toMatchObject({
+        policies: expect.any(Object),
+        scenarios: expect.any(Object),
+        candidates: expect.any(Object),
+        execution_records: expect.any(Object),
+        later_selector_fallback_used: { const: false },
+      });
 
       const priced = textResult(
         await client.callTool({

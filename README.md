@@ -38,6 +38,7 @@ The project is intentionally separate from the official
 | `tastytrade_get_historical_option_package_path` | Return profile-aligned completed-candle package points and explicit gaps without interpolation |
 | `tastytrade_normalize_historical_execution_evidence` | Normalize immutable exact-leg quote snapshots/windows into signed, provider-neutral simulated-execution inputs without claiming a fill |
 | `tastytrade_simulate_historical_execution` | Apply one caller-frozen, hashed execution profile to immutable exact-leg evidence and return a separate simulated fill/P&L result |
+| `tastytrade_build_historical_replay_report` | Aggregate frozen baseline/research decisions and immutable execution simulations into deterministic +3/+5-day metrics without changing grading or paper state |
 | `tastytrade_prepare_spx_spread` | Deterministically normalize SPX legs without calling an upstream service |
 | `tastytrade_simulate_spx_spread` | Run exact-leg SPX historical simulation and normalize its result |
 | `tastytrade_create_spx_spread_backtest` | Submit supported SPX structures through relative Backtester selectors |
@@ -63,13 +64,16 @@ valuation/simulation/broker separation are documented in
 Caller-frozen execution profiles, fill statuses, exact P&L arithmetic, and
 fee semantics are documented in
 [`docs/historical-execution-model.md`](docs/historical-execution-model.md).
+The replay acceptance matrix, denominator rules, one-week smoke manifest, and
+runner guidance are documented in
+[`docs/historical-replay.md`](docs/historical-replay.md).
 
 ## Private historical evidence cache
 
 The historical candle, SPX candidate/universe, and exact-package tools accept
-an opt-in `evidence_cache` policy. The server exposes 19 tools after adding
-the local-only historical quote normalizer and deterministic execution-model
-adapter.
+an opt-in `evidence_cache` policy. The server exposes 20 tools, including the
+local-only historical quote normalizer, deterministic execution-model
+adapter, and historical replay report builder.
 `READ_WRITE` stores sanitized source observations and normalized results as
 separate content-addressed objects; `REFRESH` creates a new immutable revision
 and diff; `CACHE_ONLY` replays only caller-supplied exact manifest IDs and

@@ -40,6 +40,10 @@ The suite builds the TypeScript project before running Jest and covers:
 - caller-frozen historical execution profiles with shared DV/CV/IC/DD golden
   fixtures, exact tick rounding, fees, no-fill/open/insufficient-evidence
   states, and no live-state mutation;
+- deterministic baseline/research replay matrices with separate +3/+5
+  horizons, quote/reference cohorts, closed-position denominators, exact
+  metrics, missing-data rates, execution sensitivity, and no winner or
+  grading mutation;
 - immutable content-addressed evidence objects and revision manifests;
 - approval-gated provider-neutral bounded history, including exact-symbol
   entitlement checks, seven-day-style sharding, pagination, DST, partial and
