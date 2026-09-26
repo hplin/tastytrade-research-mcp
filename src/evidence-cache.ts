@@ -125,6 +125,7 @@ type SourceIdentity = {
     symbol: string;
     streamer_symbol: string;
     instrument_type: string;
+    lifecycle?: string;
   }>;
   aggregation: {
     requested: string;
@@ -311,6 +312,9 @@ export type EvidenceCacheMetrics = {
 };
 
 type HistoricalCandlesProvider = {
+  assertEvidenceCacheAllowed?(
+    request: HistoricalCandlesBatchInput,
+  ): void;
   getHistoricalCandles(
     request: HistoricalCandlesInput,
   ): Promise<HistoricalCandlesResult>;
@@ -350,6 +354,9 @@ const RETRYABLE_RESULT_FAILURES = new Set([
   "LOCAL_BUFFER_BUDGET_EXCEEDED",
   "LOCAL_OUTPUT_BUDGET_EXCEEDED",
   "SNAPSHOT_TIMEOUT",
+  "PROVIDER_TIMEOUT",
+  "PROVIDER_RATE_LIMIT",
+  "PROVIDER_TEMPORARY_FAILURE",
 ]);
 
 function canonicalJson(value: unknown): string {
@@ -720,6 +727,7 @@ function providerPayload(
       transport_diagnostics: result.transport_diagnostics,
       candles: result.candles,
       warnings: result.warnings,
+      bounded_history: result.bounded_history,
     })),
   };
 }
@@ -1552,6 +1560,7 @@ export class FileEvidenceCache {
           symbol,
           streamer_symbol: streamerSymbol,
           instrument_type: instrument.instrument_type,
+          lifecycle: instrument.lifecycle,
         };
       }),
       aggregation: {
@@ -2640,6 +2649,7 @@ function singleToBatch(
         symbol: request.symbol,
         streamer_symbol: request.streamer_symbol,
         instrument_type: request.instrument_type,
+        lifecycle: request.lifecycle,
       },
     ],
     interval: request.interval,
@@ -2702,6 +2712,9 @@ export class CachedHistoricalCandlesService {
       request.evidence_cache?.mode ??
       this.cache?.defaultMode ??
       "BYPASS";
+    if (mode !== "BYPASS") {
+      this.provider.assertEvidenceCacheAllowed?.(request);
+    }
     if (!this.cache) {
       if (mode !== "BYPASS") {
         throw new EvidenceCacheError(
@@ -2734,6 +2747,7 @@ export class CachedHistoricalCandlesService {
           symbol: instrument.symbol,
           streamer_symbol: instrument.streamer_symbol,
           instrument_type: instrument.instrument_type,
+          lifecycle: instrument.lifecycle,
           interval: request.interval,
           start_time: request.start_time,
           end_time: request.end_time,

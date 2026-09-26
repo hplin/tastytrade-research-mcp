@@ -91,6 +91,15 @@ The cache is disabled when `TASTYTRADE_EVIDENCE_CACHE_DIR` is absent. It is
 bypassed by default even when configured, preserving existing behavior.
 Neither the path nor provider payload is exposed as an MCP tool argument.
 
+An approval-gated bounded-history provider must independently confirm that
+its license permits storage and replay. Non-`BYPASS` requests are rejected
+unless `cache_reuse` is `CONFIRMED` and the request explicitly matches the
+approved provider, dataset, license scope, source revision, end-time `as_of`,
+and instrument lifecycle. A tastytrade cache default must never be reused to
+label another provider's evidence.
+See
+[`historical-provider-decision.md`](historical-provider-decision.md).
+
 ## MCP handoff
 
 The existing historical-candle, SPX candidate/universe, and exact-package
