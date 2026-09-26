@@ -1,10 +1,34 @@
+import { readFileSync } from "node:fs";
 import { describe, expect, test } from "@jest/globals";
 import {
   TastytradeHistoricalCandlesClient,
+  canonicalizeDxlinkCandleSymbol,
   parseDxlinkCandleData,
 } from "../dist/historical-candles.js";
 
 const FIELDS_PER_ROW = 17;
+const nativeHourFixture = JSON.parse(
+  readFileSync(
+    new URL(
+      "./fixtures/dxlink-native-hour-sanitized.json",
+      import.meta.url,
+    ),
+    "utf8",
+  ),
+);
+const nativeHourRows = [];
+for (
+  let index = 0;
+  index < nativeHourFixture.feed_data.data[1].length;
+  index += FIELDS_PER_ROW
+) {
+  nativeHourRows.push(
+    nativeHourFixture.feed_data.data[1].slice(
+      index,
+      index + FIELDS_PER_ROW,
+    ),
+  );
+}
 
 function row(
   time,
@@ -34,8 +58,13 @@ function row(
   ];
 }
 
-function marker(time, eventSymbol = "SPY{=1h}", flags = 10) {
-  const value = row(time, flags, "100", eventSymbol);
+function marker(
+  time,
+  eventSymbol = "SPY{=1h}",
+  flags = 10,
+  index = String(time),
+) {
+  const value = row(time, flags, "100", eventSymbol, index);
   for (let index = 7; index < FIELDS_PER_ROW; index += 1) {
     value[index] = "NaN";
   }
@@ -50,8 +79,13 @@ class FakeSocket {
   onclose = null;
   sent = [];
 
-  constructor(batches) {
+  constructor(batches, options = {}) {
     this.batches = batches;
+    this.feedConfig = options.feedConfig ?? {
+      type: "FEED_CONFIG",
+      channel: 3,
+    };
+    this.useBlob = options.useBlob ?? false;
     this.closeCalls = [];
     queueMicrotask(() => {
       this.readyState = 1;
@@ -70,7 +104,7 @@ class FakeSocket {
       } else if (message.type === "CHANNEL_REQUEST") {
         this.emit({ type: "CHANNEL_OPENED", channel: 3, service: "FEED" });
       } else if (message.type === "FEED_SETUP") {
-        this.emit({ type: "FEED_CONFIG", channel: 3 });
+        this.emit(this.feedConfig);
       } else if (message.type === "FEED_SUBSCRIPTION" && message.add) {
         for (const rows of this.batches) {
           this.emit({
@@ -84,7 +118,8 @@ class FakeSocket {
   }
 
   emit(message) {
-    this.onmessage?.({ data: JSON.stringify(message) });
+    const data = JSON.stringify(message);
+    this.onmessage?.({ data: this.useBlob ? new Blob([data]) : data });
   }
 
   close(code = 1000, reason = "") {
@@ -97,6 +132,7 @@ class FakeSocket {
 function clientWithRows(
   rows,
   clock = () => Date.parse("2026-09-25T12:00:00.000Z"),
+  socketOptions = {},
 ) {
   let socket;
   const client = new TastytradeHistoricalCandlesClient(
@@ -113,7 +149,10 @@ function clientWithRows(
       }),
     },
     () => {
-      socket = new FakeSocket(rows === null ? [] : [rows]);
+      socket = new FakeSocket(
+        rows === null ? [] : [rows],
+        socketOptions,
+      );
       return socket;
     },
     clock,
@@ -122,6 +161,112 @@ function clientWithRows(
 }
 
 describe("DXLink candle normalization", () => {
+  test("canonicalizes only semantically equivalent CandleSymbol aliases", () => {
+    expect(
+      canonicalizeDxlinkCandleSymbol(
+        "SPX{tho=TRUE,price=LAST,a=SESSION,=1H}",
+      ),
+    ).toBe("SPX{=h,a=s,tho=true}");
+    expect(
+      canonicalizeDxlinkCandleSymbol(
+        "SPX{=h,a=s,tho=true}",
+      ),
+    ).toBe("SPX{=h,a=s,tho=true}");
+    expect(
+      canonicalizeDxlinkCandleSymbol(
+        "SPX{=h,a=midnight,price=last,tho=false}",
+      ),
+    ).toBe("SPX{=h}");
+
+    const nativeHour = canonicalizeDxlinkCandleSymbol("SPX{=h}");
+    expect(canonicalizeDxlinkCandleSymbol("SPX{=60m}")).not.toBe(
+      nativeHour,
+    );
+    expect(
+      canonicalizeDxlinkCandleSymbol("SPX{=h,tho=true}"),
+    ).not.toBe(nativeHour);
+    expect(
+      canonicalizeDxlinkCandleSymbol("SPX{=h,a=s}"),
+    ).not.toBe(nativeHour);
+    expect(
+      canonicalizeDxlinkCandleSymbol("SPX{=h,price=bid}"),
+    ).not.toBe(nativeHour);
+    expect(canonicalizeDxlinkCandleSymbol("SPY{=h}")).not.toBe(
+      nativeHour,
+    );
+  });
+
+  test("maps the sanitized native-hour response alias and preserves transport diagnostics", async () => {
+    const { client, getSocket } = clientWithRows(
+      nativeHourRows,
+      () => Date.parse("2026-09-25T12:00:00.000Z"),
+      {
+        feedConfig: nativeHourFixture.feed_config,
+        useBlob: true,
+      },
+    );
+
+    const result = await client.getHistoricalCandles({
+      symbol: "SPX",
+      streamer_symbol: "SPX",
+      instrument_type: "INDEX",
+      interval: "1h",
+      start_time: "2026-08-25T13:30:00.000Z",
+      end_time: "2026-08-25T15:00:00.000Z",
+      deadline_ms: 100,
+    });
+
+    const subscription = getSocket().sent.find(
+      (message) => message.type === "FEED_SUBSCRIPTION" && message.add,
+    );
+    expect(subscription.add[0].symbol).toBe("SPX{=h}");
+    expect(result).toMatchObject({
+      status: "AVAILABLE",
+      snapshot_complete: true,
+      provider_snapshot_complete: true,
+      candles: [
+        expect.objectContaining({
+          source_time: "2026-08-25T14:00:00.000Z",
+          close: "100.5",
+        }),
+      ],
+      transport_diagnostics: {
+        requested_symbol: "SPX{=h}",
+        canonical_requested_symbol: "SPX{=h}",
+        received_symbols: ["SPX{=h}"],
+        canonical_received_symbols: ["SPX{=h}"],
+        oldest_received_timestamp: "2026-08-25T14:00:00.000Z",
+        newest_received_timestamp: "2026-08-25T14:00:00.000Z",
+        snapshot_begin_seen: true,
+        snapshot_end_seen: true,
+        snapshot_snip_seen: false,
+        timeout_stage: null,
+      },
+    });
+  });
+
+  test("keeps native HOUR distinct from a 60-minute aggregation", async () => {
+    const timestamp = Date.parse("2026-09-24T14:00:00.000Z");
+    const { client, getSocket } = clientWithRows([
+      row(timestamp, 0, "100", "SPY{=60m}"),
+      marker(timestamp - 1, "SPY{=60m}"),
+    ]);
+
+    const result = await client.getHistoricalCandles({
+      symbol: "SPY",
+      instrument_type: "EQUITY",
+      interval: "60m",
+      start_time: "2026-09-24T14:00:00.000Z",
+      end_time: "2026-09-24T15:00:00.000Z",
+    });
+
+    const subscription = getSocket().sent.find(
+      (message) => message.type === "FEED_SUBSCRIPTION" && message.add,
+    );
+    expect(subscription.add[0].symbol).toBe("SPY{=60m}");
+    expect(result.status).toBe("AVAILABLE");
+  });
+
   test("parses flat compact rows and snapshot markers", () => {
     const timestamp = Date.parse("2026-09-24T14:00:00.000Z");
     const parsed = parseDxlinkCandleData([
@@ -132,6 +277,244 @@ describe("DXLink candle normalization", () => {
     expect(parsed.candles).toHaveLength(1);
     expect(parsed.snapshotComplete).toBe(true);
     expect(parsed.snapshotTruncated).toBe(false);
+  });
+
+  test("finishes an empty marker-only snapshot without waiting for OHLC", async () => {
+    const timestamp = Date.parse("2026-09-24T14:00:00.000Z");
+    const { client } = clientWithRows([
+      marker(timestamp, "SPY{=m}"),
+    ]);
+
+    const result = await client.getHistoricalCandles({
+      symbol: "SPY",
+      instrument_type: "EQUITY",
+      interval: "1m",
+      start_time: "2026-09-24T14:00:00.000Z",
+      end_time: "2026-09-24T14:01:00.000Z",
+      deadline_ms: 100,
+    });
+
+    expect(result).toMatchObject({
+      status: "NOT_AVAILABLE",
+      snapshot_complete: true,
+      provider_snapshot_complete: true,
+      failure_reasons: ["MISSING_CONTRACT_EVIDENCE"],
+      transport_diagnostics: {
+        snapshot_end_seen: true,
+        timeout_stage: null,
+      },
+    });
+  });
+
+  test("applies REMOVE_EVENT to the retained indexed snapshot", async () => {
+    const timestamp = Date.parse("2026-09-24T14:00:00.000Z");
+    const { client } = clientWithRows([
+      row(timestamp, 4, "100", "SPY{=m}", "same-index"),
+      marker(timestamp, "SPY{=m}", 2, "same-index"),
+      marker(timestamp - 1, "SPY{=m}"),
+    ]);
+
+    const result = await client.getHistoricalCandles({
+      symbol: "SPY",
+      instrument_type: "EQUITY",
+      interval: "1m",
+      start_time: "2026-09-24T14:00:00.000Z",
+      end_time: "2026-09-24T14:01:00.000Z",
+    });
+
+    expect(result.candles).toEqual([]);
+    expect(result.resource_usage.symbol).toMatchObject({
+      unique_observations: 1,
+      retained_rows: 0,
+      returned_rows: 0,
+    });
+    expect(result.snapshot_complete).toBe(true);
+  });
+
+  test("waits for TX_PENDING to clear before committing an END transaction", async () => {
+    const earlier = Date.parse("2026-09-24T14:00:00.000Z");
+    const later = Date.parse("2026-09-24T14:01:00.000Z");
+    const { client } = clientWithRows([
+      row(later, 5, "101", "SPY{=m}", "later"),
+      marker(earlier - 1, "SPY{=m}", 9, "boundary"),
+      row(earlier, 0, "99", "SPY{=m}", "earlier"),
+    ]);
+
+    const result = await client.getHistoricalCandles({
+      symbol: "SPY",
+      instrument_type: "EQUITY",
+      interval: "1m",
+      start_time: "2026-09-24T14:00:00.000Z",
+      end_time: "2026-09-24T14:02:00.000Z",
+      deadline_ms: 100,
+    });
+
+    expect(result.candles.map((candle) => candle.close)).toEqual([
+      "99",
+      "101",
+    ]);
+    expect(result.snapshot_complete).toBe(true);
+    expect(result.transport_diagnostics).toMatchObject({
+      snapshot_begin_seen: true,
+      snapshot_end_seen: true,
+      timeout_stage: null,
+    });
+  });
+
+  test("does not complete on an END marker while TX_PENDING remains set", async () => {
+    const timestamp = Date.parse("2026-09-24T14:00:00.000Z");
+    const { client } = clientWithRows([
+      row(timestamp, 5, "100", "SPY{=m}", "pending"),
+      marker(timestamp - 1, "SPY{=m}", 9, "boundary"),
+    ]);
+
+    const result = await client.getHistoricalCandles({
+      symbol: "SPY",
+      instrument_type: "EQUITY",
+      interval: "1m",
+      start_time: "2026-09-24T14:00:00.000Z",
+      end_time: "2026-09-24T14:01:00.000Z",
+      deadline_ms: 5,
+    });
+
+    expect(result).toMatchObject({
+      status: "NOT_AVAILABLE",
+      snapshot_complete: false,
+      provider_snapshot_complete: false,
+      failure_reasons: expect.arrayContaining(["SNAPSHOT_TIMEOUT"]),
+      transport_diagnostics: {
+        snapshot_begin_seen: true,
+        snapshot_end_seen: true,
+        timeout_stage: "SNAPSHOT",
+      },
+    });
+  });
+
+  test("preserves completed symbols when another symbol times out", async () => {
+    const firstSymbol = ".SPXW260922C7900{=5m}";
+    const secondSymbol = ".SPXW260922P7400{=5m}";
+    const timestamp = Date.parse("2026-08-25T13:55:00.000Z");
+    const { client } = clientWithRows([
+      row(timestamp, 4, "24", firstSymbol),
+      marker(timestamp - 1, firstSymbol),
+      row(timestamp, 4, "35", secondSymbol),
+    ]);
+
+    const results = await client.getHistoricalCandlesBatch({
+      instruments: [
+        {
+          symbol: "SPXW  260922C07900000",
+          streamer_symbol: ".SPXW260922C7900",
+          instrument_type: "OPTION",
+        },
+        {
+          symbol: "SPXW  260922P07400000",
+          streamer_symbol: ".SPXW260922P7400",
+          instrument_type: "OPTION",
+        },
+      ],
+      interval: "5m",
+      start_time: "2026-08-25T13:50:00.000Z",
+      end_time: "2026-08-25T14:00:00.000Z",
+      deadline_ms: 5,
+    });
+
+    expect(results[0]).toMatchObject({
+      status: "AVAILABLE",
+      snapshot_complete: true,
+      failure_reasons: [],
+      transport_diagnostics: {
+        timeout_stage: null,
+      },
+    });
+    expect(results[1]).toMatchObject({
+      status: "PARTIAL",
+      snapshot_complete: false,
+      failure_reasons: expect.arrayContaining(["SNAPSHOT_TIMEOUT"]),
+      transport_diagnostics: {
+        timeout_stage: "SNAPSHOT",
+      },
+    });
+  });
+
+  test("keeps END and SNIP outcomes separate in one batch", async () => {
+    const firstSymbol = ".SPXW260922C7900{=5m}";
+    const secondSymbol = ".SPXW260922P7400{=5m}";
+    const timestamp = Date.parse("2026-08-25T13:55:00.000Z");
+    const { client } = clientWithRows([
+      row(timestamp, 4, "24", firstSymbol),
+      marker(timestamp - 1, firstSymbol),
+      row(timestamp, 4, "35", secondSymbol),
+      marker(timestamp - 1, secondSymbol, 16),
+    ]);
+
+    const results = await client.getHistoricalCandlesBatch({
+      instruments: [
+        {
+          symbol: "SPXW  260922C07900000",
+          streamer_symbol: ".SPXW260922C7900",
+          instrument_type: "OPTION",
+        },
+        {
+          symbol: "SPXW  260922P07400000",
+          streamer_symbol: ".SPXW260922P7400",
+          instrument_type: "OPTION",
+        },
+      ],
+      interval: "5m",
+      start_time: "2026-08-25T13:50:00.000Z",
+      end_time: "2026-08-25T14:00:00.000Z",
+    });
+
+    expect(results[0]).toMatchObject({
+      status: "AVAILABLE",
+      snapshot_complete: true,
+      snapshot_truncated: false,
+    });
+    expect(results[1]).toMatchObject({
+      status: "PARTIAL",
+      snapshot_complete: false,
+      snapshot_truncated: true,
+      failure_reasons: expect.arrayContaining([
+        "PROVIDER_SNAPSHOT_SNIPPED",
+      ]),
+    });
+  });
+
+  test("does not match a semantically different received aggregation", async () => {
+    const timestamp = Date.parse("2026-09-24T14:00:00.000Z");
+    const { client } = clientWithRows([
+      row(timestamp, 4, "100", "SPY{=60m}"),
+      marker(timestamp - 1, "SPY{=60m}"),
+    ]);
+
+    const result = await client.getHistoricalCandles({
+      symbol: "SPY",
+      instrument_type: "EQUITY",
+      interval: "1h",
+      start_time: "2026-09-24T14:00:00.000Z",
+      end_time: "2026-09-24T15:00:00.000Z",
+      deadline_ms: 5,
+    });
+
+    expect(result.status).toBe("NOT_AVAILABLE");
+    expect(result.failure_reasons).toEqual(
+      expect.arrayContaining([
+        "SNAPSHOT_TIMEOUT",
+        "MISSING_CONTRACT_EVIDENCE",
+      ]),
+    );
+    expect(result.resource_usage.request).toMatchObject({
+      unmatched_received_events: 2,
+      unmatched_symbol_count: 1,
+    });
+    expect(result.transport_diagnostics).toMatchObject({
+      requested_symbol: "SPY{=h}",
+      canonical_requested_symbol: "SPY{=h}",
+      received_symbols: [],
+      unmatched_received_symbols: ["SPY{=60m}"],
+      timeout_stage: "SNAPSHOT",
+    });
   });
 
   test("surfaces a provider SNIP as a per-symbol partial result", async () => {
@@ -195,7 +578,7 @@ describe("DXLink candle normalization", () => {
       Date.parse("2026-09-24T12:00:00.000Z"),
     );
     expect(subscription.add[0].symbol).toBe(
-      "SPY{=1h,a=s,tho=true}",
+      "SPY{=h,a=s,tho=true}",
     );
   });
 
@@ -388,7 +771,7 @@ describe("DXLink candle normalization", () => {
       expect.arrayContaining([
         expect.objectContaining({
           type: "FEED_SUBSCRIPTION",
-          remove: [{ type: "Candle", symbol: "SPY{=1m}" }],
+          remove: [{ type: "Candle", symbol: "SPY{=m}" }],
         }),
       ]),
     );
@@ -564,7 +947,7 @@ describe("DXLink candle normalization", () => {
       expect.arrayContaining([
         expect.objectContaining({
           type: "FEED_SUBSCRIPTION",
-          remove: [{ type: "Candle", symbol: "SPY{=1m}" }],
+          remove: [{ type: "Candle", symbol: "SPY{=m}" }],
         }),
       ]),
     );

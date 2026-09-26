@@ -842,7 +842,7 @@ export const TOOLS: Tool[] = [
   {
     name: "tastytrade_get_historical_candles",
     description:
-      "Retrieve normalized historical OHLCV candles from tastytrade DXLink for an exact UTC and session window, with independent receive/output/buffer/deadline budgets, per-symbol diagnostics, and no resampling.",
+      "Retrieve normalized historical OHLCV candles from tastytrade DXLink for an exact UTC and session window, with canonical provider symbol matching, independent resource budgets, per-symbol snapshot diagnostics, and no resampling.",
     inputSchema: HISTORICAL_CANDLES_SCHEMA,
   },
 ];

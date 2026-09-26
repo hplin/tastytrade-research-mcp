@@ -246,6 +246,12 @@ session. `CUSTOM` windows filter complete provider bars by their source
 timestamp; they are never reaggregated and include an explicit warning about
 that limitation.
 
+One-unit periods use DXLink's native normalized spelling (`m`, `h`, `d`, or
+`w`). In particular, public interval `1h` subscribes to native HOUR `{=h}`;
+`60m` remains `{=60m}` and is not treated as equivalent. Request/response
+matching accepts only provider-defined canonical aliases such as omitted
+defaults and attribute ordering differences.
+
 The server sends `fromTime` as epoch **milliseconds**, matching the current
 production DXLink service. The published AsyncAPI description currently says
 seconds, but seconds cause the service to replay the full available history.
@@ -298,6 +304,10 @@ is provider protocol evidence. `REQUESTED_WINDOW_NOT_COVERED`,
 availability; none is automatically classified as an entitlement failure.
 Completed symbols remain usable when another batch symbol fails locally or is
 snipped.
+
+Canonical identity, snapshot transaction rules, the sanitized timeout root
+cause, and live native-hour findings are documented in
+[`docs/historical-candles.md`](docs/historical-candles.md).
 
 ### Rate limits and retries
 
