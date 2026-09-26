@@ -86,6 +86,41 @@ export class ExactDecimal {
     );
   }
 
+  multiply(other: ExactDecimal): ExactDecimal {
+    return ExactDecimal.normalize(
+      this.coefficient * other.coefficient,
+      this.scale + other.scale,
+    );
+  }
+
+  divide(other: ExactDecimal, scale = 18): ExactDecimal {
+    if (other.coefficient === 0n) {
+      throw new Error("Cannot divide by zero.");
+    }
+    if (!Number.isSafeInteger(scale) || scale < 0 || scale > 30) {
+      throw new Error("Decimal division scale must be an integer between 0 and 30.");
+    }
+
+    const negative =
+      (this.coefficient < 0n) !== (other.coefficient < 0n);
+    let numerator =
+      this.coefficient < 0n ? -this.coefficient : this.coefficient;
+    let denominator =
+      other.coefficient < 0n ? -other.coefficient : other.coefficient;
+    const exponent = scale + other.scale - this.scale;
+    if (exponent >= 0) {
+      numerator *= powerOfTen(exponent);
+    } else {
+      denominator *= powerOfTen(-exponent);
+    }
+
+    let quotient = numerator / denominator;
+    const remainder = numerator % denominator;
+    if (remainder * 2n >= denominator) quotient += 1n;
+    if (negative) quotient = -quotient;
+    return ExactDecimal.normalize(quotient, scale);
+  }
+
   half(): ExactDecimal {
     if (this.coefficient % 2n === 0n) {
       return ExactDecimal.normalize(this.coefficient / 2n, this.scale);

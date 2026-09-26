@@ -26,6 +26,14 @@ The suite builds the TypeScript project before running Jest and covers:
   rejection of ambiguous and nonexistent local instants;
 - preservation of bar start/end, availability, retrieval, and opaque
   candidate-construction metadata;
+- versioned Double Diagonal selected-leg, matched-delta, and
+  matched-forward-moneyness IV cohorts;
+- exact decimal-to-vol-point conversion, PUT/CALL divergence, null/NaN,
+  stale/incomplete/future-bar rejection, delta/moneyness coverage gaps,
+  bounded interpolation, no extrapolation, and ambiguous legacy-unit
+  preservation;
+- deterministic regeneration of the grading/regression handoff fixture
+  without embedding downstream bucket or routing policy;
 - immutable content-addressed evidence objects and revision manifests;
 - exact DD/DV cache-only replay with zero provider calls and stable hashes;
 - cache identity separation by provider, source revision, profile, and

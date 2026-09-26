@@ -34,6 +34,7 @@ function candleResult(
   candles,
   interval = "5m",
   session = "ALL",
+  evidenceCache = null,
 ) {
   return {
     contract_version: "1.0.0",
@@ -63,10 +64,13 @@ function candleResult(
     resampled: false,
     candles,
     warnings: [],
+    ...(evidenceCache === null
+      ? {}
+      : { evidence_cache: evidenceCache }),
   };
 }
 
-function fixtureCandles(source = fixture) {
+function fixtureCandles(source = fixture, evidenceCache = null) {
   const bySymbol = new Map(
     source.options.map((option) => [option.symbol, option]),
   );
@@ -78,6 +82,7 @@ function fixtureCandles(source = fixture) {
         [structuredClone(source.underlying.candle)],
         input.interval,
         input.session?.kind,
+        evidenceCache,
       ),
     ),
     getHistoricalCandlesBatch: jest.fn(async (input) =>
@@ -89,6 +94,7 @@ function fixtureCandles(source = fixture) {
           option ? [structuredClone(option.candle)] : [],
           input.interval,
           input.session?.kind,
+          evidenceCache,
         );
       }),
     ),
@@ -110,6 +116,9 @@ describe("historical SPX candidate universe", () => {
       requested_contract_count: 144,
     });
     expect(plan.request_id).toMatch(/^[a-f0-9]{64}$/);
+    expect(plan.request_id).toBe(
+      "bf43ffa425a169ca33d8464fc4cdb815c62cc3938432a9fa711a22a68c670580",
+    );
     expect(plan.resolution_profile).toMatchObject({
       profile_id: "DEFAULT_5M",
       requested_aggregation: "5m",
@@ -459,6 +468,180 @@ describe("historical SPX candidate universe", () => {
       historical_open_interest: { available: 17, missing: 1 },
       historical_volume: { available: 17, missing: 1 },
     });
+  });
+
+  test("attaches a research-only DD IV handoff without replacing legacy term structure", async () => {
+    const evidenceRecord = {
+      contract_version: "1.0.0",
+      cache_status: "MISS",
+      manifest_id: `sha256:${"1".repeat(64)}`,
+      manifest_set_id: null,
+      request_fingerprint: `sha256:${"4".repeat(64)}`,
+      revision: 1,
+      evidence_role: "ENTRY",
+      provider_payload_content_id: `sha256:${"2".repeat(64)}`,
+      normalized_content_id: `sha256:${"3".repeat(64)}`,
+      bytes_read: 0,
+      bytes_written: 1,
+      provider_calls_avoided: 0,
+    };
+    const result = await getHistoricalSpxCandidateUniverse(
+      fixtureCandles(fixture, evidenceRecord),
+      {
+        ...REQUEST,
+        resolution_profile: {
+          profile_id: "DEFAULT_5M",
+          profile_version: "1.0.0",
+          provider_id: "licensed-provider-b",
+        },
+        dd_iv_measurement: {
+          contract_version: "1.0.0",
+          candidate_id: "fixture-dd-candidate",
+          selected_legs: [
+            {
+              role: "FRONT_PUT_SHORT",
+              source_symbol: "SPXW  260915P07425000",
+              expiration: "2026-09-15T20:00:00.000Z",
+              option_side: "PUT",
+              strike: "7425",
+            },
+            {
+              role: "FRONT_CALL_SHORT",
+              source_symbol: "SPXW  260915C07900000",
+              expiration: "2026-09-15T20:00:00.000Z",
+              option_side: "CALL",
+              strike: "7900",
+            },
+            {
+              role: "BACK_PUT_LONG",
+              source_symbol: "SPXW  260929P07475000",
+              expiration: "2026-09-29T20:00:00.000Z",
+              option_side: "PUT",
+              strike: "7475",
+            },
+            {
+              role: "BACK_CALL_LONG",
+              source_symbol: "SPXW  260929C07850000",
+              expiration: "2026-09-29T20:00:00.000Z",
+              option_side: "CALL",
+              strike: "7850",
+            },
+          ],
+          measurement_profile: {
+            profile_version: "1.0.0",
+            selected_leg: {
+              max_front_back_skew_ms: 900000,
+            },
+            matched_coordinates: [
+              {
+                measurement_id: "put-25d",
+                measurement_basis: "MATCHED_DELTA",
+                front_expiration: "2026-09-15T20:00:00.000Z",
+                back_expiration: "2026-09-29T20:00:00.000Z",
+                option_side: "PUT",
+                target_delta: "25",
+                delta_convention: "ABSOLUTE_FORWARD_DELTA_PERCENT",
+                tolerance: "10",
+                missing_policy: "NOT_AVAILABLE",
+                max_front_back_skew_ms: 900000,
+              },
+              {
+                measurement_id: "put-atm-forward-moneyness",
+                measurement_basis: "MATCHED_FORWARD_MONEYNESS",
+                front_expiration: "2026-09-15T20:00:00.000Z",
+                back_expiration: "2026-09-29T20:00:00.000Z",
+                option_side: "PUT",
+                target_log_moneyness: "0",
+                moneyness_convention: "LN_STRIKE_OVER_FORWARD",
+                tolerance: "0.1",
+                missing_policy: "NOT_AVAILABLE",
+                max_front_back_skew_ms: 900000,
+              },
+            ],
+          },
+        },
+      },
+    );
+
+    expect(result.dd_iv_measurement_handoff).toMatchObject({
+      contract_version: "1.0.0",
+      grading_role: "RESEARCH_ONLY",
+      candidate_id: "fixture-dd-candidate",
+      legacy_term_structure_replaced: false,
+      selected_leg_measurement: {
+        measurement_basis: "SELECTED_LEG_IV_DIFFERENCE",
+        status: "AVAILABLE",
+        sides: {
+          PUT: {
+            spread_decimal: "-0.006",
+            spread_vol_points: "-0.60",
+          },
+          CALL: {
+            spread_decimal: "0.01",
+            spread_vol_points: "1.00",
+          },
+        },
+      },
+      matched_measurements: [
+        {
+          measurement_basis: "MATCHED_DELTA",
+          measurement_id: "put-25d",
+          status: "AVAILABLE",
+        },
+        {
+          measurement_basis: "MATCHED_FORWARD_MONEYNESS",
+          measurement_id: "put-atm-forward-moneyness",
+          coordinate_definition: "LN_STRIKE_OVER_FORWARD",
+          status: "AVAILABLE",
+        },
+      ],
+      source_evidence: {
+        manifest_contract_version: "1.0.0",
+        manifest_ids: [evidenceRecord.manifest_id],
+        normalized_content_ids: [
+          evidenceRecord.normalized_content_id,
+        ],
+        provider_payload_content_ids: [
+          evidenceRecord.provider_payload_content_id,
+        ],
+      },
+    });
+    expect(result.dd_iv_measurement_handoff.source_evidence).toEqual({
+      manifest_contract_version: result.evidence_cache.contract_version,
+      manifest_ids: result.evidence_cache.manifest_ids,
+      normalized_content_ids:
+        result.evidence_cache.normalized_content_ids,
+      provider_payload_content_ids:
+        result.evidence_cache.provider_payload_content_ids,
+    });
+    expect(
+      result.dd_iv_measurement_handoff.selected_leg_measurement.cohort_id,
+    ).not.toBe(
+      result.dd_iv_measurement_handoff.matched_measurements[0].cohort_id,
+    );
+    expect(
+      result.dd_iv_measurement_handoff.selected_leg_measurement.frozen_legs
+        .every(
+          (leg) =>
+            leg.model.delta_model === "BLACK_76_FORWARD_DELTA" &&
+            leg.forward.origin === "DERIVED" &&
+            leg.available_at <= REQUEST.as_of,
+        ),
+    ).toBe(true);
+    const frozenLeg =
+      result.dd_iv_measurement_handoff.selected_leg_measurement
+        .frozen_legs[0];
+    expect(
+      frozenLeg.lineage.find((item) =>
+        item.source.startsWith("licensed-provider-b:"),
+      ),
+    ).toMatchObject({ origin: "PROVIDER_OBSERVATION" });
+    expect(
+      frozenLeg.lineage.find(
+        (item) => item.source === "tastytrade-research-mcp:derived",
+      ),
+    ).toMatchObject({ origin: "DERIVED" });
+    expect(result).not.toHaveProperty("term_structure");
   });
 
   test("reconstructs the universe with completed native-hour RTH evidence", async () => {

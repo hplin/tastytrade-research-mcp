@@ -132,17 +132,223 @@ const CANDIDATE_CONSTRUCTION_PROFILE_SCHEMA = {
   additionalProperties: true,
 } as const;
 
-const EMPTY_OBJECT_SCHEMA = {
-  type: "object",
-  properties: {},
-  additionalProperties: false,
-} as const;
-
 const DECIMAL_SCHEMA = {
   anyOf: [
     { type: "string", pattern: "^[+-]?(?:0|[1-9][0-9]*)(?:\\.[0-9]+)?$" },
     { type: "number" },
   ],
+} as const;
+
+const DD_IV_SELECTED_LEG_SCHEMA = {
+  type: "object",
+  properties: {
+    role: {
+      type: "string",
+      enum: [
+        "FRONT_PUT_SHORT",
+        "FRONT_CALL_SHORT",
+        "BACK_PUT_LONG",
+        "BACK_CALL_LONG",
+      ],
+    },
+    source_symbol: { type: "string", minLength: 1, maxLength: 200 },
+    expiration: RFC3339_SCHEMA,
+    option_side: { type: "string", enum: ["CALL", "PUT"] },
+    strike: DECIMAL_SCHEMA,
+  },
+  required: [
+    "role",
+    "source_symbol",
+    "expiration",
+    "option_side",
+    "strike",
+  ],
+  additionalProperties: false,
+} as const;
+
+const DD_IV_MATCHED_COORDINATE_COMMON_PROPERTIES = {
+  measurement_id: { type: "string", minLength: 1, maxLength: 200 },
+  front_expiration: RFC3339_SCHEMA,
+  back_expiration: RFC3339_SCHEMA,
+  option_side: { type: "string", enum: ["CALL", "PUT"] },
+  tolerance: DECIMAL_SCHEMA,
+  missing_policy: { type: "string", const: "NOT_AVAILABLE" },
+  max_front_back_skew_ms: {
+    type: "integer",
+    minimum: 0,
+    maximum: 604800000,
+  },
+} as const;
+
+const DD_IV_MATCHED_COORDINATE_COMMON_REQUIRED = [
+  "measurement_id",
+  "measurement_basis",
+  "front_expiration",
+  "back_expiration",
+  "option_side",
+  "tolerance",
+  "missing_policy",
+  "max_front_back_skew_ms",
+] as const;
+
+const DD_IV_MATCHED_COORDINATE_SCHEMA = {
+  oneOf: [
+    {
+      type: "object",
+      properties: {
+        ...DD_IV_MATCHED_COORDINATE_COMMON_PROPERTIES,
+        measurement_basis: { type: "string", const: "MATCHED_DELTA" },
+        target_delta: DECIMAL_SCHEMA,
+        delta_convention: {
+          type: "string",
+          enum: [
+            "SIGNED_FORWARD_DELTA_PERCENT",
+            "ABSOLUTE_FORWARD_DELTA_PERCENT",
+          ],
+        },
+        interpolation: {
+          type: "object",
+          properties: {
+            allowed: { type: "boolean", const: true },
+            method: { type: "string", const: "LINEAR_BY_DELTA" },
+            max_bracket_width: DECIMAL_SCHEMA,
+            max_bracket_skew_ms: {
+              type: "integer",
+              minimum: 0,
+              maximum: 604800000,
+            },
+          },
+          required: [
+            "allowed",
+            "method",
+            "max_bracket_width",
+            "max_bracket_skew_ms",
+          ],
+          additionalProperties: false,
+        },
+      },
+      required: [
+        ...DD_IV_MATCHED_COORDINATE_COMMON_REQUIRED,
+        "target_delta",
+        "delta_convention",
+      ],
+      additionalProperties: false,
+    },
+    {
+      type: "object",
+      properties: {
+        ...DD_IV_MATCHED_COORDINATE_COMMON_PROPERTIES,
+        measurement_basis: {
+          type: "string",
+          const: "MATCHED_FORWARD_MONEYNESS",
+        },
+        target_log_moneyness: DECIMAL_SCHEMA,
+        moneyness_convention: {
+          type: "string",
+          const: "LN_STRIKE_OVER_FORWARD",
+        },
+        interpolation: {
+          type: "object",
+          properties: {
+            allowed: { type: "boolean", const: true },
+            method: {
+              type: "string",
+              const: "LINEAR_BY_LOG_MONEYNESS",
+            },
+            max_bracket_width: DECIMAL_SCHEMA,
+            max_bracket_skew_ms: {
+              type: "integer",
+              minimum: 0,
+              maximum: 604800000,
+            },
+          },
+          required: [
+            "allowed",
+            "method",
+            "max_bracket_width",
+            "max_bracket_skew_ms",
+          ],
+          additionalProperties: false,
+        },
+      },
+      required: [
+        ...DD_IV_MATCHED_COORDINATE_COMMON_REQUIRED,
+        "target_log_moneyness",
+        "moneyness_convention",
+      ],
+      additionalProperties: false,
+    },
+  ],
+} as const;
+
+const DD_IV_MEASUREMENT_SCHEMA = {
+  type: "object",
+  properties: {
+    contract_version: { type: "string", const: "1.0.0" },
+    candidate_id: { type: "string", minLength: 1, maxLength: 200 },
+    selected_legs: {
+      type: "array",
+      minItems: 4,
+      maxItems: 4,
+      items: DD_IV_SELECTED_LEG_SCHEMA,
+    },
+    measurement_profile: {
+      type: "object",
+      properties: {
+        profile_version: { type: "string", const: "1.0.0" },
+        selected_leg: {
+          type: "object",
+          properties: {
+            max_front_back_skew_ms: {
+              type: "integer",
+              minimum: 0,
+              maximum: 604800000,
+            },
+            combined: {
+              type: "object",
+              properties: {
+                aggregation: {
+                  type: "string",
+                  const: "WEIGHTED_ARITHMETIC_MEAN",
+                },
+                put_weight: DECIMAL_SCHEMA,
+                call_weight: DECIMAL_SCHEMA,
+              },
+              required: ["aggregation", "put_weight", "call_weight"],
+              additionalProperties: false,
+            },
+          },
+          required: ["max_front_back_skew_ms"],
+          additionalProperties: false,
+        },
+        matched_coordinates: {
+          type: "array",
+          minItems: 1,
+          maxItems: 8,
+          items: DD_IV_MATCHED_COORDINATE_SCHEMA,
+        },
+      },
+      required: [
+        "profile_version",
+        "selected_leg",
+        "matched_coordinates",
+      ],
+      additionalProperties: false,
+    },
+  },
+  required: [
+    "contract_version",
+    "candidate_id",
+    "selected_legs",
+    "measurement_profile",
+  ],
+  additionalProperties: false,
+} as const;
+
+const EMPTY_OBJECT_SCHEMA = {
+  type: "object",
+  properties: {},
+  additionalProperties: false,
 } as const;
 
 const REFERENCES_SCHEMA = {
@@ -412,6 +618,7 @@ const HISTORICAL_SPX_UNIVERSE_SCHEMA = {
         resolution_profile: RESOLUTION_PROFILE_SCHEMA,
         candidate_construction_profile:
           CANDIDATE_CONSTRUCTION_PROFILE_SCHEMA,
+        dd_iv_measurement: DD_IV_MEASUREMENT_SCHEMA,
         evidence_cache: EVIDENCE_CACHE_SCHEMA,
         phase: {
           type: "string",
@@ -959,7 +1166,7 @@ export const TOOLS: Tool[] = [
   {
     name: "tastytrade_get_historical_spx_candidate_universe",
     description:
-      "Return a bounded timestamp-safe SPXW contract universe with explicit versioned resolution/cohort metadata and optional private immutable source manifests. Defaults to 5-minute evidence; native-hour New York RTH is opt-in, incomplete bars are excluded, and the tool preserves but does not interpret candidate-construction policy.",
+      "Return a bounded timestamp-safe SPXW contract universe with explicit versioned resolution/cohort metadata and optional private immutable source manifests. An optional versioned DD IV request attaches separate RESEARCH_ONLY selected-leg, matched-delta, and matched-forward-moneyness handoff cohorts without changing production term_structure, grading, routing, fills, or P&L.",
     inputSchema: HISTORICAL_SPX_UNIVERSE_SCHEMA,
   },
   {

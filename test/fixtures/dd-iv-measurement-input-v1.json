@@ -1,0 +1,440 @@
+{
+  "dataset_version": "dd-iv-measurement-input/1.0.0",
+  "description": "Deterministic Double Diagonal IV measurement input with distinct selected-leg, matched-delta, and matched-forward-moneyness outcomes.",
+  "input": {
+    "checkpoint": "2026-08-25T14:30:00.000Z",
+    "request": {
+      "contract_version": "1.0.0",
+      "candidate_id": "dd-fixture-2026-08-25",
+      "selected_legs": [
+        {
+          "role": "FRONT_PUT_SHORT",
+          "source_symbol": "FRONT-PUT-20D",
+          "expiration": "2026-09-15T20:00:00.000Z",
+          "option_side": "PUT",
+          "strike": "7400"
+        },
+        {
+          "role": "FRONT_CALL_SHORT",
+          "source_symbol": "FRONT-CALL-20D",
+          "expiration": "2026-09-15T20:00:00.000Z",
+          "option_side": "CALL",
+          "strike": "7850"
+        },
+        {
+          "role": "BACK_PUT_LONG",
+          "source_symbol": "BACK-PUT-30D",
+          "expiration": "2026-09-29T20:00:00.000Z",
+          "option_side": "PUT",
+          "strike": "7500"
+        },
+        {
+          "role": "BACK_CALL_LONG",
+          "source_symbol": "BACK-CALL-30D",
+          "expiration": "2026-09-29T20:00:00.000Z",
+          "option_side": "CALL",
+          "strike": "7825"
+        }
+      ],
+      "measurement_profile": {
+        "profile_version": "1.0.0",
+        "selected_leg": {
+          "max_front_back_skew_ms": 600000,
+          "combined": {
+            "aggregation": "WEIGHTED_ARITHMETIC_MEAN",
+            "put_weight": "0.5",
+            "call_weight": "0.5"
+          }
+        },
+        "matched_coordinates": [
+          {
+            "measurement_id": "put-25-absolute-forward-delta",
+            "measurement_basis": "MATCHED_DELTA",
+            "front_expiration": "2026-09-15T20:00:00.000Z",
+            "back_expiration": "2026-09-29T20:00:00.000Z",
+            "option_side": "PUT",
+            "target_delta": "25",
+            "delta_convention": "ABSOLUTE_FORWARD_DELTA_PERCENT",
+            "tolerance": "0.25",
+            "missing_policy": "NOT_AVAILABLE",
+            "max_front_back_skew_ms": 600000
+          },
+          {
+            "measurement_id": "call-25-absolute-forward-delta",
+            "measurement_basis": "MATCHED_DELTA",
+            "front_expiration": "2026-09-15T20:00:00.000Z",
+            "back_expiration": "2026-09-29T20:00:00.000Z",
+            "option_side": "CALL",
+            "target_delta": "25",
+            "delta_convention": "ABSOLUTE_FORWARD_DELTA_PERCENT",
+            "tolerance": "0.25",
+            "missing_policy": "NOT_AVAILABLE",
+            "max_front_back_skew_ms": 600000
+          },
+          {
+            "measurement_id": "put-atm-log-moneyness",
+            "measurement_basis": "MATCHED_FORWARD_MONEYNESS",
+            "front_expiration": "2026-09-15T20:00:00.000Z",
+            "back_expiration": "2026-09-29T20:00:00.000Z",
+            "option_side": "PUT",
+            "target_log_moneyness": "-0.025",
+            "moneyness_convention": "LN_STRIKE_OVER_FORWARD",
+            "tolerance": "0.004",
+            "missing_policy": "NOT_AVAILABLE",
+            "max_front_back_skew_ms": 600000
+          },
+          {
+            "measurement_id": "call-atm-log-moneyness",
+            "measurement_basis": "MATCHED_FORWARD_MONEYNESS",
+            "front_expiration": "2026-09-15T20:00:00.000Z",
+            "back_expiration": "2026-09-29T20:00:00.000Z",
+            "option_side": "CALL",
+            "target_log_moneyness": "0.025",
+            "moneyness_convention": "LN_STRIKE_OVER_FORWARD",
+            "tolerance": "0.003",
+            "missing_policy": "NOT_AVAILABLE",
+            "max_front_back_skew_ms": 600000
+          }
+        ]
+      }
+    },
+    "observations": [
+      {
+        "source_symbol": "FRONT-PUT-20D",
+        "expiration": "2026-09-15T20:00:00.000Z",
+        "option_side": "PUT",
+        "strike": "7400",
+        "iv": "0.2",
+        "delta": "-20",
+        "delta_convention": "SIGNED_FORWARD_DELTA_PERCENT",
+        "iv_origin": "PROVIDER_OBSERVATION",
+        "delta_origin": "DERIVED",
+        "model": {
+          "iv_model": "PROVIDER_CANDLE_IMPLIED_VOLATILITY",
+          "delta_model": "BLACK_76_FORWARD_DELTA",
+          "forward_model": "SPOT_FORWARD_ZERO_CARRY",
+          "assumptions": ["ZERO_CARRY"]
+        },
+        "forward": {
+          "value": "7665",
+          "origin": "DERIVED",
+          "source_timestamp": "2026-08-25T14:25:00.000Z"
+        },
+        "bar_start": "2026-08-25T14:20:00.000Z",
+        "bar_end": "2026-08-25T14:25:00.000Z",
+        "available_at": "2026-08-25T14:25:00.000Z",
+        "retrieved_at": "2026-08-25T16:00:00.000Z",
+        "bar_status": "COMPLETE",
+        "freshness": "FRESH",
+        "provider": "tastytrade-dxlink",
+        "dataset": "historical-spx-candidate-universe/1.0.0",
+        "resolution": "5m",
+        "alignment": "MIDNIGHT",
+        "source_cohort_id": "fixture-5m-cohort",
+        "lineage": [
+          {
+            "source": "fixture:front-put",
+            "source_timestamp": "2026-08-25T14:25:00.000Z",
+            "fields": ["iv", "delta"],
+            "origin": "PROVIDER_OBSERVATION"
+          }
+        ],
+        "warnings": ["SPOT_FORWARD_APPROXIMATION_ASSUMES_ZERO_CARRY"]
+      },
+      {
+        "source_symbol": "FRONT-CALL-20D",
+        "expiration": "2026-09-15T20:00:00.000Z",
+        "option_side": "CALL",
+        "strike": "7850",
+        "iv": "0.18",
+        "delta": "20",
+        "delta_convention": "SIGNED_FORWARD_DELTA_PERCENT",
+        "iv_origin": "PROVIDER_OBSERVATION",
+        "delta_origin": "DERIVED",
+        "model": {
+          "iv_model": "PROVIDER_CANDLE_IMPLIED_VOLATILITY",
+          "delta_model": "BLACK_76_FORWARD_DELTA",
+          "forward_model": "SPOT_FORWARD_ZERO_CARRY",
+          "assumptions": ["ZERO_CARRY"]
+        },
+        "forward": {
+          "value": "7665",
+          "origin": "DERIVED",
+          "source_timestamp": "2026-08-25T14:25:00.000Z"
+        },
+        "bar_start": "2026-08-25T14:20:00.000Z",
+        "bar_end": "2026-08-25T14:25:00.000Z",
+        "available_at": "2026-08-25T14:25:00.000Z",
+        "retrieved_at": "2026-08-25T16:00:00.000Z",
+        "bar_status": "COMPLETE",
+        "freshness": "FRESH",
+        "provider": "tastytrade-dxlink",
+        "dataset": "historical-spx-candidate-universe/1.0.0",
+        "resolution": "5m",
+        "alignment": "MIDNIGHT",
+        "source_cohort_id": "fixture-5m-cohort",
+        "lineage": [
+          {
+            "source": "fixture:front-call",
+            "source_timestamp": "2026-08-25T14:25:00.000Z",
+            "fields": ["iv", "delta"],
+            "origin": "PROVIDER_OBSERVATION"
+          }
+        ],
+        "warnings": ["SPOT_FORWARD_APPROXIMATION_ASSUMES_ZERO_CARRY"]
+      },
+      {
+        "source_symbol": "BACK-PUT-30D",
+        "expiration": "2026-09-29T20:00:00.000Z",
+        "option_side": "PUT",
+        "strike": "7500",
+        "iv": "0.215",
+        "delta": "-30",
+        "delta_convention": "SIGNED_FORWARD_DELTA_PERCENT",
+        "iv_origin": "PROVIDER_OBSERVATION",
+        "delta_origin": "DERIVED",
+        "model": {
+          "iv_model": "PROVIDER_CANDLE_IMPLIED_VOLATILITY",
+          "delta_model": "BLACK_76_FORWARD_DELTA",
+          "forward_model": "SPOT_FORWARD_ZERO_CARRY",
+          "assumptions": ["ZERO_CARRY"]
+        },
+        "forward": {
+          "value": "7665",
+          "origin": "DERIVED",
+          "source_timestamp": "2026-08-25T14:25:00.000Z"
+        },
+        "bar_start": "2026-08-25T14:20:00.000Z",
+        "bar_end": "2026-08-25T14:25:00.000Z",
+        "available_at": "2026-08-25T14:25:00.000Z",
+        "retrieved_at": "2026-08-25T16:00:00.000Z",
+        "bar_status": "COMPLETE",
+        "freshness": "FRESH",
+        "provider": "tastytrade-dxlink",
+        "dataset": "historical-spx-candidate-universe/1.0.0",
+        "resolution": "5m",
+        "alignment": "MIDNIGHT",
+        "source_cohort_id": "fixture-5m-cohort",
+        "lineage": [
+          {
+            "source": "fixture:back-put",
+            "source_timestamp": "2026-08-25T14:25:00.000Z",
+            "fields": ["iv", "delta"],
+            "origin": "PROVIDER_OBSERVATION"
+          }
+        ],
+        "warnings": ["SPOT_FORWARD_APPROXIMATION_ASSUMES_ZERO_CARRY"]
+      },
+      {
+        "source_symbol": "BACK-CALL-30D",
+        "expiration": "2026-09-29T20:00:00.000Z",
+        "option_side": "CALL",
+        "strike": "7825",
+        "iv": "0.17",
+        "delta": "30",
+        "delta_convention": "SIGNED_FORWARD_DELTA_PERCENT",
+        "iv_origin": "PROVIDER_OBSERVATION",
+        "delta_origin": "DERIVED",
+        "model": {
+          "iv_model": "PROVIDER_CANDLE_IMPLIED_VOLATILITY",
+          "delta_model": "BLACK_76_FORWARD_DELTA",
+          "forward_model": "SPOT_FORWARD_ZERO_CARRY",
+          "assumptions": ["ZERO_CARRY"]
+        },
+        "forward": {
+          "value": "7665",
+          "origin": "DERIVED",
+          "source_timestamp": "2026-08-25T14:25:00.000Z"
+        },
+        "bar_start": "2026-08-25T14:20:00.000Z",
+        "bar_end": "2026-08-25T14:25:00.000Z",
+        "available_at": "2026-08-25T14:25:00.000Z",
+        "retrieved_at": "2026-08-25T16:00:00.000Z",
+        "bar_status": "COMPLETE",
+        "freshness": "FRESH",
+        "provider": "tastytrade-dxlink",
+        "dataset": "historical-spx-candidate-universe/1.0.0",
+        "resolution": "5m",
+        "alignment": "MIDNIGHT",
+        "source_cohort_id": "fixture-5m-cohort",
+        "lineage": [
+          {
+            "source": "fixture:back-call",
+            "source_timestamp": "2026-08-25T14:25:00.000Z",
+            "fields": ["iv", "delta"],
+            "origin": "PROVIDER_OBSERVATION"
+          }
+        ],
+        "warnings": ["SPOT_FORWARD_APPROXIMATION_ASSUMES_ZERO_CARRY"]
+      },
+      {
+        "source_symbol": "FRONT-PUT-25D",
+        "expiration": "2026-09-15T20:00:00.000Z",
+        "option_side": "PUT",
+        "strike": "7450",
+        "iv": "0.21",
+        "delta": "-25",
+        "delta_convention": "SIGNED_FORWARD_DELTA_PERCENT",
+        "iv_origin": "PROVIDER_OBSERVATION",
+        "delta_origin": "DERIVED",
+        "model": {
+          "iv_model": "PROVIDER_CANDLE_IMPLIED_VOLATILITY",
+          "delta_model": "BLACK_76_FORWARD_DELTA",
+          "forward_model": "SPOT_FORWARD_ZERO_CARRY",
+          "assumptions": ["ZERO_CARRY"]
+        },
+        "forward": {
+          "value": "7665",
+          "origin": "DERIVED",
+          "source_timestamp": "2026-08-25T14:25:00.000Z"
+        },
+        "bar_start": "2026-08-25T14:20:00.000Z",
+        "bar_end": "2026-08-25T14:25:00.000Z",
+        "available_at": "2026-08-25T14:25:00.000Z",
+        "retrieved_at": "2026-08-25T16:00:00.000Z",
+        "bar_status": "COMPLETE",
+        "freshness": "FRESH",
+        "provider": "tastytrade-dxlink",
+        "dataset": "historical-spx-candidate-universe/1.0.0",
+        "resolution": "5m",
+        "alignment": "MIDNIGHT",
+        "source_cohort_id": "fixture-5m-cohort",
+        "lineage": [
+          {
+            "source": "fixture:front-put-25",
+            "source_timestamp": "2026-08-25T14:25:00.000Z",
+            "fields": ["iv", "delta"],
+            "origin": "PROVIDER_OBSERVATION"
+          }
+        ],
+        "warnings": ["SPOT_FORWARD_APPROXIMATION_ASSUMES_ZERO_CARRY"]
+      },
+      {
+        "source_symbol": "BACK-PUT-25D",
+        "expiration": "2026-09-29T20:00:00.000Z",
+        "option_side": "PUT",
+        "strike": "7475",
+        "iv": "0.21",
+        "delta": "-25",
+        "delta_convention": "SIGNED_FORWARD_DELTA_PERCENT",
+        "iv_origin": "PROVIDER_OBSERVATION",
+        "delta_origin": "DERIVED",
+        "model": {
+          "iv_model": "PROVIDER_CANDLE_IMPLIED_VOLATILITY",
+          "delta_model": "BLACK_76_FORWARD_DELTA",
+          "forward_model": "SPOT_FORWARD_ZERO_CARRY",
+          "assumptions": ["ZERO_CARRY"]
+        },
+        "forward": {
+          "value": "7665",
+          "origin": "DERIVED",
+          "source_timestamp": "2026-08-25T14:25:00.000Z"
+        },
+        "bar_start": "2026-08-25T14:20:00.000Z",
+        "bar_end": "2026-08-25T14:25:00.000Z",
+        "available_at": "2026-08-25T14:25:00.000Z",
+        "retrieved_at": "2026-08-25T16:00:00.000Z",
+        "bar_status": "COMPLETE",
+        "freshness": "FRESH",
+        "provider": "tastytrade-dxlink",
+        "dataset": "historical-spx-candidate-universe/1.0.0",
+        "resolution": "5m",
+        "alignment": "MIDNIGHT",
+        "source_cohort_id": "fixture-5m-cohort",
+        "lineage": [
+          {
+            "source": "fixture:back-put-25",
+            "source_timestamp": "2026-08-25T14:25:00.000Z",
+            "fields": ["iv", "delta"],
+            "origin": "PROVIDER_OBSERVATION"
+          }
+        ],
+        "warnings": ["SPOT_FORWARD_APPROXIMATION_ASSUMES_ZERO_CARRY"]
+      },
+      {
+        "source_symbol": "FRONT-CALL-25D",
+        "expiration": "2026-09-15T20:00:00.000Z",
+        "option_side": "CALL",
+        "strike": "7800",
+        "iv": "0.19",
+        "delta": "25",
+        "delta_convention": "SIGNED_FORWARD_DELTA_PERCENT",
+        "iv_origin": "PROVIDER_OBSERVATION",
+        "delta_origin": "DERIVED",
+        "model": {
+          "iv_model": "PROVIDER_CANDLE_IMPLIED_VOLATILITY",
+          "delta_model": "BLACK_76_FORWARD_DELTA",
+          "forward_model": "SPOT_FORWARD_ZERO_CARRY",
+          "assumptions": ["ZERO_CARRY"]
+        },
+        "forward": {
+          "value": "7665",
+          "origin": "DERIVED",
+          "source_timestamp": "2026-08-25T14:25:00.000Z"
+        },
+        "bar_start": "2026-08-25T14:20:00.000Z",
+        "bar_end": "2026-08-25T14:25:00.000Z",
+        "available_at": "2026-08-25T14:25:00.000Z",
+        "retrieved_at": "2026-08-25T16:00:00.000Z",
+        "bar_status": "COMPLETE",
+        "freshness": "FRESH",
+        "provider": "tastytrade-dxlink",
+        "dataset": "historical-spx-candidate-universe/1.0.0",
+        "resolution": "5m",
+        "alignment": "MIDNIGHT",
+        "source_cohort_id": "fixture-5m-cohort",
+        "lineage": [
+          {
+            "source": "fixture:front-call-25",
+            "source_timestamp": "2026-08-25T14:25:00.000Z",
+            "fields": ["iv", "delta"],
+            "origin": "PROVIDER_OBSERVATION"
+          }
+        ],
+        "warnings": ["SPOT_FORWARD_APPROXIMATION_ASSUMES_ZERO_CARRY"]
+      },
+      {
+        "source_symbol": "BACK-CALL-25D",
+        "expiration": "2026-09-29T20:00:00.000Z",
+        "option_side": "CALL",
+        "strike": "7875",
+        "iv": "0.195",
+        "delta": "25",
+        "delta_convention": "SIGNED_FORWARD_DELTA_PERCENT",
+        "iv_origin": "PROVIDER_OBSERVATION",
+        "delta_origin": "DERIVED",
+        "model": {
+          "iv_model": "PROVIDER_CANDLE_IMPLIED_VOLATILITY",
+          "delta_model": "BLACK_76_FORWARD_DELTA",
+          "forward_model": "SPOT_FORWARD_ZERO_CARRY",
+          "assumptions": ["ZERO_CARRY"]
+        },
+        "forward": {
+          "value": "7665",
+          "origin": "DERIVED",
+          "source_timestamp": "2026-08-25T14:25:00.000Z"
+        },
+        "bar_start": "2026-08-25T14:20:00.000Z",
+        "bar_end": "2026-08-25T14:25:00.000Z",
+        "available_at": "2026-08-25T14:25:00.000Z",
+        "retrieved_at": "2026-08-25T16:00:00.000Z",
+        "bar_status": "COMPLETE",
+        "freshness": "FRESH",
+        "provider": "tastytrade-dxlink",
+        "dataset": "historical-spx-candidate-universe/1.0.0",
+        "resolution": "5m",
+        "alignment": "MIDNIGHT",
+        "source_cohort_id": "fixture-5m-cohort",
+        "lineage": [
+          {
+            "source": "fixture:back-call-25",
+            "source_timestamp": "2026-08-25T14:25:00.000Z",
+            "fields": ["iv", "delta"],
+            "origin": "PROVIDER_OBSERVATION"
+          }
+        ],
+        "warnings": ["SPOT_FORWARD_APPROXIMATION_ASSUMES_ZERO_CARRY"]
+      }
+    ]
+  }
+}

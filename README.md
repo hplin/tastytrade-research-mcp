@@ -33,7 +33,7 @@ The project is intentionally separate from the official
 | --- | --- |
 | `tastytrade_price_option_package` | Price verticals, iron condors, and double diagonals with explicit native/synthetic provenance |
 | `tastytrade_discover_historical_spx_candidates` | Reconstruct timestamp-safe historical SPXW candidates under a versioned resolution profile, with exact-timestamp Backtester fallback |
-| `tastytrade_get_historical_spx_candidate_universe` | Return a bounded multi-strike, multi-expiration SPXW universe with explicit resolution/provider cohort identity |
+| `tastytrade_get_historical_spx_candidate_universe` | Return a bounded multi-strike, multi-expiration SPXW universe and optional versioned RESEARCH_ONLY DD selected-leg/matched-delta IV handoff |
 | `tastytrade_get_historical_option_package_at_checkpoint` | Reconstruct an exact-leg SPX package reference at an RFC3339 or IANA-local checkpoint with explicit age and skew controls |
 | `tastytrade_get_historical_option_package_path` | Return profile-aligned completed-candle package points and explicit gaps without interpolation |
 | `tastytrade_prepare_spx_spread` | Deterministically normalize SPX legs without calling an upstream service |
@@ -46,6 +46,9 @@ Use MCP `tools/list` for the complete JSON input schemas.
 The shared profile contract and the optional seven-date live capability gate
 are documented in
 [`docs/resolution-profiles.md`](docs/resolution-profiles.md).
+The separate Double Diagonal IV measurement contract, legacy-preserving
+migration, and reproducible grading/regression handoff are documented in
+[`docs/dd-iv-measurements.md`](docs/dd-iv-measurements.md).
 Private immutable source-cache configuration, exact offline replay, and
 migration guidance are documented in
 [`docs/evidence-cache.md`](docs/evidence-cache.md).
@@ -68,8 +71,8 @@ symbols, range/as-of, provider/dataset/license scope, aggregation/session/
 alignment/price type, the full resolution profile, resource policy, and
 normalization/model/source revisions. Retrieval time is frozen in each
 immutable manifest and never replaces bar availability time.
-
 Run `npm run report:evidence-cache` for a deterministic synthetic cache
+hit/miss, byte-count, normalized-hash, and provider-call-reduction report.
 hit/miss, byte-count, normalized-hash, and provider-call-reduction report.
 
 ## Execution evidence contract
@@ -209,6 +212,13 @@ IANA `local_checkpoint`. They preserve `bar_start`, `bar_end`,
 profile with deterministic requested/effective cohort IDs. An opaque
 versioned `candidate_construction_profile` is returned unchanged; this MCP
 does not duplicate grading, DD-bucket, or final-leg-selection rules.
+
+An optional `dd_iv_measurement` request freezes an exact four-leg Double
+Diagonal candidate and returns distinct `SELECTED_LEG_IV_DIFFERENCE` and
+`MATCHED_DELTA` / `MATCHED_FORWARD_MONEYNESS` cohorts. The handoff is always
+`RESEARCH_ONLY`, preserves provider/derived models, timestamp lineage, and
+optional immutable evidence-manifest IDs, and explicitly does not replace
+legacy production `term_structure`.
 
 See
 [`docs/historical-spx-universe.md`](docs/historical-spx-universe.md)
