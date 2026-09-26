@@ -11,6 +11,7 @@ export const DEFAULT_RESOLUTION_PROVIDER = "tastytrade-dxlink";
 export type ResolutionProfileId =
   | "DEFAULT_5M"
   | "HOURLY_VALUATION_RESEARCH"
+  | "HOURLY_PROVIDER_ALIGNED_RESEARCH"
   | "DIRECT_CANDLE_REQUEST";
 
 export type ResolutionProfileInput = {
@@ -154,7 +155,10 @@ function profileSession(
   session: ResolutionProfileSession;
   alignment: "MIDNIGHT" | "SESSION";
 } {
-  if (profileId === "HOURLY_VALUATION_RESEARCH") {
+  if (
+    profileId === "HOURLY_VALUATION_RESEARCH" ||
+    profileId === "HOURLY_PROVIDER_ALIGNED_RESEARCH"
+  ) {
     return {
       session: {
         kind: "REGULAR",
@@ -162,7 +166,10 @@ function profileSession(
         start_time: "09:30",
         end_time: "16:00",
       },
-      alignment: "SESSION",
+      alignment:
+        profileId === "HOURLY_VALUATION_RESEARCH"
+          ? "SESSION"
+          : "MIDNIGHT",
     };
   }
   if (profileId === "DIRECT_CANDLE_REQUEST") {
@@ -222,7 +229,8 @@ export function normalizeResolutionProfile(
     );
   }
   const requestedAggregation =
-    profileId === "HOURLY_VALUATION_RESEARCH"
+    profileId === "HOURLY_VALUATION_RESEARCH" ||
+    profileId === "HOURLY_PROVIDER_ALIGNED_RESEARCH"
       ? "1h"
       : profileId === "DEFAULT_5M"
         ? "5m"
@@ -239,7 +247,8 @@ export function normalizeResolutionProfile(
   );
   const fallbackAggregations = [
     ...(input?.allowed_fallback_aggregations ??
-      (profileId === "HOURLY_VALUATION_RESEARCH"
+      (profileId === "HOURLY_VALUATION_RESEARCH" ||
+      profileId === "HOURLY_PROVIDER_ALIGNED_RESEARCH"
         ? []
         : defaults.default_fallback_aggregations)),
   ];
@@ -382,7 +391,8 @@ export function resolutionCandleSource(
   const attributes = [`=${profile.native_aggregation}`];
   if (
     profile.session.kind === "REGULAR" &&
-    profile.alignment === "SESSION"
+    (profile.alignment === "SESSION" ||
+      profile.profile_id === "HOURLY_PROVIDER_ALIGNED_RESEARCH")
   ) {
     attributes.push("a=s", "tho=true");
   }
