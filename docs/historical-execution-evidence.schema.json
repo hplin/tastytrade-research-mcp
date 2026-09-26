@@ -1,0 +1,903 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/hplin/tastytrade-research-mcp/docs/historical-execution-evidence.schema.json",
+  "title": "Historical exact-leg quote evidence handoff",
+  "type": "object",
+  "required": [
+    "contract_version",
+    "evidence_id",
+    "evidence_type",
+    "evidence_phase",
+    "scope",
+    "status",
+    "family",
+    "underlying",
+    "candidate_fingerprint",
+    "verified_multiplier",
+    "broker_fill_verified",
+    "inventory",
+    "quote_policy",
+    "expected_observation_times",
+    "observations",
+    "coverage",
+    "evidence_layers",
+    "source_manifest_ids",
+    "normalized_content_ids",
+    "warnings"
+  ],
+  "properties": {
+    "contract_version": {
+      "const": "1.0.0"
+    },
+    "evidence_id": {
+      "$ref": "#/$defs/contentId"
+    },
+    "evidence_type": {
+      "const": "HISTORICAL_EXACT_LEG_QUOTE_HANDOFF"
+    },
+    "evidence_phase": {
+      "const": "POST_SESSION_REGRESSION"
+    },
+    "scope": {
+      "enum": [
+        "SNAPSHOT",
+        "WINDOW"
+      ]
+    },
+    "status": {
+      "enum": [
+        "AVAILABLE",
+        "PARTIAL",
+        "NOT_AVAILABLE"
+      ]
+    },
+    "family": {
+      "$ref": "#/$defs/family"
+    },
+    "underlying": {
+      "const": "SPX"
+    },
+    "candidate_fingerprint": {
+      "$ref": "#/$defs/nonEmptyString"
+    },
+    "verified_multiplier": {
+      "$ref": "#/$defs/positiveDecimal"
+    },
+    "broker_fill_verified": {
+      "const": false
+    },
+    "inventory": {
+      "type": "array",
+      "minItems": 2,
+      "maxItems": 4,
+      "items": {
+        "$ref": "#/$defs/inventoryLeg"
+      }
+    },
+    "quote_policy": {
+      "type": "object",
+      "required": [
+        "max_quote_age_ms",
+        "max_temporal_skew_ms",
+        "require_sizes"
+      ],
+      "properties": {
+        "max_quote_age_ms": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "max_temporal_skew_ms": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "require_sizes": {
+          "const": true
+        }
+      },
+      "additionalProperties": false
+    },
+    "expected_observation_times": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {
+        "$ref": "#/$defs/timestamp"
+      }
+    },
+    "observations": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/observation"
+      }
+    },
+    "coverage": {
+      "$ref": "#/$defs/coverage"
+    },
+    "evidence_layers": {
+      "$ref": "#/$defs/evidenceLayers"
+    },
+    "source_manifest_ids": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "$ref": "#/$defs/contentId"
+      }
+    },
+    "normalized_content_ids": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "$ref": "#/$defs/contentId"
+      }
+    },
+    "warnings": {
+      "$ref": "#/$defs/stringArray"
+    }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "timestamp": {
+      "type": "string",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d{1,9})?(?:Z|[+-]\\d{2}:\\d{2})$"
+    },
+    "date": {
+      "type": "string",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+    },
+    "contentId": {
+      "type": "string",
+      "pattern": "^sha256:[a-f0-9]{64}$"
+    },
+    "nonEmptyString": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 200
+    },
+    "decimal": {
+      "type": "string",
+      "pattern": "^[+-]?(?:0|[1-9][0-9]*)(?:\\.[0-9]+)?$"
+    },
+    "positiveDecimal": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/decimal"
+        },
+        {
+          "not": {
+            "pattern": "^(?:-.*|0(?:\\.0+)?)$"
+          }
+        }
+      ]
+    },
+    "nullableDecimal": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/decimal"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "nullableTimestamp": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/timestamp"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "nullableSize": {
+      "oneOf": [
+        {
+          "type": "integer",
+          "minimum": 0
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "stringArray": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "family": {
+      "enum": [
+        "DEBIT_VERTICAL",
+        "CREDIT_VERTICAL",
+        "IRON_CONDOR",
+        "DOUBLE_DIAGONAL"
+      ]
+    },
+    "coverageStatus": {
+      "enum": [
+        "COMPLETE",
+        "PARTIAL",
+        "NONE"
+      ]
+    },
+    "resolution": {
+      "type": "object",
+      "required": [
+        "profile_id",
+        "profile_version",
+        "native_resolution",
+        "effective_resolution"
+      ],
+      "properties": {
+        "profile_id": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "profile_version": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "native_resolution": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "effective_resolution": {
+          "$ref": "#/$defs/nonEmptyString"
+        }
+      },
+      "additionalProperties": false
+    },
+    "source": {
+      "type": "object",
+      "required": [
+        "source_id",
+        "provider_id",
+        "dataset_id",
+        "license_scope_id",
+        "resolution_profile",
+        "source_revision",
+        "revision",
+        "manifest_id",
+        "normalized_content_id"
+      ],
+      "properties": {
+        "source_id": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "provider_id": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "dataset_id": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "license_scope_id": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "resolution_profile": {
+          "$ref": "#/$defs/resolution"
+        },
+        "source_revision": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "revision": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "manifest_id": {
+          "$ref": "#/$defs/contentId"
+        },
+        "normalized_content_id": {
+          "$ref": "#/$defs/contentId"
+        }
+      },
+      "additionalProperties": false
+    },
+    "cohort": {
+      "type": "object",
+      "required": [
+        "provider_id",
+        "dataset_id",
+        "license_scope_id",
+        "resolution_profile",
+        "source_revision",
+        "cohort_id"
+      ],
+      "properties": {
+        "provider_id": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "dataset_id": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "license_scope_id": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "resolution_profile": {
+          "$ref": "#/$defs/resolution"
+        },
+        "source_revision": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "cohort_id": {
+          "$ref": "#/$defs/contentId"
+        }
+      },
+      "additionalProperties": false
+    },
+    "inventoryLeg": {
+      "type": "object",
+      "required": [
+        "provider_symbol",
+        "streamer_symbol",
+        "option_side",
+        "strike",
+        "action",
+        "ratio",
+        "inventory_quantity",
+        "expiration",
+        "settlement",
+        "multiplier"
+      ],
+      "properties": {
+        "provider_symbol": {
+          "type": "string",
+          "minLength": 21,
+          "maxLength": 21
+        },
+        "streamer_symbol": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "option_side": {
+          "enum": [
+            "CALL",
+            "PUT"
+          ]
+        },
+        "strike": {
+          "$ref": "#/$defs/decimal"
+        },
+        "action": {
+          "enum": [
+            "BUY_TO_OPEN",
+            "SELL_TO_OPEN"
+          ]
+        },
+        "ratio": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "inventory_quantity": {
+          "type": "integer",
+          "not": {
+            "const": 0
+          }
+        },
+        "expiration": {
+          "$ref": "#/$defs/date"
+        },
+        "settlement": {
+          "enum": [
+            "AM",
+            "PM"
+          ]
+        },
+        "multiplier": {
+          "$ref": "#/$defs/positiveDecimal"
+        }
+      },
+      "additionalProperties": false
+    },
+    "legQuote": {
+      "type": "object",
+      "required": [
+        "provider_symbol",
+        "inventory_quantity",
+        "bid",
+        "ask",
+        "bid_size",
+        "ask_size",
+        "quote_kind",
+        "quote_status",
+        "price_semantics",
+        "source_timestamp",
+        "available_at",
+        "bar_end",
+        "retrieved_at",
+        "source",
+        "status",
+        "rejection_reasons"
+      ],
+      "properties": {
+        "provider_symbol": {
+          "type": "string"
+        },
+        "inventory_quantity": {
+          "type": "integer",
+          "not": {
+            "const": 0
+          }
+        },
+        "bid": {
+          "$ref": "#/$defs/nullableDecimal"
+        },
+        "ask": {
+          "$ref": "#/$defs/nullableDecimal"
+        },
+        "bid_size": {
+          "$ref": "#/$defs/nullableSize"
+        },
+        "ask_size": {
+          "$ref": "#/$defs/nullableSize"
+        },
+        "quote_kind": {
+          "enum": [
+            "NBBO",
+            "BBO",
+            "INDICATIVE",
+            "UNKNOWN"
+          ]
+        },
+        "quote_status": {
+          "enum": [
+            "NORMAL",
+            "CLOSED",
+            "HALTED",
+            "SNIP",
+            "UNKNOWN"
+          ]
+        },
+        "price_semantics": {
+          "enum": [
+            "OPTION_PREMIUM_PER_UNIT",
+            "UNKNOWN"
+          ]
+        },
+        "source_timestamp": {
+          "$ref": "#/$defs/nullableTimestamp"
+        },
+        "available_at": {
+          "$ref": "#/$defs/nullableTimestamp"
+        },
+        "bar_end": {
+          "$ref": "#/$defs/nullableTimestamp"
+        },
+        "retrieved_at": {
+          "$ref": "#/$defs/nullableTimestamp"
+        },
+        "source": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/source"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "status": {
+          "enum": [
+            "COMPLETE",
+            "REJECTED"
+          ]
+        },
+        "rejection_reasons": {
+          "$ref": "#/$defs/stringArray"
+        }
+      },
+      "additionalProperties": false
+    },
+    "packageQuote": {
+      "type": "object",
+      "required": [
+        "evidence_id",
+        "signed_bid",
+        "signed_ask",
+        "bid_size",
+        "ask_size",
+        "quote_kind",
+        "quote_status",
+        "price_semantics",
+        "quote_origin",
+        "source_timestamp",
+        "available_at",
+        "bar_end",
+        "retrieved_at",
+        "source",
+        "usable_for_simulated_execution",
+        "rejection_reasons"
+      ],
+      "properties": {
+        "evidence_id": {
+          "$ref": "#/$defs/contentId"
+        },
+        "signed_bid": {
+          "$ref": "#/$defs/nullableDecimal"
+        },
+        "signed_ask": {
+          "$ref": "#/$defs/nullableDecimal"
+        },
+        "bid_size": {
+          "$ref": "#/$defs/nullableSize"
+        },
+        "ask_size": {
+          "$ref": "#/$defs/nullableSize"
+        },
+        "quote_kind": {
+          "enum": [
+            "NBBO",
+            "BBO",
+            "INDICATIVE",
+            "UNKNOWN",
+            "SYNTHETIC"
+          ]
+        },
+        "quote_status": {
+          "enum": [
+            "NORMAL",
+            "CLOSED",
+            "HALTED",
+            "SNIP",
+            "UNKNOWN"
+          ]
+        },
+        "price_semantics": {
+          "enum": [
+            "SIGNED_CASH_FLOW_PER_UNIT",
+            "UNSIGNED_ABSOLUTE",
+            "UNKNOWN"
+          ]
+        },
+        "quote_origin": {
+          "enum": [
+            "NATIVE_PACKAGE",
+            "ALIGNED_LEG_QUOTES"
+          ]
+        },
+        "source_timestamp": {
+          "$ref": "#/$defs/nullableTimestamp"
+        },
+        "available_at": {
+          "$ref": "#/$defs/nullableTimestamp"
+        },
+        "bar_end": {
+          "$ref": "#/$defs/nullableTimestamp"
+        },
+        "retrieved_at": {
+          "$ref": "#/$defs/nullableTimestamp"
+        },
+        "source": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/source"
+            },
+            {
+              "$ref": "#/$defs/cohort"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "usable_for_simulated_execution": {
+          "type": "boolean"
+        },
+        "rejection_reasons": {
+          "$ref": "#/$defs/stringArray"
+        }
+      },
+      "additionalProperties": false
+    },
+    "reference": {
+      "type": "object",
+      "required": [
+        "evidence_id",
+        "evidence_type",
+        "evidence_class",
+        "signed_value",
+        "price_semantics",
+        "source_timestamp",
+        "available_at",
+        "bar_end",
+        "retrieved_at",
+        "model_version",
+        "source",
+        "status",
+        "rejection_reasons"
+      ],
+      "properties": {
+        "evidence_id": {
+          "$ref": "#/$defs/contentId"
+        },
+        "evidence_type": {
+          "enum": [
+            "TRADE_REFERENCE",
+            "CANDLE_REFERENCE",
+            "MODEL_REFERENCE"
+          ]
+        },
+        "evidence_class": {
+          "const": "VALUATION_ONLY"
+        },
+        "signed_value": {
+          "$ref": "#/$defs/nullableDecimal"
+        },
+        "price_semantics": {
+          "enum": [
+            "SIGNED_CASH_FLOW_PER_UNIT",
+            "UNSIGNED_ABSOLUTE",
+            "UNKNOWN"
+          ]
+        },
+        "source_timestamp": {
+          "$ref": "#/$defs/nullableTimestamp"
+        },
+        "available_at": {
+          "$ref": "#/$defs/nullableTimestamp"
+        },
+        "bar_end": {
+          "$ref": "#/$defs/nullableTimestamp"
+        },
+        "retrieved_at": {
+          "$ref": "#/$defs/nullableTimestamp"
+        },
+        "model_version": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/nonEmptyString"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "source": {
+          "$ref": "#/$defs/source"
+        },
+        "status": {
+          "enum": [
+            "AVAILABLE",
+            "NOT_AVAILABLE"
+          ]
+        },
+        "rejection_reasons": {
+          "$ref": "#/$defs/stringArray"
+        }
+      },
+      "additionalProperties": false
+    },
+    "observation": {
+      "type": "object",
+      "required": [
+        "observation_id",
+        "observed_at",
+        "status",
+        "quote_coverage",
+        "trade_coverage",
+        "candle_coverage",
+        "model_coverage",
+        "temporal_skew_ms",
+        "source_cohort",
+        "leg_quotes",
+        "native_package_quote",
+        "synthetic_package_quote",
+        "references",
+        "rejection_reasons",
+        "warnings"
+      ],
+      "properties": {
+        "observation_id": {
+          "$ref": "#/$defs/contentId"
+        },
+        "observed_at": {
+          "$ref": "#/$defs/timestamp"
+        },
+        "status": {
+          "enum": [
+            "COMPLETE",
+            "PARTIAL",
+            "REJECTED"
+          ]
+        },
+        "quote_coverage": {
+          "$ref": "#/$defs/coverageStatus"
+        },
+        "trade_coverage": {
+          "$ref": "#/$defs/coverageStatus"
+        },
+        "candle_coverage": {
+          "$ref": "#/$defs/coverageStatus"
+        },
+        "model_coverage": {
+          "$ref": "#/$defs/coverageStatus"
+        },
+        "temporal_skew_ms": {
+          "oneOf": [
+            {
+              "type": "integer",
+              "minimum": 0
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "source_cohort": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/cohort"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "leg_quotes": {
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 4,
+          "items": {
+            "$ref": "#/$defs/legQuote"
+          }
+        },
+        "native_package_quote": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/packageQuote"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "synthetic_package_quote": {
+          "$ref": "#/$defs/packageQuote"
+        },
+        "references": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/reference"
+          }
+        },
+        "rejection_reasons": {
+          "$ref": "#/$defs/stringArray"
+        },
+        "warnings": {
+          "$ref": "#/$defs/stringArray"
+        }
+      },
+      "additionalProperties": false
+    },
+    "coverage": {
+      "type": "object",
+      "required": [
+        "expected_observations",
+        "observed_observations",
+        "complete_quote_observations",
+        "partial_quote_observations",
+        "missing_observations",
+        "quote_coverage",
+        "trade_coverage",
+        "candle_coverage",
+        "model_coverage",
+        "gaps"
+      ],
+      "properties": {
+        "expected_observations": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "observed_observations": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "complete_quote_observations": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "partial_quote_observations": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "missing_observations": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "quote_coverage": {
+          "$ref": "#/$defs/coverageStatus"
+        },
+        "trade_coverage": {
+          "$ref": "#/$defs/coverageStatus"
+        },
+        "candle_coverage": {
+          "$ref": "#/$defs/coverageStatus"
+        },
+        "model_coverage": {
+          "$ref": "#/$defs/coverageStatus"
+        },
+        "gaps": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "observed_at",
+              "reasons"
+            ],
+            "properties": {
+              "observed_at": {
+                "$ref": "#/$defs/timestamp"
+              },
+              "reasons": {
+                "$ref": "#/$defs/stringArray"
+              }
+            },
+            "additionalProperties": false
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "evidenceLayers": {
+      "type": "object",
+      "required": [
+        "valuation_only",
+        "simulated_execution",
+        "broker_execution"
+      ],
+      "properties": {
+        "valuation_only": {
+          "type": "object",
+          "required": [
+            "present",
+            "evidence_ids"
+          ],
+          "properties": {
+            "present": {
+              "type": "boolean"
+            },
+            "evidence_ids": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/contentId"
+              }
+            }
+          },
+          "additionalProperties": false
+        },
+        "simulated_execution": {
+          "type": "object",
+          "required": [
+            "input_status",
+            "result_present"
+          ],
+          "properties": {
+            "input_status": {
+              "$ref": "#/$defs/coverageStatus"
+            },
+            "result_present": {
+              "const": false
+            }
+          },
+          "additionalProperties": false
+        },
+        "broker_execution": {
+          "type": "object",
+          "required": [
+            "verified",
+            "evidence_ids"
+          ],
+          "properties": {
+            "verified": {
+              "const": false
+            },
+            "evidence_ids": {
+              "type": "array",
+              "maxItems": 0
+            }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}

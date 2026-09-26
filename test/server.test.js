@@ -8,6 +8,10 @@ function textResult(result) {
   return JSON.parse(text);
 }
 
+function contentId(character) {
+  return `sha256:${character.repeat(64)}`;
+}
+
 describe("MCP research server", () => {
   test("lists and invokes the expanded research tool surface", async () => {
     const backtester = {
@@ -63,7 +67,7 @@ describe("MCP research server", () => {
     await client.connect(clientTransport);
     try {
       const tools = await client.listTools();
-      expect(tools.tools).toHaveLength(17);
+      expect(tools.tools).toHaveLength(18);
       expect(tools.tools.map((tool) => tool.name)).toEqual(
         expect.arrayContaining([
           "tastytrade_price_option_package",
@@ -71,6 +75,7 @@ describe("MCP research server", () => {
           "tastytrade_get_historical_spx_candidate_universe",
           "tastytrade_get_historical_option_package_at_checkpoint",
           "tastytrade_get_historical_option_package_path",
+          "tastytrade_normalize_historical_execution_evidence",
           "tastytrade_verify_historical_fill",
           "tastytrade_get_historical_candles",
           "tastytrade_prepare_spx_spread",
@@ -180,6 +185,130 @@ describe("MCP research server", () => {
       expect(priced.synthetic_natural).toMatchObject({
         value: "1",
         price_effect: "CREDIT",
+      });
+
+      const quoteEvidence = textResult(
+        await client.callTool({
+          name: "tastytrade_normalize_historical_execution_evidence",
+          arguments: {
+            request: {
+              scope: "SNAPSHOT",
+              family: "DEBIT_VERTICAL",
+              underlying: "SPX",
+              candidate_fingerprint: "candidate-mcp-fixture",
+              quote_policy: {
+                max_quote_age_ms: 2000,
+                max_temporal_skew_ms: 500,
+                require_sizes: true,
+              },
+              expected_observation_times: [
+                "2026-09-24T14:30:00.000Z",
+              ],
+              legs: [
+                {
+                  provider_symbol: "SPXW  261016C06000000",
+                  action: "BUY_TO_OPEN",
+                  ratio: 1,
+                  expiration: "2026-10-16",
+                  settlement: "PM",
+                  multiplier: "100",
+                },
+                {
+                  provider_symbol: "SPXW  261016C06050000",
+                  action: "SELL_TO_OPEN",
+                  ratio: 1,
+                  expiration: "2026-10-16",
+                  settlement: "PM",
+                  multiplier: "100",
+                },
+              ],
+              observations: [
+                {
+                  observed_at: "2026-09-24T14:30:00.000Z",
+                  native_package_quote: null,
+                  references: [],
+                  leg_quotes: [
+                    {
+                      provider_symbol: "SPXW  261016C06000000",
+                      bid: "4",
+                      ask: "4.2",
+                      bid_size: 10,
+                      ask_size: 10,
+                      quote_kind: "NBBO",
+                      quote_status: "NORMAL",
+                      price_semantics: "OPTION_PREMIUM_PER_UNIT",
+                      source_timestamp:
+                        "2026-09-24T14:29:59.000Z",
+                      available_at:
+                        "2026-09-24T14:29:59.100Z",
+                      bar_end: null,
+                      retrieved_at:
+                        "2026-10-01T12:00:00.000Z",
+                      source_id: "quote-1",
+                      provider_id: "fixture-provider",
+                      dataset_id: "fixture-nbbo",
+                      license_scope_id: "private-research",
+                      resolution_profile: {
+                        profile_id: "QUOTE_TICK",
+                        profile_version: "1.0.0",
+                        native_resolution: "tick",
+                        effective_resolution: "tick",
+                      },
+                      source_revision: "fixture/1",
+                      revision: 1,
+                      manifest_id: contentId("1"),
+                      normalized_content_id: contentId("a"),
+                    },
+                    {
+                      provider_symbol: "SPXW  261016C06050000",
+                      bid: "1",
+                      ask: "1.2",
+                      bid_size: 10,
+                      ask_size: 10,
+                      quote_kind: "NBBO",
+                      quote_status: "NORMAL",
+                      price_semantics: "OPTION_PREMIUM_PER_UNIT",
+                      source_timestamp:
+                        "2026-09-24T14:29:59.000Z",
+                      available_at:
+                        "2026-09-24T14:29:59.100Z",
+                      bar_end: null,
+                      retrieved_at:
+                        "2026-10-01T12:00:00.000Z",
+                      source_id: "quote-2",
+                      provider_id: "fixture-provider",
+                      dataset_id: "fixture-nbbo",
+                      license_scope_id: "private-research",
+                      resolution_profile: {
+                        profile_id: "QUOTE_TICK",
+                        profile_version: "1.0.0",
+                        native_resolution: "tick",
+                        effective_resolution: "tick",
+                      },
+                      source_revision: "fixture/1",
+                      revision: 1,
+                      manifest_id: contentId("2"),
+                      normalized_content_id: contentId("b"),
+                    },
+                  ],
+                },
+              ],
+            },
+          },
+        }),
+      );
+      expect(quoteEvidence).toMatchObject({
+        status: "AVAILABLE",
+        broker_fill_verified: false,
+        observations: [
+          {
+            synthetic_package_quote: {
+              signed_bid: "2.8",
+              signed_ask: "3.2",
+              usable_for_simulated_execution: true,
+            },
+          },
+        ],
       });
 
       const candleResult = textResult(

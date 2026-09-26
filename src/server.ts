@@ -44,6 +44,11 @@ import {
   type HistoricalOptionPackagePathInput,
 } from "./historical-option-package.js";
 import {
+  HISTORICAL_EXECUTION_EVIDENCE_INPUT_SCHEMA,
+  normalizeHistoricalExecutionEvidence,
+  type HistoricalExecutionEvidenceInput,
+} from "./historical-execution-evidence.js";
+import {
   priceOptionPackage,
   type PackagePricingInput,
 } from "./package-pricing.js";
@@ -1182,6 +1187,12 @@ export const TOOLS: Tool[] = [
     inputSchema: HISTORICAL_OPTION_PACKAGE_PATH_SCHEMA,
   },
   {
+    name: "tastytrade_normalize_historical_execution_evidence",
+    description:
+      "Normalize caller-supplied exact-leg historical quote snapshots or windows into a deterministic, immutable-cache-linked handoff. Preserves signed package cash flows and keeps valuation references, simulated-execution inputs, and broker execution strictly separate; it does not fetch data, select a model, or verify a broker fill.",
+    inputSchema: HISTORICAL_EXECUTION_EVIDENCE_INPUT_SCHEMA,
+  },
+  {
     name: "tastytrade_prepare_spx_spread",
     description:
       "Normalize an SPX debit vertical, credit vertical, iron condor, or double diagonal into deterministic Backtester and exact-leg simulation requests without submitting it.",
@@ -1407,6 +1418,12 @@ export function createResearchServer(
           await getHistoricalOptionPackagePath(
             reconstructionCandles,
             requestArg<HistoricalOptionPackagePathInput>(args),
+          ),
+        );
+      case "tastytrade_normalize_historical_execution_evidence":
+        return toolResult(
+          normalizeHistoricalExecutionEvidence(
+            requestArg<HistoricalExecutionEvidenceInput>(args),
           ),
         );
       case "tastytrade_prepare_spx_spread":

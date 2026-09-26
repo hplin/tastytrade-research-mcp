@@ -36,6 +36,7 @@ The project is intentionally separate from the official
 | `tastytrade_get_historical_spx_candidate_universe` | Return a bounded multi-strike, multi-expiration SPXW universe and optional versioned RESEARCH_ONLY DD selected-leg/matched-delta IV handoff |
 | `tastytrade_get_historical_option_package_at_checkpoint` | Reconstruct an exact-leg SPX package reference at an RFC3339 or IANA-local checkpoint with explicit age and skew controls |
 | `tastytrade_get_historical_option_package_path` | Return profile-aligned completed-candle package points and explicit gaps without interpolation |
+| `tastytrade_normalize_historical_execution_evidence` | Normalize immutable exact-leg quote snapshots/windows into signed, provider-neutral simulated-execution inputs without claiming a fill |
 | `tastytrade_prepare_spx_spread` | Deterministically normalize SPX legs without calling an upstream service |
 | `tastytrade_simulate_spx_spread` | Run exact-leg SPX historical simulation and normalize its result |
 | `tastytrade_create_spx_spread_backtest` | Submit supported SPX structures through relative Backtester selectors |
@@ -55,11 +56,15 @@ migration guidance are documented in
 The external historical-source capability review, explicit no-spend decision,
 and approval gates are documented in
 [`docs/historical-provider-decision.md`](docs/historical-provider-decision.md).
+The quote-backed exact-leg handoff, signed inventory convention, and
+valuation/simulation/broker separation are documented in
+[`docs/historical-execution-evidence.md`](docs/historical-execution-evidence.md).
 
 ## Private historical evidence cache
 
 The historical candle, SPX candidate/universe, and exact-package tools accept
-an opt-in `evidence_cache` policy without changing the 17-tool surface.
+an opt-in `evidence_cache` policy. The server exposes 18 tools after adding
+the local-only historical quote normalizer.
 `READ_WRITE` stores sanitized source observations and normalized results as
 separate content-addressed objects; `REFRESH` creates a new immutable revision
 and diff; `CACHE_ONLY` replays only caller-supplied exact manifest IDs and

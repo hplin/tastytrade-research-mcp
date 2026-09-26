@@ -1,0 +1,137 @@
+{
+  "contract_version": "1.0.0",
+  "probe": "HISTORICAL_QUOTE_CAPABILITY",
+  "run_date_utc": "2026-09-26",
+  "status": "QUOTE_FIELDS_UNSUPPORTED",
+  "provider_enablement_changed": false,
+  "six_month_coverage_pass": false,
+  "results": [
+    {
+      "label": "older",
+      "local_date": "2026-03-02",
+      "checkpoint": "2026-03-02T15:30:00.000Z",
+      "provider_status": "NOT_AVAILABLE",
+      "request_id": "901298590395e719b719d4fa90b48f5ff1b144e90464d57421deef7ed6ba9dc0",
+      "provider_id": "tastytrade-dxlink",
+      "resolution_profile": {
+        "profile_id": "DEFAULT_5M",
+        "profile_version": "1.0.0",
+        "requested_aggregation": "5m",
+        "effective_aggregation": "5m"
+      },
+      "exact_symbol_count": 0,
+      "field_support": {
+        "candle_close": {
+          "supported": false,
+          "available": 0,
+          "evidence_class": "VALUATION_ONLY"
+        },
+        "candle_iv": {
+          "supported": false,
+          "available": 0,
+          "evidence_class": "VALUATION_ONLY"
+        },
+        "historical_bid": {
+          "supported": false,
+          "available": 0
+        },
+        "historical_ask": {
+          "supported": false,
+          "available": 0
+        },
+        "bid_size": {
+          "supported": false,
+          "available": 0
+        },
+        "ask_size": {
+          "supported": false,
+          "available": 0
+        },
+        "native_package_quote": {
+          "supported": false,
+          "available": 0
+        },
+        "broker_execution": {
+          "supported": false,
+          "available": 0
+        }
+      },
+      "warnings": [
+        "HISTORICAL_BID_ASK_NOT_AVAILABLE",
+        "NO_COMPLETE_SPX_CANDLE_AT_OR_BEFORE_AS_OF"
+      ]
+    },
+    {
+      "label": "recent",
+      "local_date": "2026-08-25",
+      "checkpoint": "2026-08-25T14:30:00.000Z",
+      "provider_status": "PARTIAL",
+      "request_id": "e02beac7746ea61a28d4c2a1b4d864b5d8a452daf1b096af1caee435624ec9ac",
+      "provider_id": "tastytrade-dxlink",
+      "resolution_profile": {
+        "profile_id": "DEFAULT_5M",
+        "profile_version": "1.0.0",
+        "requested_aggregation": "5m",
+        "effective_aggregation": "5m"
+      },
+      "exact_symbol_count": 12,
+      "exact_symbol_sample": [
+        "SPXW  260915C07750000",
+        "SPXW  260915C08000000",
+        "SPXW  260915P07250000",
+        "SPXW  260915P07500000",
+        "SPXW  260922C07750000",
+        "SPXW  260922C08000000",
+        "SPXW  260922P07250000",
+        "SPXW  260922P07500000"
+      ],
+      "field_support": {
+        "candle_close": {
+          "supported": true,
+          "available": 12,
+          "evidence_class": "VALUATION_ONLY"
+        },
+        "candle_iv": {
+          "supported": true,
+          "available": 11,
+          "evidence_class": "VALUATION_ONLY"
+        },
+        "historical_bid": {
+          "supported": false,
+          "available": 0,
+          "missing": 12
+        },
+        "historical_ask": {
+          "supported": false,
+          "available": 0,
+          "missing": 12
+        },
+        "bid_size": {
+          "supported": false,
+          "available": 0,
+          "missing": 12
+        },
+        "ask_size": {
+          "supported": false,
+          "available": 0,
+          "missing": 12
+        },
+        "native_package_quote": {
+          "supported": false,
+          "available": 0,
+          "missing": 1
+        },
+        "broker_execution": {
+          "supported": false,
+          "available": 0,
+          "missing": 1
+        }
+      },
+      "warnings": [
+        "HISTORICAL_BID_ASK_NOT_AVAILABLE",
+        "TIMESTAMP_SAFE_CONTRACTS_MISSING:18",
+        "HISTORICAL_DELTA_PARTIALLY_AVAILABLE"
+      ]
+    }
+  ]
+}
