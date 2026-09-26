@@ -22,13 +22,13 @@ tastytrade OAuth credentials in Azure Key Vault-backed Container App secrets.
 - Health URL:
   `https://tastytrade-research-mcp.victoriousfield-047d2c99.westus2.azurecontainerapps.io/healthz`
 - Production revision:
-  `tastytrade-research-mcp--issue20-28b861d`
+  `tastytrade-research-mcp--issue20-pathb-4462026`
 - ACR image:
-  `hplintradingmcp.azurecr.io/tastytrade-research-mcp:issue20-28b861d`
+  `hplintradingmcp.azurecr.io/tastytrade-research-mcp:issue20-pathb-4462026`
 - Image digest:
-  `sha256:a848c358a04032ef3e172f163021c661e39cedd8956b2fd9b386dde05405cdef`
+  `sha256:6d1ef7b0f172794c98967116a145d4bbf0236a30505276156215c0800863744a`
 - Source commit:
-  `28b861d8b42ccd5f98d953c290053d3037894631`
+  `4462026952254da3bdbd9a60620124bc2a02a5cd`
 - Managed identity: `mi-tastytrade-research-mcp`
 
 Production OAuth uses Entra resource application
@@ -138,9 +138,10 @@ OAUTH_RESOURCE_NAME=Tastytrade Research MCP
 ```
 
 For emergency rollback, reactivate revision
-`tastytrade-research-mcp--issue17-202609252238` and move 100% traffic to it.
-That revision retains the same Entra OAuth and Key Vault-backed tastytrade
-configuration as the current production revision.
+`tastytrade-research-mcp--issue20-28b861d` and move 100% traffic to it. That
+revision contains the exact-checkpoint fail-closed implementation before
+deterministic Path B reconstruction and retains the same Entra OAuth and Key
+Vault-backed tastytrade configuration.
 
 After deployment, verify:
 
@@ -150,6 +151,34 @@ After deployment, verify:
 4. A real Entra token connects, lists all 14 tools, and can call a local-only
    tool such as `tastytrade_price_option_package`.
 5. A live provider smoke test can call
-   `tastytrade_discover_historical_spx_candidates` and returns exact-checkpoint
-   `HISTORICAL_SELECTOR_CANDIDATE_SET` evidence or a fail-closed
-   `NOT_AVAILABLE` result without stale/future substitution.
+   `tastytrade_discover_historical_spx_candidates` for
+   `2026-08-25T14:30:00Z` and returns four `RECONSTRUCTED_CANDIDATE_FOUND`
+   CALL/PUT Delta-20 and 1%-OTM contracts. Every provenance timestamp must be
+   `<= as_of`.
+
+## Path B deployment verification
+
+Revision `tastytrade-research-mcp--issue20-pathb-4462026` was verified on
+2026-09-26 with:
+
+- one healthy replica in `RunningAtMaxScale`;
+- 100% production traffic and the superseded revision deactivated;
+- HTTP 200 from `/healthz`;
+- HTTP 200 from RFC 9728 protected-resource metadata;
+- HTTP 401 plus the correct resource metadata and scope from unauthenticated
+  `/mcp`;
+- an Entra delegated `mcp.read` token listing all 14 MCP tools;
+- an authenticated package-pricing call returning the expected natural
+  credit; and
+- an authenticated live historical-candidate call returning:
+
+  ```text
+  SPXW  260922C07900000
+  SPXW  260922C07740000
+  SPXW  260922P07425000
+  SPXW  260922P07590000
+  ```
+
+The production response was `COMPLETE`, all four attempts were
+`RECONSTRUCTED_CANDIDATE_FOUND`, every contract had
+`selected_at == as_of`, and no provenance timestamp exceeded the checkpoint.
