@@ -1,0 +1,229 @@
+{
+  "metadata": {
+    "description": "Sanitized multi-expiration DXLink evidence for a bounded SPXW universe at 2026-08-25 07:30 PT.",
+    "as_of": "2026-08-25T14:30:00.000Z",
+    "interval": "5m"
+  },
+  "underlying": {
+    "symbol": "SPX",
+    "streamer_symbol": "SPX",
+    "candle": {
+      "source_time": "2026-08-25T14:25:00.000Z",
+      "close": "7664.96",
+      "implied_volatility": "0.156",
+      "volume": "2859431",
+      "open_interest": null
+    }
+  },
+  "options": [
+    {
+      "symbol": "SPXW  260915C07700000",
+      "streamer_symbol": ".SPXW260915C7700",
+      "candle": {
+        "source_time": "2026-08-25T14:05:00.000Z",
+        "close": "83",
+        "implied_volatility": "0.12",
+        "volume": "10",
+        "open_interest": "500"
+      }
+    },
+    {
+      "symbol": "SPXW  260915P07700000",
+      "streamer_symbol": ".SPXW260915P7700",
+      "candle": {
+        "source_time": "2026-08-25T14:05:00.000Z",
+        "close": "93",
+        "implied_volatility": "0.13",
+        "volume": "12",
+        "open_interest": "600"
+      }
+    },
+    {
+      "symbol": "SPXW  260915P07375000",
+      "streamer_symbol": ".SPXW260915P7375",
+      "candle": {
+        "source_time": "2026-08-25T13:55:00.000Z",
+        "close": "18.4",
+        "implied_volatility": "0.168",
+        "volume": "16",
+        "open_interest": "1400"
+      }
+    },
+    {
+      "symbol": "SPXW  260915P07425000",
+      "streamer_symbol": ".SPXW260915P7425",
+      "candle": {
+        "source_time": "2026-08-25T14:00:00.000Z",
+        "close": "27.2",
+        "implied_volatility": "0.159",
+        "volume": "24",
+        "open_interest": "2200"
+      }
+    },
+    {
+      "symbol": "SPXW  260915C07900000",
+      "streamer_symbol": ".SPXW260915C7900",
+      "candle": {
+        "source_time": "2026-08-25T13:50:00.000Z",
+        "close": "15.8",
+        "implied_volatility": "0.105",
+        "volume": "20",
+        "open_interest": "1600"
+      }
+    },
+    {
+      "symbol": "SPXW  260915C07950000",
+      "streamer_symbol": ".SPXW260915C7950",
+      "candle": {
+        "source_time": "2026-08-25T13:55:00.000Z",
+        "close": "10.1",
+        "implied_volatility": "0.106",
+        "volume": "13",
+        "open_interest": "1300"
+      }
+    },
+    {
+      "symbol": "SPXW  260922C07700000",
+      "streamer_symbol": ".SPXW260922C7700",
+      "candle": {
+        "source_time": "2026-08-25T14:05:00.000Z",
+        "close": "97.84",
+        "implied_volatility": "0.125",
+        "volume": "8",
+        "open_interest": "544"
+      }
+    },
+    {
+      "symbol": "SPXW  260922P07700000",
+      "streamer_symbol": ".SPXW260922P7700",
+      "candle": {
+        "source_time": "2026-08-25T14:05:00.000Z",
+        "close": "109.55",
+        "implied_volatility": "0.128",
+        "volume": "11",
+        "open_interest": "613"
+      }
+    },
+    {
+      "symbol": "SPXW  260922P07375000",
+      "streamer_symbol": ".SPXW260922P7375",
+      "candle": {
+        "source_time": "2026-08-25T13:50:00.000Z",
+        "close": "29.1",
+        "implied_volatility": "0.166",
+        "volume": "18",
+        "open_interest": "1800"
+      }
+    },
+    {
+      "symbol": "SPXW  260922P07425000",
+      "streamer_symbol": ".SPXW260922P7425",
+      "candle": {
+        "source_time": "2026-08-25T13:50:00.000Z",
+        "close": "38.5",
+        "implied_volatility": "0.1577087636780021",
+        "volume": "22",
+        "open_interest": "2115"
+      }
+    },
+    {
+      "symbol": "SPXW  260922C07900000",
+      "streamer_symbol": ".SPXW260922C7900",
+      "candle": {
+        "source_time": "2026-08-25T13:55:00.000Z",
+        "close": "24.52",
+        "implied_volatility": "0.1083390992764817",
+        "volume": "14",
+        "open_interest": "1298"
+      }
+    },
+    {
+      "symbol": "SPXW  260922C07950000",
+      "streamer_symbol": ".SPXW260922C7950",
+      "candle": {
+        "source_time": "2026-08-25T13:55:00.000Z",
+        "close": "15.3",
+        "implied_volatility": "0.109",
+        "volume": "9",
+        "open_interest": "1100"
+      }
+    },
+    {
+      "symbol": "SPXW  260929C07700000",
+      "streamer_symbol": ".SPXW260929C7700",
+      "candle": {
+        "source_time": "2026-08-25T14:10:00.000Z",
+        "close": "121",
+        "implied_volatility": "0.13",
+        "volume": "9",
+        "open_interest": "450"
+      }
+    },
+    {
+      "symbol": "SPXW  260929P07700000",
+      "streamer_symbol": ".SPXW260929P7700",
+      "candle": {
+        "source_time": "2026-08-25T14:10:00.000Z",
+        "close": "131",
+        "implied_volatility": "0.135",
+        "volume": "10",
+        "open_interest": "480"
+      }
+    },
+    {
+      "symbol": "SPXW  260929P07425000",
+      "streamer_symbol": ".SPXW260929P7425",
+      "candle": {
+        "source_time": "2026-08-25T13:45:00.000Z",
+        "close": "54",
+        "implied_volatility": "0.16",
+        "volume": "17",
+        "open_interest": "1700"
+      }
+    },
+    {
+      "symbol": "SPXW  260929P07475000",
+      "streamer_symbol": ".SPXW260929P7475",
+      "candle": {
+        "source_time": "2026-08-25T13:50:00.000Z",
+        "close": "63",
+        "implied_volatility": "0.153",
+        "volume": "19",
+        "open_interest": "1900"
+      }
+    },
+    {
+      "symbol": "SPXW  260929C07850000",
+      "streamer_symbol": ".SPXW260929C7850",
+      "candle": {
+        "source_time": "2026-08-25T13:50:00.000Z",
+        "close": "49",
+        "implied_volatility": "0.115",
+        "volume": "15",
+        "open_interest": "1500"
+      }
+    },
+    {
+      "symbol": "SPXW  260929C07900000",
+      "streamer_symbol": ".SPXW260929C7900",
+      "candle": {
+        "source_time": "2026-08-25T13:45:00.000Z",
+        "close": "37",
+        "implied_volatility": "0.112",
+        "volume": "12",
+        "open_interest": "1250"
+      }
+    },
+    {
+      "symbol": "SPXW  260922C07925000",
+      "streamer_symbol": ".SPXW260922C7925",
+      "candle": {
+        "source_time": "2026-08-25T14:30:00.000Z",
+        "close": "19.45",
+        "implied_volatility": "0.13",
+        "volume": "5",
+        "open_interest": "931"
+      }
+    }
+  ]
+}

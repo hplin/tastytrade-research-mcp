@@ -1,4 +1,6 @@
+import { createHash } from "node:crypto";
 import { ExactDecimal } from "./decimal.js";
+import type { ExecutionReferences } from "./execution-evidence.js";
 import type {
   HistoricalCandle,
   HistoricalCandlesBatchInput,
@@ -6,10 +8,12 @@ import type {
   HistoricalCandlesResult,
 } from "./historical-candles.js";
 import type {
+  HistoricalCandidateProvenance,
   HistoricalSpxCandidate,
   HistoricalSpxCandidatesPlan,
 } from "./historical-spx-candidates.js";
 import type { OptionSide } from "./spread-adapter.js";
+import { normalizeRfc3339 } from "./time.js";
 
 export type HistoricalCandidateCandles = {
   getHistoricalCandles(
@@ -22,6 +26,97 @@ export type HistoricalCandidateCandles = {
 
 export type HistoricalSpxReconstruction = {
   candidates: Array<HistoricalSpxCandidate | null>;
+  warnings: string[];
+};
+
+export type HistoricalSpxCandidateUniverseInput = {
+  underlying: "SPX";
+  as_of: string;
+  min_dte?: number;
+  max_dte?: number;
+  strike_min: number;
+  strike_max: number;
+  strike_step?: number;
+  option_sides?: OptionSide[];
+  expirations?: string[];
+  max_contracts?: number;
+  phase: "REGRESSION_RESEARCH";
+  references?: ExecutionReferences;
+};
+
+export type HistoricalSpxCandidateUniversePlan = {
+  request_id: string;
+  as_of: string;
+  session_date: string;
+  min_dte: number;
+  max_dte: number;
+  expiration_dates: string[];
+  strike_min: number;
+  strike_max: number;
+  strike_step: number;
+  strikes: number[];
+  option_sides: OptionSide[];
+  max_contracts: number;
+  requested_contract_count: number;
+  references: ExecutionReferences;
+};
+
+export type HistoricalSpxUniverseContract = {
+  provider_symbol: string;
+  simulation_symbol: string;
+  occ_symbol: string;
+  underlying: "SPX";
+  expiration: string;
+  strike: string;
+  option_side: OptionSide;
+  dte_at_as_of: number;
+  source_timestamp: string;
+  historical_price: string;
+  historical_delta: string | null;
+  historical_iv: string | null;
+  historical_open_interest: string | null;
+  historical_volume: string | null;
+  underlying_price: string;
+  observation_age_ms: number;
+  identity_source: "RECONSTRUCTED_OCC_VALIDATED_BY_DXLINK";
+  confidence: "MEDIUM";
+  provenance: HistoricalCandidateProvenance[];
+  warnings: string[];
+};
+
+export type HistoricalSpxCandidateUniverseResult = {
+  contract_version: "1.0.0";
+  request_id: string;
+  status: "COMPLETE" | "PARTIAL" | "NOT_AVAILABLE";
+  evidence_type: "HISTORICAL_SPX_CANDIDATE_UNIVERSE";
+  evidence_phase: "REGRESSION_RESEARCH";
+  as_of: string;
+  underlying: "SPX";
+  requested_dte_range: { min: number; max: number };
+  requested_strike_range: { min: string; max: string; step: string };
+  expiration_dates: string[];
+  option_sides: OptionSide[];
+  underlying_price: string | null;
+  contracts: HistoricalSpxUniverseContract[];
+  coverage: {
+    requested_contract_count: number;
+    verified_contract_count: number;
+    missing_contract_count: number;
+  };
+  capabilities: {
+    historical_contract_universe_reconstructed: boolean;
+    exact_provider_contract_identity: boolean;
+    checkpoint_timestamp_safe: boolean;
+    historical_price: boolean;
+    historical_delta: boolean;
+    historical_contract_iv: boolean;
+    historical_open_interest: boolean;
+    historical_volume: boolean;
+    historical_bid_ask: false;
+    full_historical_chain: false;
+  };
+  provenance: HistoricalCandidateProvenance[];
+  references: ExecutionReferences;
   warnings: string[];
 };
 
@@ -61,6 +156,11 @@ const TARGET_STRIKE_RADIUS = 20;
 const PARITY_STRIKE_RADIUS = 100;
 const PARITY_STRIKE_INCREMENT = 25;
 const DAY_MS = 86_400_000;
+const DEFAULT_UNIVERSE_MIN_DTE = 21;
+const DEFAULT_UNIVERSE_MAX_DTE = 35;
+const DEFAULT_UNIVERSE_STRIKE_STEP = 25;
+const DEFAULT_UNIVERSE_MAX_CONTRACTS = 500;
+const MAX_UNIVERSE_CONTRACTS = 1_000;
 
 function shiftDate(value: string, days: number): string {
   const date = new Date(`${value}T00:00:00.000Z`);
@@ -74,6 +174,82 @@ function calendarDaysBetween(start: string, end: string): number {
       Date.parse(`${start}T00:00:00.000Z`)) /
       DAY_MS,
   );
+}
+
+function dateInTimezone(timestamp: string, timezone: string): string {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: timezone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(new Date(timestamp));
+  const values = Object.fromEntries(
+    parts
+      .filter((part) => part.type !== "literal")
+      .map((part) => [part.type, part.value]),
+  );
+  return `${values.year}-${values.month}-${values.day}`;
+}
+
+function integerInRange(
+  value: number | undefined,
+  fallback: number,
+  field: string,
+  minimum: number,
+  maximum: number,
+): number {
+  if (value === undefined) return fallback;
+  if (!Number.isSafeInteger(value) || value < minimum || value > maximum) {
+    throw new Error(
+      `${field} must be an integer between ${minimum} and ${maximum}.`,
+    );
+  }
+  return value;
+}
+
+function normalizeReferences(
+  references: ExecutionReferences | undefined,
+): ExecutionReferences {
+  const normalized: ExecutionReferences = {};
+  for (const field of [
+    "checkpoint_id",
+    "paper_order_id",
+    "position_id",
+  ] as const) {
+    const value = references?.[field];
+    if (value === undefined) continue;
+    const text = value.trim();
+    if (!text || text.length > 200) {
+      throw new Error(`${field} must be 1-200 characters.`);
+    }
+    normalized[field] = text;
+  }
+  return normalized;
+}
+
+function normalizeOptionSides(sides: OptionSide[] | undefined): OptionSide[] {
+  const values = sides ?? ["CALL", "PUT"];
+  if (values.length === 0) throw new Error("option_sides must not be empty.");
+  const normalized = [...new Set(values)];
+  if (normalized.some((side) => side !== "CALL" && side !== "PUT")) {
+    throw new Error("option_sides may contain only CALL and PUT.");
+  }
+  return normalized;
+}
+
+function stableRequestId(value: unknown): string {
+  return createHash("sha256").update(JSON.stringify(value)).digest("hex");
+}
+
+function normalizedDate(value: string, field: string): string {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) {
+    throw new Error(`${field} must use YYYY-MM-DD.`);
+  }
+  const parsed = new Date(`${value}T00:00:00.000Z`);
+  if (Number.isNaN(parsed.getTime()) || parsed.toISOString().slice(0, 10) !== value) {
+    throw new Error(`${field} must be a valid calendar date.`);
+  }
+  return value;
 }
 
 function expirationDates(
@@ -833,4 +1009,533 @@ export async function reconstructHistoricalSpxCandidates(
   }
 
   return { candidates, warnings };
+}
+
+export function prepareHistoricalSpxCandidateUniverse(
+  input: HistoricalSpxCandidateUniverseInput,
+): HistoricalSpxCandidateUniversePlan {
+  if (input.underlying !== "SPX") {
+    throw new Error("Historical candidate universe currently supports SPX.");
+  }
+  if (input.phase !== "REGRESSION_RESEARCH") {
+    throw new Error("phase must be REGRESSION_RESEARCH.");
+  }
+
+  const asOf = normalizeRfc3339(input.as_of, "as_of");
+  const minDte = integerInRange(
+    input.min_dte,
+    DEFAULT_UNIVERSE_MIN_DTE,
+    "min_dte",
+    1,
+    365,
+  );
+  const maxDte = integerInRange(
+    input.max_dte,
+    DEFAULT_UNIVERSE_MAX_DTE,
+    "max_dte",
+    1,
+    365,
+  );
+  if (maxDte < minDte) throw new Error("max_dte must be >= min_dte.");
+  const strikeMin = integerInRange(
+    input.strike_min,
+    0,
+    "strike_min",
+    1,
+    100_000,
+  );
+  const strikeMax = integerInRange(
+    input.strike_max,
+    0,
+    "strike_max",
+    1,
+    100_000,
+  );
+  if (strikeMax < strikeMin) {
+    throw new Error("strike_max must be >= strike_min.");
+  }
+  const strikeStep = integerInRange(
+    input.strike_step,
+    DEFAULT_UNIVERSE_STRIKE_STEP,
+    "strike_step",
+    1,
+    1_000,
+  );
+  const maxContracts = integerInRange(
+    input.max_contracts,
+    DEFAULT_UNIVERSE_MAX_CONTRACTS,
+    "max_contracts",
+    1,
+    MAX_UNIVERSE_CONTRACTS,
+  );
+  const optionSides = normalizeOptionSides(input.option_sides);
+  const sessionDate = dateInTimezone(asOf, "America/New_York");
+
+  let expirationDatesValue: string[];
+  if (input.expirations !== undefined) {
+    if (
+      !Array.isArray(input.expirations) ||
+      input.expirations.length < 1 ||
+      input.expirations.length > 20
+    ) {
+      throw new Error("expirations must contain between 1 and 20 dates.");
+    }
+    expirationDatesValue = [
+      ...new Set(
+        input.expirations.map((value, index) =>
+          normalizedDate(value, `expirations[${index}]`),
+        ),
+      ),
+    ];
+    for (const expirationDate of expirationDatesValue) {
+      const dte = calendarDaysBetween(sessionDate, expirationDate);
+      if (dte < minDte || dte > maxDte) {
+        throw new Error(
+          `expiration ${expirationDate} is outside the requested DTE range.`,
+        );
+      }
+    }
+    expirationDatesValue.sort();
+  } else {
+    const midpointDte = Math.floor((minDte + maxDte) / 2);
+    expirationDatesValue = [
+      ...new Set(
+        [minDte, midpointDte, maxDte].flatMap((dte) =>
+          expirationDates(sessionDate, dte, minDte, maxDte),
+        ),
+      ),
+    ].sort();
+  }
+  if (expirationDatesValue.length === 0) {
+    throw new Error("No eligible expiration dates exist in the DTE range.");
+  }
+
+  const strikes: number[] = [];
+  const firstStrike = Math.ceil(strikeMin / strikeStep) * strikeStep;
+  for (
+    let strike = firstStrike;
+    strike <= strikeMax;
+    strike += strikeStep
+  ) {
+    strikes.push(strike);
+  }
+  if (strikes.length === 0) {
+    throw new Error("The strike range does not contain an aligned strike.");
+  }
+  const requestedContractCount =
+    strikes.length * expirationDatesValue.length * optionSides.length;
+  if (requestedContractCount > maxContracts) {
+    throw new Error(
+      `requested universe contains ${requestedContractCount} contracts, exceeding max_contracts=${maxContracts}.`,
+    );
+  }
+  const references = normalizeReferences(input.references);
+  const requestIdentity = {
+    underlying: "SPX",
+    as_of: asOf,
+    min_dte: minDte,
+    max_dte: maxDte,
+    expiration_dates: expirationDatesValue,
+    strike_min: strikeMin,
+    strike_max: strikeMax,
+    strike_step: strikeStep,
+    option_sides: optionSides,
+    max_contracts: maxContracts,
+    references,
+  };
+  return {
+    request_id: stableRequestId(requestIdentity),
+    as_of: asOf,
+    session_date: sessionDate,
+    min_dte: minDte,
+    max_dte: maxDte,
+    expiration_dates: expirationDatesValue,
+    strike_min: strikeMin,
+    strike_max: strikeMax,
+    strike_step: strikeStep,
+    strikes,
+    option_sides: optionSides,
+    max_contracts: maxContracts,
+    requested_contract_count: requestedContractCount,
+    references,
+  };
+}
+
+function universeContract(
+  plan: HistoricalSpxCandidateUniversePlan,
+  observation: CandleObservation,
+  underlyingPrice: string,
+  underlyingTimestamp: string,
+  forward: ForwardObservation | undefined,
+  asOfMs: number,
+): HistoricalSpxUniverseContract {
+  const delta = forward
+    ? historicalDelta(observation, forward, asOfMs)
+    : null;
+  const optionFields = ["historical_price", "source_timestamp"];
+  if (observation.candle.implied_volatility !== null) {
+    optionFields.push("historical_iv");
+  }
+  if (observation.candle.open_interest !== null) {
+    optionFields.push("historical_open_interest");
+  }
+  if (observation.candle.volume !== null) {
+    optionFields.push("historical_volume");
+  }
+  return {
+    provider_symbol: observation.contract.occ_symbol,
+    simulation_symbol: observation.contract.occ_symbol,
+    occ_symbol: observation.contract.occ_symbol,
+    underlying: "SPX",
+    expiration: observation.contract.expiration,
+    strike: strikeText(observation.contract.strike),
+    option_side: observation.contract.option_side,
+    dte_at_as_of: observation.contract.dte,
+    source_timestamp: observation.available_at,
+    historical_price: normalizedDecimal(observation.candle.close),
+    historical_delta:
+      delta === null ? null : roundedDecimal(delta, 6),
+    historical_iv:
+      observation.candle.implied_volatility === null
+        ? null
+        : normalizedDecimal(observation.candle.implied_volatility),
+    historical_open_interest:
+      observation.candle.open_interest === null
+        ? null
+        : normalizedDecimal(observation.candle.open_interest),
+    historical_volume:
+      observation.candle.volume === null
+        ? null
+        : normalizedDecimal(observation.candle.volume),
+    underlying_price: underlyingPrice,
+    observation_age_ms: observation.age_ms,
+    identity_source: "RECONSTRUCTED_OCC_VALIDATED_BY_DXLINK",
+    confidence: "MEDIUM",
+    provenance: [
+      {
+        source: "tastytrade-research-mcp:request",
+        source_timestamp: plan.as_of,
+        fields: [
+          "underlying",
+          "expiration",
+          "strike",
+          "option_side",
+        ],
+        documented_contract: true,
+      },
+      {
+        source: "tastytrade-dxlink:SPX{=5m}",
+        source_timestamp: underlyingTimestamp,
+        fields: ["underlying_price"],
+        documented_contract: true,
+      },
+      {
+        source: `tastytrade-dxlink:${observation.contract.streamer_symbol}{=5m}`,
+        source_timestamp: observation.available_at,
+        fields: optionFields,
+        documented_contract: true,
+      },
+      {
+        source: "tastytrade-research-mcp:derived",
+        source_timestamp: plan.as_of,
+        fields: [
+          "provider_symbol",
+          "simulation_symbol",
+          "occ_symbol",
+          "dte_at_as_of",
+          "identity_source",
+          "observation_age_ms",
+          ...(delta === null ? [] : ["historical_delta"]),
+        ],
+        documented_contract: true,
+      },
+      ...(forward
+        ? [
+            {
+              source: "tastytrade-research-mcp:put-call-parity",
+              source_timestamp: forward.source_timestamp,
+              fields: ["historical_delta"],
+              documented_contract: true,
+            },
+          ]
+        : []),
+    ],
+    warnings: [
+      "CONTRACT_IDENTITY_RECONSTRUCTED_FROM_OCC_SYMBOLOGY",
+      "CONTRACT_EXISTENCE_INFERRED_FROM_HISTORICAL_CANDLE",
+      "HISTORICAL_OPTION_CANDLE_IS_TRADE_AGGREGATE",
+      ...(observation.age_ms > 0
+        ? ["OPTION_OBSERVATION_PRECEDES_CHECKPOINT"]
+        : []),
+      ...(delta !== null
+        ? ["DELTA_DERIVED_FROM_CANDLE_IV_AND_PUT_CALL_PARITY_FORWARD"]
+        : []),
+    ],
+  };
+}
+
+export async function getHistoricalSpxCandidateUniverse(
+  candles: HistoricalCandidateCandles,
+  input: HistoricalSpxCandidateUniverseInput,
+): Promise<HistoricalSpxCandidateUniverseResult> {
+  const plan = prepareHistoricalSpxCandidateUniverse(input);
+  const asOfMs = Date.parse(plan.as_of);
+  const warnings = [
+    "HISTORICAL_CONTRACT_UNIVERSE_RECONSTRUCTED_FROM_DXLINK",
+    "HISTORICAL_CONTRACT_UNIVERSE_IS_BOUNDED_NOT_FULL_CHAIN",
+    "OPTION_CANDLE_SOURCE_TIME_IS_INTERVAL_START",
+    "OPTION_OBSERVATION_MAX_AGE_MINUTES:60",
+    "HISTORICAL_BID_ASK_NOT_AVAILABLE",
+  ];
+  const baseCapabilities = {
+    historical_contract_universe_reconstructed: true,
+    checkpoint_timestamp_safe: true,
+    historical_bid_ask: false as const,
+    full_historical_chain: false as const,
+  };
+
+  const underlyingResult = await candles.getHistoricalCandles({
+    symbol: "SPX",
+    streamer_symbol: "SPX",
+    instrument_type: "INDEX",
+    interval: CANDLE_INTERVAL,
+    start_time: new Date(asOfMs - 2 * CANDLE_INTERVAL_MS).toISOString(),
+    end_time: plan.as_of,
+    session: { kind: "ALL", timezone: "UTC" },
+    max_candles: 20_000,
+  });
+  const underlyingContract = contractSpec(
+    plan.session_date,
+    plan.expiration_dates[0],
+    "CALL",
+    1,
+  );
+  const underlying = completeObservation(
+    underlyingContract,
+    underlyingResult,
+    asOfMs,
+  );
+  if (!underlying) {
+    return {
+      contract_version: "1.0.0",
+      request_id: plan.request_id,
+      status: "NOT_AVAILABLE",
+      evidence_type: "HISTORICAL_SPX_CANDIDATE_UNIVERSE",
+      evidence_phase: "REGRESSION_RESEARCH",
+      as_of: plan.as_of,
+      underlying: "SPX",
+      requested_dte_range: { min: plan.min_dte, max: plan.max_dte },
+      requested_strike_range: {
+        min: strikeText(plan.strike_min),
+        max: strikeText(plan.strike_max),
+        step: strikeText(plan.strike_step),
+      },
+      expiration_dates: plan.expiration_dates,
+      option_sides: plan.option_sides,
+      underlying_price: null,
+      contracts: [],
+      coverage: {
+        requested_contract_count: plan.requested_contract_count,
+        verified_contract_count: 0,
+        missing_contract_count: plan.requested_contract_count,
+      },
+      capabilities: {
+        ...baseCapabilities,
+        exact_provider_contract_identity: false,
+        historical_price: false,
+        historical_delta: false,
+        historical_contract_iv: false,
+        historical_open_interest: false,
+        historical_volume: false,
+      },
+      provenance: [],
+      references: plan.references,
+      warnings: [...warnings, "NO_COMPLETE_SPX_CANDLE_AT_OR_BEFORE_AS_OF"],
+    };
+  }
+
+  const requestedContracts = plan.expiration_dates.flatMap((expirationDate) =>
+    plan.option_sides.flatMap((optionSide) =>
+      plan.strikes.map((strike) =>
+        contractSpec(
+          plan.session_date,
+          expirationDate,
+          optionSide,
+          strike,
+        ),
+      ),
+    ),
+  );
+  const contractsByKey = new Map(
+    requestedContracts.map((contract) => [contractKey(contract), contract]),
+  );
+  for (const expirationDate of plan.expiration_dates) {
+    const parityStrikes = new Set<number>();
+    addStrikeRange(
+      parityStrikes,
+      underlying.price,
+      PARITY_STRIKE_RADIUS,
+      PARITY_STRIKE_INCREMENT,
+    );
+    for (const strike of parityStrikes) {
+      for (const optionSide of ["CALL", "PUT"] as const) {
+        const contract = contractSpec(
+          plan.session_date,
+          expirationDate,
+          optionSide,
+          strike,
+        );
+        contractsByKey.set(contractKey(contract), contract);
+      }
+    }
+  }
+
+  const fetchContracts = [...contractsByKey.values()];
+  const observations = new Map<string, CandleObservation>();
+  const optionStart = new Date(
+    asOfMs - MAX_OBSERVATION_AGE_MS - CANDLE_INTERVAL_MS,
+  ).toISOString();
+  for (
+    let offset = 0;
+    offset < fetchContracts.length;
+    offset += OPTION_BATCH_SIZE
+  ) {
+    const batch = fetchContracts.slice(offset, offset + OPTION_BATCH_SIZE);
+    const results = await candles.getHistoricalCandlesBatch({
+      instruments: batch.map((contract) => ({
+        symbol: contract.occ_symbol,
+        streamer_symbol: contract.streamer_symbol,
+        instrument_type: "OPTION",
+      })),
+      interval: CANDLE_INTERVAL,
+      start_time: optionStart,
+      end_time: plan.as_of,
+      session: { kind: "ALL", timezone: "UTC" },
+      max_candles: 20_000,
+    });
+    if (results.length !== batch.length) {
+      throw new Error(
+        `DXLink option batch returned ${results.length} results for ${batch.length} contracts.`,
+      );
+    }
+    for (const [index, result] of results.entries()) {
+      const observation = completeObservation(batch[index], result, asOfMs);
+      if (observation) {
+        observations.set(contractKey(batch[index]), observation);
+      }
+    }
+  }
+
+  const forwards = forwardByExpiration(
+    observations,
+    fetchContracts,
+    underlying.price,
+  );
+  if (forwards.size > 0) {
+    warnings.push(
+      "DELTA_DERIVED_FROM_CANDLE_IV_AND_PUT_CALL_PARITY_FORWARD",
+      "PUT_CALL_PARITY_FORWARD_OMITS_DISCOUNT_FACTOR",
+    );
+  }
+  const underlyingPrice = normalizedDecimal(underlying.candle.close);
+  const contracts = requestedContracts
+    .map((contract) => {
+      const observation = observations.get(contractKey(contract));
+      if (!observation) return null;
+      return universeContract(
+        plan,
+        observation,
+        underlyingPrice,
+        underlying.available_at,
+        forwards.get(contract.expiration_date),
+        asOfMs,
+      );
+    })
+    .filter(
+      (contract): contract is HistoricalSpxUniverseContract =>
+        contract !== null,
+    )
+    .sort(
+      (left, right) =>
+        Date.parse(left.expiration) - Date.parse(right.expiration) ||
+        left.option_side.localeCompare(right.option_side) ||
+        Number(left.strike) - Number(right.strike),
+    );
+  const verifiedContractCount = contracts.length;
+  const missingContractCount =
+    plan.requested_contract_count - verifiedContractCount;
+  if (missingContractCount > 0) {
+    warnings.push(`TIMESTAMP_SAFE_CONTRACTS_MISSING:${missingContractCount}`);
+  }
+  if (contracts.some((contract) => contract.historical_delta === null)) {
+    warnings.push("HISTORICAL_DELTA_PARTIALLY_AVAILABLE");
+  }
+  const status =
+    verifiedContractCount === 0
+      ? "NOT_AVAILABLE"
+      : missingContractCount === 0
+        ? "COMPLETE"
+        : "PARTIAL";
+  return {
+    contract_version: "1.0.0",
+    request_id: plan.request_id,
+    status,
+    evidence_type: "HISTORICAL_SPX_CANDIDATE_UNIVERSE",
+    evidence_phase: "REGRESSION_RESEARCH",
+    as_of: plan.as_of,
+    underlying: "SPX",
+    requested_dte_range: { min: plan.min_dte, max: plan.max_dte },
+    requested_strike_range: {
+      min: strikeText(plan.strike_min),
+      max: strikeText(plan.strike_max),
+      step: strikeText(plan.strike_step),
+    },
+    expiration_dates: plan.expiration_dates,
+    option_sides: plan.option_sides,
+    underlying_price: underlyingPrice,
+    contracts,
+    coverage: {
+      requested_contract_count: plan.requested_contract_count,
+      verified_contract_count: verifiedContractCount,
+      missing_contract_count: missingContractCount,
+    },
+    capabilities: {
+      ...baseCapabilities,
+      exact_provider_contract_identity: verifiedContractCount > 0,
+      historical_price: verifiedContractCount > 0,
+      historical_delta: contracts.some(
+        (contract) => contract.historical_delta !== null,
+      ),
+      historical_contract_iv: contracts.some(
+        (contract) => contract.historical_iv !== null,
+      ),
+      historical_open_interest: contracts.some(
+        (contract) => contract.historical_open_interest !== null,
+      ),
+      historical_volume: contracts.some(
+        (contract) => contract.historical_volume !== null,
+      ),
+    },
+    provenance: [
+      {
+        source: "tastytrade-research-mcp:request",
+        source_timestamp: plan.as_of,
+        fields: [
+          "requested_dte_range",
+          "requested_strike_range",
+          "expiration_dates",
+          "option_sides",
+        ],
+        documented_contract: true,
+      },
+      {
+        source: "tastytrade-dxlink:SPX{=5m}",
+        source_timestamp: underlying.available_at,
+        fields: ["underlying_price"],
+        documented_contract: true,
+      },
+    ],
+    references: plan.references,
+    warnings,
+  };
 }

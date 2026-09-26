@@ -57,11 +57,12 @@ describe("MCP research server", () => {
     await client.connect(clientTransport);
     try {
       const tools = await client.listTools();
-      expect(tools.tools).toHaveLength(14);
+      expect(tools.tools).toHaveLength(15);
       expect(tools.tools.map((tool) => tool.name)).toEqual(
         expect.arrayContaining([
           "tastytrade_price_option_package",
           "tastytrade_discover_historical_spx_candidates",
+          "tastytrade_get_historical_spx_candidate_universe",
           "tastytrade_verify_historical_fill",
           "tastytrade_get_historical_candles",
           "tastytrade_prepare_spx_spread",
@@ -178,6 +179,34 @@ describe("MCP research server", () => {
           ([request]) => request.instruments.length <= 20,
         ),
       ).toBe(true);
+
+      const universe = textResult(
+        await client.callTool({
+          name: "tastytrade_get_historical_spx_candidate_universe",
+          arguments: {
+            request: {
+              underlying: "SPX",
+              as_of: "2026-04-15T14:30:00.000Z",
+              min_dte: 21,
+              max_dte: 21,
+              strike_min: 5200,
+              strike_max: 5400,
+              strike_step: 100,
+              option_sides: ["CALL", "PUT"],
+              phase: "REGRESSION_RESEARCH",
+            },
+          },
+        }),
+      );
+      expect(universe).toMatchObject({
+        status: "NOT_AVAILABLE",
+        evidence_type: "HISTORICAL_SPX_CANDIDATE_UNIVERSE",
+        coverage: {
+          requested_contract_count: 6,
+          verified_contract_count: 0,
+          missing_contract_count: 6,
+        },
+      });
 
       await expect(
         client.callTool({
