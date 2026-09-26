@@ -103,3 +103,12 @@ Each result reports:
 
 Diagnostics never include quote tokens, account identifiers, or private
 DXLink URL parameters.
+
+## Private source-cache handoff
+
+When the private backend is configured, requests may opt into `READ_WRITE`,
+`REFRESH`, or exact-manifest `CACHE_ONLY` behavior through
+`evidence_cache`. Cache metadata is additive to the candle result and never
+changes bar timing or resolution semantics. See
+[`evidence-cache.md`](evidence-cache.md) for identity, revision, corruption,
+quota, and offline-replay rules.

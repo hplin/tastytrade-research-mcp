@@ -5,6 +5,12 @@ import {
   type BacktestStrikeSelector,
 } from "./backtest-selector.js";
 import { ExactDecimal } from "./decimal.js";
+import {
+  EvidenceCacheError,
+  evidenceCacheWithContext,
+  type EvidenceCacheRequest,
+  type EvidenceCacheSummary,
+} from "./evidence-cache.js";
 import type { ExecutionReferences } from "./execution-evidence.js";
 import {
   reconstructHistoricalSpxCandidates,
@@ -43,6 +49,7 @@ export type HistoricalSpxCandidatesInput = {
   candidate_construction_profile?: Record<string, unknown>;
   phase: "REGRESSION_RESEARCH";
   references?: ExecutionReferences;
+  evidence_cache?: EvidenceCacheRequest;
 };
 
 export type NormalizedHistoricalCandidateSelector = {
@@ -148,6 +155,7 @@ export type HistoricalSpxCandidatesResult = {
   candidate_construction_profile: CandidateConstructionProfile | null;
   references: ExecutionReferences;
   warnings: string[];
+  evidence_cache: EvidenceCacheSummary | null;
 };
 
 export type HistoricalCandidateBacktester = {
@@ -176,6 +184,7 @@ export type HistoricalSpxCandidatesPlan = {
   resolution_profile: ResolutionProfile;
   candidate_construction_profile: CandidateConstructionProfile | null;
   references: ExecutionReferences;
+  evidence_cache?: EvidenceCacheRequest;
 };
 
 type CandidateExtraction = {
@@ -335,6 +344,14 @@ export function prepareHistoricalSpxCandidates(
   if (input.phase !== "REGRESSION_RESEARCH") {
     throw new Error("phase must be REGRESSION_RESEARCH.");
   }
+  if (
+    input.evidence_cache?.evidence_role !== undefined &&
+    input.evidence_cache.evidence_role !== "ENTRY"
+  ) {
+    throw new Error(
+      "Historical SPX candidate discovery only accepts ENTRY evidence.",
+    );
+  }
 
   const checkpoint = resolveCheckpoint(
     input.as_of,
@@ -470,6 +487,14 @@ export function prepareHistoricalSpxCandidates(
   }
 
   const references = normalizeReferences(input.references);
+  const evidenceCache = evidenceCacheWithContext(
+    input.evidence_cache,
+    {
+      as_of: asOf,
+      default_role: "ENTRY",
+      references,
+    },
+  );
   return {
     request_id: stableRequestId({
       underlying: "SPX",
@@ -498,6 +523,7 @@ export function prepareHistoricalSpxCandidates(
     resolution_profile: resolutionProfile,
     candidate_construction_profile: candidateConstructionProfile,
     references,
+    evidence_cache: evidenceCache,
   };
 }
 
@@ -924,6 +950,15 @@ export async function discoverHistoricalSpxCandidates(
     plan.items.map(() => null);
   let reconstructedCount = 0;
   let usedBacktester = false;
+  let evidenceCacheSummary: EvidenceCacheSummary | null = null;
+  const cacheOnly = input.evidence_cache?.mode === "CACHE_ONLY";
+
+  if (cacheOnly && !candles) {
+    throw new EvidenceCacheError(
+      "EVIDENCE_CACHE_NOT_CONFIGURED",
+      "CACHE_ONLY candidate discovery requires cached historical candle retrieval.",
+    );
+  }
 
   if (candles) {
     try {
@@ -933,7 +968,11 @@ export async function discoverHistoricalSpxCandidates(
       );
       reconstructedCandidates = reconstruction.candidates;
       warnings.push(...reconstruction.warnings);
+      evidenceCacheSummary = reconstruction.evidence_cache;
     } catch (error) {
+      if (cacheOnly || error instanceof EvidenceCacheError) {
+        throw error;
+      }
       warnings.push(
         `CHECKPOINT_RECONSTRUCTION_FAILED:${errorMessage(error)}`,
       );
@@ -951,6 +990,20 @@ export async function discoverHistoricalSpxCandidates(
         backtest_id: null,
         status: "RECONSTRUCTED_CANDIDATE_FOUND",
         error: null,
+      });
+      continue;
+    }
+
+    if (cacheOnly) {
+      warnings.push(
+        `${attemptKey(item)}:CACHE_ONLY_BACKTESTER_FALLBACK_DISABLED`,
+      );
+      attempts.push({
+        option_side: item.option_side,
+        selector: item.selector,
+        backtest_id: null,
+        status: "NO_ELIGIBLE_TRIAL",
+        error: "CACHE_ONLY_BACKTESTER_FALLBACK_DISABLED",
       });
       continue;
     }
@@ -1130,5 +1183,6 @@ export async function discoverHistoricalSpxCandidates(
       plan.candidate_construction_profile,
     references: plan.references,
     warnings: [...new Set(warnings)],
+    evidence_cache: evidenceCacheSummary,
   };
 }

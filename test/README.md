@@ -26,6 +26,14 @@ The suite builds the TypeScript project before running Jest and covers:
   rejection of ambiguous and nonexistent local instants;
 - preservation of bar start/end, availability, retrieval, and opaque
   candidate-construction metadata;
+- immutable content-addressed evidence objects and revision manifests;
+- exact DD/DV cache-only replay with zero provider calls and stable hashes;
+- cache identity separation by provider, source revision, profile, and
+  aggregation, with reference-only object reuse;
+- partial coverage, retryable-failure isolation, corruption, concurrent
+  deduplication, bounded concurrency, atomic writes, and disk quotas;
+- cross-month entry/+3/+5 trading-day manifest sets with outcome evidence
+  excluded from entry candidate selection;
 - `LIMIT_TOUCH` and `CONSERVATIVE_CROSS`;
 - sparse first-touch intervals, complete no-touch paths, and
   `NOT_VERIFIABLE`/`NOT_ASSESSABLE`;

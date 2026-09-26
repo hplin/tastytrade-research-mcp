@@ -155,3 +155,14 @@ fabricated package points. A fill check is honestly `NOT_ASSESSABLE`
 (`status: NOT_VERIFIABLE` for backward compatibility).
 
 Backtester snapshots beginning around 12:45 PT are not used as 07:30 evidence.
+
+## Immutable source manifests
+
+Both package tools can pass an `evidence_cache` policy to their underlying
+historical-candle requests. Results return the exact source manifest IDs and
+content hashes used for valuation. A later run may provide those IDs with
+`CACHE_ONLY`; missing or mismatched shards fail the entire replay without a
+provider call or undeclared resolution substitution. Changing only execution
+references reuses the verified candle objects while producing independent
+research-result identity. Full configuration and migration guidance is in
+[`evidence-cache.md`](evidence-cache.md).
