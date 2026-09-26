@@ -22,13 +22,13 @@ tastytrade OAuth credentials in Azure Key Vault-backed Container App secrets.
 - Health URL:
   `https://tastytrade-research-mcp.victoriousfield-047d2c99.westus2.azurecontainerapps.io/healthz`
 - Production revision:
-  `tastytrade-research-mcp--main-faa26ef`
+  `tastytrade-research-mcp--main-e5e0423`
 - ACR image:
-  `hplintradingmcp.azurecr.io/tastytrade-research-mcp:main-faa26ef`
+  `hplintradingmcp.azurecr.io/tastytrade-research-mcp:main-e5e0423`
 - Image digest:
-  `sha256:80416c62cd0a8b49ccd1a4aeb31267ac4eac8360c9240d5f791ca01beb18725f`
+  `sha256:a7cf655c8d76f7df5318d5cf1279e622c4277b7e3cc3a5814b6d56273cee8d82`
 - Source commit:
-  `faa26ef50aedeb61e8724c5fca685fd221d6b8b2`
+  `e5e0423d850fdf3fd5f99a2a59ea819bd9c02ec9`
 - Managed identity: `mi-tastytrade-research-mcp`
 
 Production OAuth uses Entra resource application
@@ -138,17 +138,17 @@ OAUTH_RESOURCE_NAME=Tastytrade Research MCP
 ```
 
 For emergency rollback, reactivate revision
-`tastytrade-research-mcp--main-8c9db34` and move 100% traffic to it. That
-revision contains the bounded candidate-universe tool and acceptance fixture,
-but predates the expanded 21/35-DTE delta reconstruction. It retains the same
-Entra OAuth and Key Vault-backed tastytrade configuration.
+`tastytrade-research-mcp--main-faa26ef` and move 100% traffic to it. That
+revision contains the expanded historical delta reconstruction, but predates
+checkpoint-time exact-leg package valuation and historical package paths. It
+retains the same Entra OAuth and Key Vault-backed tastytrade configuration.
 
 After deployment, verify:
 
 1. `/healthz` returns HTTP 200.
 2. The protected-resource metadata names Entra and the `mcp.read` scope.
 3. `/mcp` without a bearer token returns HTTP 401 with `resource_metadata`.
-4. A real Entra token connects, lists all 15 tools, and can call a local-only
+4. A real Entra token connects, lists all 17 tools, and can call a local-only
    tool such as `tastytrade_price_option_package`.
 5. A live provider smoke test can call
    `tastytrade_get_historical_spx_candidate_universe` and verify bounded
@@ -159,6 +159,34 @@ After deployment, verify:
    `2026-08-25T14:30:00Z` and returns four `RECONSTRUCTED_CANDIDATE_FOUND`
    CALL/PUT Delta-20 and 1%-OTM contracts. Every provenance timestamp must be
    `<= as_of`.
+7. A live exact-leg package smoke test can reconstruct checkpoint evidence,
+   return a gap-preserving short path at the finest retrievable resolution,
+   and feed that path directly to `tastytrade_verify_historical_fill`.
+
+## Current historical-package deployment verification
+
+Revision `tastytrade-research-mcp--main-e5e0423` was verified on 2026-09-26
+with:
+
+- ACR build run `cck` producing digest
+  `sha256:a7cf655c8d76f7df5318d5cf1279e622c4277b7e3cc3a5814b6d56273cee8d82`;
+- source commit `e5e0423d850fdf3fd5f99a2a59ea819bd9c02ec9`;
+- one healthy replica in `RunningAtMaxScale`;
+- 100% production traffic and the superseded `main-faa26ef` revision
+  deactivated;
+- HTTP 200 from `/healthz`;
+- HTTP 200 from RFC 9728 protected-resource metadata;
+- HTTP 401 plus the correct resource metadata from unauthenticated `/mcp`;
+- an Entra delegated `mcp.read` token listing all 17 MCP tools;
+- the strict 30-minute age / 10-minute skew checkpoint request returning
+  `NOT_AVAILABLE`, `STALE`, and `MISALIGNED`;
+- the explicit 60-minute age / 30-minute skew request returning a `21.06`
+  debit `HISTORICAL_OPTION_PACKAGE_REFERENCE` with
+  `execution_quality: VALUATION_ONLY`;
+- a requested 1-minute 07:30-07:50 PT path explicitly selecting 5-minute
+  resolution, returning four gaps and zero fabricated points; and
+- direct fill verification returning legacy `NOT_VERIFIABLE` plus
+  `assessment_status: NOT_ASSESSABLE`.
 
 ## Current expanded-delta deployment verification
 
