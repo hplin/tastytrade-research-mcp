@@ -1,0 +1,42 @@
+{
+  "contract_version": "1.0.0",
+  "window": {
+    "start_date": "2026-09-24",
+    "end_date": "2026-09-24",
+    "checkpoint_local_time": "07:30",
+    "timezone": "America/Los_Angeles"
+  },
+  "horizons": [
+    {
+      "horizon_id": "PLUS_3_TRADING_DAYS",
+      "trading_days": 3
+    },
+    {
+      "horizon_id": "PLUS_5_TRADING_DAYS",
+      "trading_days": 5
+    }
+  ],
+  "policy_comparison": {
+    "common_candidate_ids": [
+      "candidate-dd",
+      "candidate-dv"
+    ],
+    "added_by_research_candidate_ids": [
+      "candidate-cv"
+    ],
+    "removed_by_research_candidate_ids": [
+      "candidate-ic"
+    ],
+    "accepted_union_candidate_ids": [
+      "candidate-cv",
+      "candidate-dd",
+      "candidate-dv",
+      "candidate-ic"
+    ]
+  },
+  "missing_data": {
+    "total_candidate_count": 6,
+    "missing_or_rejected_candidate_count": 2,
+    "missing_data_rate": "0.333333333333333333"
+  }
+}

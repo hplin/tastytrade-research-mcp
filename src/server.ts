@@ -54,6 +54,11 @@ import {
   type HistoricalExecutionSimulationInput,
 } from "./historical-execution-model.js";
 import {
+  HISTORICAL_REPLAY_INPUT_SCHEMA,
+  buildHistoricalReplayReport,
+  type HistoricalReplayInput,
+} from "./historical-replay.js";
+import {
   priceOptionPackage,
   type PackagePricingInput,
 } from "./package-pricing.js";
@@ -1204,6 +1209,12 @@ export const TOOLS: Tool[] = [
     inputSchema: HISTORICAL_EXECUTION_MODEL_INPUT_SCHEMA,
   },
   {
+    name: "tastytrade_build_historical_replay_report",
+    description:
+      "Build a deterministic local-only baseline-versus-research replay report from frozen policy decisions and immutable execution simulations. Keeps +3/+5 horizons and evidence cohorts separate, reports missing data and execution sensitivity, and never selects a winner, changes grading, or writes paper state.",
+    inputSchema: HISTORICAL_REPLAY_INPUT_SCHEMA,
+  },
+  {
     name: "tastytrade_prepare_spx_spread",
     description:
       "Normalize an SPX debit vertical, credit vertical, iron condor, or double diagonal into deterministic Backtester and exact-leg simulation requests without submitting it.",
@@ -1441,6 +1452,12 @@ export function createResearchServer(
         return toolResult(
           simulateHistoricalExecution(
             requestArg<HistoricalExecutionSimulationInput>(args),
+          ),
+        );
+      case "tastytrade_build_historical_replay_report":
+        return toolResult(
+          buildHistoricalReplayReport(
+            requestArg<HistoricalReplayInput>(args),
           ),
         );
       case "tastytrade_prepare_spx_spread":

@@ -1,0 +1,1017 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/hplin/tastytrade-research-mcp/docs/historical-replay.schema.json",
+  "title": "Deterministic historical replay acceptance report",
+  "type": "object",
+  "required": [
+    "contract_version",
+    "replay_id",
+    "report_type",
+    "status",
+    "complete_performance_acceptance",
+    "run_id",
+    "experiment_version",
+    "experiment_frozen_at",
+    "outcome_accessed_at",
+    "study_stage",
+    "window",
+    "candidate_selection_source",
+    "later_selector_fallback_used",
+    "candidate_construction_profile",
+    "measurement_basis",
+    "horizon_policy",
+    "horizons",
+    "policies",
+    "scenarios",
+    "candidates",
+    "execution_records",
+    "policy_comparison",
+    "groups",
+    "missing_data",
+    "execution_sensitivity",
+    "drawdown_label",
+    "portfolio_mtm_drawdown_available",
+    "account_return",
+    "account_return_reason",
+    "selected_winner",
+    "grading_adjusted",
+    "writes_forward_paper_state",
+    "writes_monthly_paper_file",
+    "warnings"
+  ],
+  "properties": {
+    "contract_version": {
+      "const": "1.0.0"
+    },
+    "replay_id": {
+      "$ref": "#/$defs/contentId"
+    },
+    "report_type": {
+      "const": "HISTORICAL_REPLAY_ACCEPTANCE"
+    },
+    "status": {
+      "enum": [
+        "COMPLETE",
+        "PARTIAL",
+        "NOT_ASSESSABLE"
+      ]
+    },
+    "complete_performance_acceptance": {
+      "type": "boolean"
+    },
+    "run_id": {
+      "$ref": "#/$defs/nonEmptyString"
+    },
+    "experiment_version": {
+      "$ref": "#/$defs/nonEmptyString"
+    },
+    "experiment_frozen_at": {
+      "$ref": "#/$defs/timestamp"
+    },
+    "outcome_accessed_at": {
+      "$ref": "#/$defs/timestamp"
+    },
+    "study_stage": {
+      "enum": [
+        "IN_SAMPLE",
+        "OUT_OF_SAMPLE"
+      ]
+    },
+    "window": {
+      "type": "object",
+      "required": [
+        "start_date",
+        "end_date",
+        "checkpoint_local_time",
+        "timezone"
+      ],
+      "properties": {
+        "start_date": {
+          "$ref": "#/$defs/date"
+        },
+        "end_date": {
+          "$ref": "#/$defs/date"
+        },
+        "checkpoint_local_time": {
+          "const": "07:30"
+        },
+        "timezone": {
+          "const": "America/Los_Angeles"
+        }
+      },
+      "additionalProperties": false
+    },
+    "candidate_selection_source": {
+      "const": "FROZEN_POLICY_OUTPUT"
+    },
+    "later_selector_fallback_used": {
+      "const": false
+    },
+    "candidate_construction_profile": {
+      "$ref": "#/$defs/versionedHash"
+    },
+    "measurement_basis": {
+      "$ref": "#/$defs/measurementBasis"
+    },
+    "horizon_policy": {
+      "$ref": "#/$defs/namedVersionedHash"
+    },
+    "horizons": {
+      "type": "array",
+      "minItems": 2,
+      "maxItems": 2,
+      "items": {
+        "$ref": "#/$defs/horizon"
+      }
+    },
+    "policies": {
+      "type": "array",
+      "minItems": 2,
+      "maxItems": 2,
+      "items": {
+        "$ref": "#/$defs/policy"
+      }
+    },
+    "scenarios": {
+      "type": "array",
+      "minItems": 3,
+      "items": {
+        "$ref": "#/$defs/scenario"
+      }
+    },
+    "candidates": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/candidate"
+      }
+    },
+    "execution_records": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/executionRecord"
+      }
+    },
+    "policy_comparison": {
+      "type": "object",
+      "required": [
+        "baseline_policy_id",
+        "research_policy_id",
+        "common_candidate_ids",
+        "added_by_research_candidate_ids",
+        "removed_by_research_candidate_ids",
+        "accepted_union_candidate_ids"
+      ],
+      "properties": {
+        "baseline_policy_id": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "research_policy_id": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "common_candidate_ids": {
+          "$ref": "#/$defs/stringArray"
+        },
+        "added_by_research_candidate_ids": {
+          "$ref": "#/$defs/stringArray"
+        },
+        "removed_by_research_candidate_ids": {
+          "$ref": "#/$defs/stringArray"
+        },
+        "accepted_union_candidate_ids": {
+          "$ref": "#/$defs/stringArray"
+        }
+      },
+      "additionalProperties": false
+    },
+    "groups": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/group"
+      }
+    },
+    "missing_data": {
+      "$ref": "#/$defs/missingData"
+    },
+    "execution_sensitivity": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/sensitivity"
+      }
+    },
+    "drawdown_label": {
+      "const": "CLOSE_SEQUENCE_DRAWDOWN"
+    },
+    "portfolio_mtm_drawdown_available": {
+      "const": false
+    },
+    "account_return": {
+      "type": "null"
+    },
+    "account_return_reason": {
+      "const": "CAPITAL_CONCURRENCY_SIZING_POLICY_NOT_PROVIDED"
+    },
+    "selected_winner": {
+      "type": "null"
+    },
+    "grading_adjusted": {
+      "const": false
+    },
+    "writes_forward_paper_state": {
+      "const": false
+    },
+    "writes_monthly_paper_file": {
+      "const": false
+    },
+    "warnings": {
+      "$ref": "#/$defs/stringArray"
+    }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "nonEmptyString": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 200
+    },
+    "contentId": {
+      "type": "string",
+      "pattern": "^sha256:[a-f0-9]{64}$"
+    },
+    "timestamp": {
+      "type": "string",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d{1,9})?(?:Z|[+-]\\d{2}:\\d{2})$"
+    },
+    "date": {
+      "type": "string",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+    },
+    "decimal": {
+      "type": "string",
+      "pattern": "^-?(?:0|[1-9][0-9]*)(?:\\.[0-9]+)?$"
+    },
+    "nullableDecimal": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/decimal"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "stringArray": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "$ref": "#/$defs/nonEmptyString"
+      }
+    },
+    "versionedHash": {
+      "type": "object",
+      "required": [
+        "version",
+        "hash"
+      ],
+      "properties": {
+        "version": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "hash": {
+          "$ref": "#/$defs/contentId"
+        }
+      },
+      "additionalProperties": false
+    },
+    "namedVersionedHash": {
+      "type": "object",
+      "required": [
+        "policy_id",
+        "version",
+        "hash"
+      ],
+      "properties": {
+        "policy_id": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "version": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "hash": {
+          "$ref": "#/$defs/contentId"
+        }
+      },
+      "additionalProperties": false
+    },
+    "measurementBasis": {
+      "type": "object",
+      "required": [
+        "basis_id",
+        "version",
+        "hash"
+      ],
+      "properties": {
+        "basis_id": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "version": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "hash": {
+          "$ref": "#/$defs/contentId"
+        }
+      },
+      "additionalProperties": false
+    },
+    "horizon": {
+      "type": "object",
+      "required": [
+        "horizon_id",
+        "trading_days"
+      ],
+      "properties": {
+        "horizon_id": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "trading_days": {
+          "enum": [
+            3,
+            5
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "decision": {
+      "type": "object",
+      "required": [
+        "candidate_id",
+        "status",
+        "reason_codes"
+      ],
+      "properties": {
+        "candidate_id": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "status": {
+          "enum": [
+            "ACCEPTED",
+            "REJECTED",
+            "NOT_EVALUATED_MISSING_DATA"
+          ]
+        },
+        "reason_codes": {
+          "$ref": "#/$defs/stringArray"
+        }
+      },
+      "additionalProperties": false
+    },
+    "policy": {
+      "type": "object",
+      "required": [
+        "role",
+        "policy_id",
+        "policy_version",
+        "policy_hash",
+        "effect_scope",
+        "frozen_at",
+        "decisions"
+      ],
+      "properties": {
+        "role": {
+          "enum": [
+            "BASELINE",
+            "RESEARCH"
+          ]
+        },
+        "policy_id": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "policy_version": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "policy_hash": {
+          "$ref": "#/$defs/contentId"
+        },
+        "effect_scope": {
+          "enum": [
+            "BASELINE",
+            "MILD_BACK_RICH_ONLY",
+            "BACK_RICH_AND_FALLING_IV"
+          ]
+        },
+        "frozen_at": {
+          "$ref": "#/$defs/timestamp"
+        },
+        "decisions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/decision"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "sourceContract": {
+      "type": "object",
+      "required": [
+        "provider_id",
+        "dataset_id",
+        "license_scope_id",
+        "resolution_profile",
+        "source_revision"
+      ],
+      "properties": {
+        "provider_id": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "dataset_id": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "license_scope_id": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "resolution_profile": {
+          "type": "object",
+          "required": [
+            "profile_id",
+            "profile_version",
+            "native_resolution",
+            "effective_resolution"
+          ],
+          "properties": {
+            "profile_id": {
+              "$ref": "#/$defs/nonEmptyString"
+            },
+            "profile_version": {
+              "$ref": "#/$defs/nonEmptyString"
+            },
+            "native_resolution": {
+              "$ref": "#/$defs/nonEmptyString"
+            },
+            "effective_resolution": {
+              "$ref": "#/$defs/nonEmptyString"
+            }
+          },
+          "additionalProperties": false
+        },
+        "source_revision": {
+          "$ref": "#/$defs/nonEmptyString"
+        }
+      },
+      "additionalProperties": false
+    },
+    "scenario": {
+      "type": "object",
+      "required": [
+        "scenario_id",
+        "role",
+        "evidence_strength",
+        "source_contract",
+        "execution_profile",
+        "fee_model",
+        "source_group_id"
+      ],
+      "properties": {
+        "scenario_id": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "role": {
+          "enum": [
+            "OPTIMISTIC",
+            "BASELINE",
+            "STRESS",
+            "REFERENCE"
+          ]
+        },
+        "evidence_strength": {
+          "enum": [
+            "QUOTE_BACKED",
+            "REFERENCE_MODEL"
+          ]
+        },
+        "source_contract": {
+          "$ref": "#/$defs/sourceContract"
+        },
+        "execution_profile": {
+          "type": "object"
+        },
+        "fee_model": {
+          "oneOf": [
+            {
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "source_group_id": {
+          "$ref": "#/$defs/contentId"
+        }
+      },
+      "additionalProperties": false
+    },
+    "scheduledExit": {
+      "type": "object",
+      "required": [
+        "horizon_id",
+        "scheduled_exit_at"
+      ],
+      "properties": {
+        "horizon_id": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "scheduled_exit_at": {
+          "$ref": "#/$defs/timestamp"
+        }
+      },
+      "additionalProperties": false
+    },
+    "candidate": {
+      "type": "object",
+      "required": [
+        "candidate_id",
+        "candidate_fingerprint",
+        "trade_date",
+        "family",
+        "exact_legs",
+        "data_status",
+        "reason_codes",
+        "scheduled_exits"
+      ],
+      "properties": {
+        "candidate_id": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "candidate_fingerprint": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "trade_date": {
+          "$ref": "#/$defs/date"
+        },
+        "family": {
+          "enum": [
+            "DEBIT_VERTICAL",
+            "CREDIT_VERTICAL",
+            "IRON_CONDOR",
+            "DOUBLE_DIAGONAL"
+          ]
+        },
+        "exact_legs": {
+          "type": "array",
+          "maxItems": 4,
+          "items": {
+            "type": "object"
+          }
+        },
+        "data_status": {
+          "enum": [
+            "AVAILABLE",
+            "MISSING",
+            "REJECTED"
+          ]
+        },
+        "reason_codes": {
+          "$ref": "#/$defs/stringArray"
+        },
+        "scheduled_exits": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/scheduledExit"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "executionRecord": {
+      "type": "object",
+      "required": [
+        "record_id",
+        "candidate_id",
+        "scenario_id",
+        "horizon_id",
+        "exact_symbols",
+        "source_manifest_ids",
+        "evidence_class",
+        "simulation",
+        "valuation_evidence_id",
+        "reason_codes"
+      ],
+      "properties": {
+        "record_id": {
+          "$ref": "#/$defs/contentId"
+        },
+        "candidate_id": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "scenario_id": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "horizon_id": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "exact_symbols": {
+          "$ref": "#/$defs/stringArray"
+        },
+        "source_manifest_ids": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/contentId"
+          }
+        },
+        "evidence_class": {
+          "enum": [
+            "SIMULATED_EXECUTION",
+            "VALUATION_ONLY",
+            "MISSING_EVIDENCE"
+          ]
+        },
+        "simulation": {
+          "oneOf": [
+            {
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "valuation_evidence_id": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/contentId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "reason_codes": {
+          "$ref": "#/$defs/stringArray"
+        }
+      },
+      "additionalProperties": false
+    },
+    "metricSummary": {
+      "type": "object",
+      "required": [
+        "closed_position_denominator",
+        "win_count",
+        "loss_count",
+        "breakeven_count",
+        "win_rate",
+        "expectancy",
+        "profit_factor",
+        "profit_factor_status",
+        "independent_trade_pnl_sum"
+      ],
+      "properties": {
+        "closed_position_denominator": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "win_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "loss_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "breakeven_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "win_rate": {
+          "$ref": "#/$defs/nullableDecimal"
+        },
+        "expectancy": {
+          "$ref": "#/$defs/nullableDecimal"
+        },
+        "profit_factor": {
+          "$ref": "#/$defs/nullableDecimal"
+        },
+        "profit_factor_status": {
+          "enum": [
+            "AVAILABLE",
+            "NO_LOSSES",
+            "NO_GAINS",
+            "NO_CLOSED_POSITIONS"
+          ]
+        },
+        "independent_trade_pnl_sum": {
+          "$ref": "#/$defs/nullableDecimal"
+        }
+      },
+      "additionalProperties": false
+    },
+    "group": {
+      "type": "object",
+      "required": [
+        "group_id",
+        "policy_id",
+        "policy_role",
+        "policy_version",
+        "scenario_id",
+        "scenario_role",
+        "profile_id",
+        "profile_version",
+        "profile_hash",
+        "fee_model_hash",
+        "horizon_id",
+        "trading_days",
+        "source_group_id",
+        "evidence_strength",
+        "accepted_candidate_count",
+        "record_count",
+        "simulated_filled_count",
+        "no_fill_count",
+        "not_assessable_count",
+        "open_exit_count",
+        "valuation_only_count",
+        "missing_evidence_count",
+        "closed_position_denominator",
+        "gross",
+        "net",
+        "drawdown",
+        "account_return",
+        "account_return_reason"
+      ],
+      "properties": {
+        "group_id": {
+          "$ref": "#/$defs/contentId"
+        },
+        "policy_id": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "policy_role": {
+          "enum": [
+            "BASELINE",
+            "RESEARCH"
+          ]
+        },
+        "policy_version": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "scenario_id": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "scenario_role": {
+          "enum": [
+            "OPTIMISTIC",
+            "BASELINE",
+            "STRESS",
+            "REFERENCE"
+          ]
+        },
+        "profile_id": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "profile_version": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "profile_hash": {
+          "$ref": "#/$defs/contentId"
+        },
+        "fee_model_hash": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/contentId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "horizon_id": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "trading_days": {
+          "enum": [
+            3,
+            5
+          ]
+        },
+        "source_group_id": {
+          "$ref": "#/$defs/contentId"
+        },
+        "evidence_strength": {
+          "enum": [
+            "QUOTE_BACKED",
+            "REFERENCE_MODEL"
+          ]
+        },
+        "accepted_candidate_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "record_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "simulated_filled_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "no_fill_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "not_assessable_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "open_exit_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "valuation_only_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "missing_evidence_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "closed_position_denominator": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "gross": {
+          "$ref": "#/$defs/metricSummary"
+        },
+        "net": {
+          "$ref": "#/$defs/metricSummary"
+        },
+        "drawdown": {
+          "type": "object",
+          "required": [
+            "metric",
+            "portfolio_mtm",
+            "gross",
+            "net"
+          ],
+          "properties": {
+            "metric": {
+              "const": "CLOSE_SEQUENCE_DRAWDOWN"
+            },
+            "portfolio_mtm": {
+              "const": false
+            },
+            "gross": {
+              "$ref": "#/$defs/nullableDecimal"
+            },
+            "net": {
+              "$ref": "#/$defs/nullableDecimal"
+            }
+          },
+          "additionalProperties": false
+        },
+        "account_return": {
+          "type": "null"
+        },
+        "account_return_reason": {
+          "const": "CAPITAL_CONCURRENCY_SIZING_POLICY_NOT_PROVIDED"
+        }
+      },
+      "additionalProperties": false
+    },
+    "missingData": {
+      "type": "object",
+      "required": [
+        "total_candidate_count",
+        "available_candidate_count",
+        "missing_candidate_count",
+        "rejected_candidate_count",
+        "missing_or_rejected_candidate_count",
+        "missing_data_rate",
+        "missing_execution_record_count",
+        "valuation_only_record_count",
+        "not_assessable_simulation_count",
+        "open_exit_simulation_count"
+      ],
+      "properties": {
+        "total_candidate_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "available_candidate_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "missing_candidate_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "rejected_candidate_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "missing_or_rejected_candidate_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "missing_data_rate": {
+          "$ref": "#/$defs/nullableDecimal"
+        },
+        "missing_execution_record_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "valuation_only_record_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "not_assessable_simulation_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "open_exit_simulation_count": {
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false
+    },
+    "sensitivity": {
+      "type": "object",
+      "required": [
+        "policy_id",
+        "policy_role",
+        "horizon_id",
+        "source_group_id",
+        "evidence_strength",
+        "scenario_conclusions",
+        "execution_sensitive",
+        "selected_winner",
+        "grading_adjusted"
+      ],
+      "properties": {
+        "policy_id": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "policy_role": {
+          "enum": [
+            "BASELINE",
+            "RESEARCH"
+          ]
+        },
+        "horizon_id": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "source_group_id": {
+          "$ref": "#/$defs/contentId"
+        },
+        "evidence_strength": {
+          "enum": [
+            "QUOTE_BACKED",
+            "REFERENCE_MODEL"
+          ]
+        },
+        "scenario_conclusions": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "scenario_id",
+              "scenario_role",
+              "conclusion"
+            ],
+            "properties": {
+              "scenario_id": {
+                "$ref": "#/$defs/nonEmptyString"
+              },
+              "scenario_role": {
+                "enum": [
+                  "OPTIMISTIC",
+                  "BASELINE",
+                  "STRESS",
+                  "REFERENCE"
+                ]
+              },
+              "conclusion": {
+                "enum": [
+                  "POSITIVE_EXPECTANCY",
+                  "NON_POSITIVE_EXPECTANCY",
+                  "NO_CLOSED_POSITIONS"
+                ]
+              }
+            },
+            "additionalProperties": false
+          }
+        },
+        "execution_sensitive": {
+          "type": "boolean"
+        },
+        "selected_winner": {
+          "type": "null"
+        },
+        "grading_adjusted": {
+          "const": false
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}
