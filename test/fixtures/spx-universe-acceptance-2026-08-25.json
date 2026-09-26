@@ -1,0 +1,234 @@
+{
+  "metadata": {
+    "description": "Focused subset of sanitized live DXLink evidence for the 2026-08-25 07:30 PT SPX universe acceptance gate.",
+    "as_of": "2026-08-25T14:30:00.000Z",
+    "max_observation_age_minutes": 1440,
+    "live_requested_contract_count": 186,
+    "live_verified_contract_count": 110,
+    "fixture_verified_contract_count": 16
+  },
+  "underlying": {
+    "symbol": "SPX",
+    "streamer_symbol": "SPX",
+    "candle": {
+      "source_time": "2026-08-25T14:25:00.000Z",
+      "close": "7664.96",
+      "implied_volatility": "0.156",
+      "volume": "2859431",
+      "open_interest": null
+    }
+  },
+  "options": [
+    {
+      "symbol": "SPXW  260915C07850000",
+      "streamer_symbol": ".SPXW260915C7850",
+      "candle": {
+        "source_time": "2026-08-25T14:10:00.000Z",
+        "close": "19.94",
+        "implied_volatility": "0.1021360106912647",
+        "volume": "1",
+        "open_interest": "232"
+      }
+    },
+    {
+      "symbol": "SPXW  260915C07900000",
+      "streamer_symbol": ".SPXW260915C7900",
+      "candle": {
+        "source_time": "2026-08-25T09:30:00.000Z",
+        "close": "15.5",
+        "implied_volatility": "0.1017923021221654",
+        "volume": "1",
+        "open_interest": "201"
+      }
+    },
+    {
+      "symbol": "SPXW  260915P07400000",
+      "streamer_symbol": ".SPXW260915P7400",
+      "candle": {
+        "source_time": "2026-08-25T14:00:00.000Z",
+        "close": "24.17",
+        "implied_volatility": "0.1572105886605907",
+        "volume": "1",
+        "open_interest": "282"
+      }
+    },
+    {
+      "symbol": "SPXW  260915P07475000",
+      "streamer_symbol": ".SPXW260915P7475",
+      "candle": {
+        "source_time": "2026-08-25T14:20:00.000Z",
+        "close": "33.16",
+        "implied_volatility": "0.145026878859971",
+        "volume": "1",
+        "open_interest": "48"
+      }
+    },
+    {
+      "symbol": "SPXW  260922C07700000",
+      "streamer_symbol": ".SPXW260922C7700",
+      "candle": {
+        "source_time": "2026-08-25T14:05:00.000Z",
+        "close": "97.84",
+        "implied_volatility": "0.1222130660494172",
+        "volume": "1",
+        "open_interest": "14"
+      }
+    },
+    {
+      "symbol": "SPXW  260922P07700000",
+      "streamer_symbol": ".SPXW260922P7700",
+      "candle": {
+        "source_time": "2026-08-25T14:05:00.000Z",
+        "close": "109.55",
+        "implied_volatility": "0.1223296726721916",
+        "volume": "1",
+        "open_interest": "52"
+      }
+    },
+    {
+      "symbol": "SPXW  260922C07875000",
+      "streamer_symbol": ".SPXW260922C7875",
+      "candle": {
+        "source_time": "2026-08-24T20:00:00.000Z",
+        "close": "25.06",
+        "implied_volatility": "0.1073396135808977",
+        "volume": "8",
+        "open_interest": "44"
+      }
+    },
+    {
+      "symbol": "SPXW  260922C07900000",
+      "streamer_symbol": ".SPXW260922C7900",
+      "candle": {
+        "source_time": "2026-08-25T13:55:00.000Z",
+        "close": "24.52",
+        "implied_volatility": "0.1083390992764817",
+        "volume": "2",
+        "open_interest": "31"
+      }
+    },
+    {
+      "symbol": "SPXW  260922C07950000",
+      "streamer_symbol": ".SPXW260922C7950",
+      "candle": {
+        "source_time": "2026-08-25T13:55:00.000Z",
+        "close": "15.61",
+        "implied_volatility": "0.1061323714835461",
+        "volume": "2",
+        "open_interest": "266"
+      }
+    },
+    {
+      "symbol": "SPXW  260922P07350000",
+      "streamer_symbol": ".SPXW260922P7350",
+      "candle": {
+        "source_time": "2026-08-25T13:55:00.000Z",
+        "close": "30.47",
+        "implied_volatility": "0.1682524022870429",
+        "volume": "2",
+        "open_interest": "35"
+      }
+    },
+    {
+      "symbol": "SPXW  260922P07400000",
+      "streamer_symbol": ".SPXW260922P7400",
+      "candle": {
+        "source_time": "2026-08-25T13:55:00.000Z",
+        "close": "35.86",
+        "implied_volatility": "0.1612460190951447",
+        "volume": "2",
+        "open_interest": "37"
+      }
+    },
+    {
+      "symbol": "SPXW  260922P07425000",
+      "streamer_symbol": ".SPXW260922P7425",
+      "candle": {
+        "source_time": "2026-08-25T13:50:00.000Z",
+        "close": "38.5",
+        "implied_volatility": "0.1577087636780021",
+        "volume": "3",
+        "open_interest": "22"
+      }
+    },
+    {
+      "symbol": "SPXW  260929C07825000",
+      "streamer_symbol": ".SPXW260929C7825",
+      "candle": {
+        "source_time": "2026-08-24T19:25:00.000Z",
+        "close": "52.91",
+        "implied_volatility": "0.1135352489535174",
+        "volume": "1",
+        "open_interest": "0"
+      }
+    },
+    {
+      "symbol": "SPXW  260929C07850000",
+      "streamer_symbol": ".SPXW260929C7850",
+      "candle": {
+        "source_time": "2026-08-24T19:05:00.000Z",
+        "close": "44.37",
+        "implied_volatility": "0.1121560920796976",
+        "volume": "1",
+        "open_interest": null
+      }
+    },
+    {
+      "symbol": "SPXW  260929P07450000",
+      "streamer_symbol": ".SPXW260929P7450",
+      "candle": {
+        "source_time": "2026-08-24T20:00:00.000Z",
+        "close": "57.77",
+        "implied_volatility": null,
+        "volume": "1",
+        "open_interest": null
+      }
+    },
+    {
+      "symbol": "SPXW  260929P07500000",
+      "streamer_symbol": ".SPXW260929P7500",
+      "candle": {
+        "source_time": "2026-08-24T19:40:00.000Z",
+        "close": "67.09",
+        "implied_volatility": "0.1455141971462369",
+        "volume": "3",
+        "open_interest": "1"
+      }
+    },
+    {
+      "symbol": "SPXW  260922C07925000",
+      "streamer_symbol": ".SPXW260922C7925",
+      "candle": {
+        "source_time": "2026-08-25T14:30:00.000Z",
+        "close": "19.45",
+        "implied_volatility": "0.13",
+        "volume": "5",
+        "open_interest": "931"
+      }
+    }
+  ],
+  "exact_leg_forward_simulation": {
+    "decision_as_of": "2026-08-25T14:30:00.000Z",
+    "provider_supported_entry_at": "2026-08-25T19:45:00.000Z",
+    "exit_at": "2026-08-26T19:45:00.000Z",
+    "request_id": "b443a4128bded0be04350e8e83582bc59881a041dafd9560e05d4e8e1c4a57b6",
+    "intended_price": "14.3",
+    "price_effect": "CREDIT",
+    "snapshots": [
+      {
+        "dateTime": "2026-08-25T19:45:00.000Z",
+        "price": "13.55",
+        "effect": "credit",
+        "underlyingPrice": "0",
+        "delta": "-2.5"
+      },
+      {
+        "dateTime": "2026-08-26T19:45:00.000Z",
+        "price": "13.6",
+        "effect": "credit",
+        "underlyingPrice": "0",
+        "delta": "-2.73"
+      }
+    ]
+  }
+}

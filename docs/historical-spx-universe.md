@@ -130,3 +130,29 @@ The response `request_id` includes `as_of`, bounds, explicit expirations,
 freshness maximum, and references. Persisted replay evidence must be treated
 as immutable; a later call with broader freshness or newly available provider
 data is a distinct record and must never silently upgrade an earlier replay.
+
+## 2026-08-25 acceptance fixture
+
+`test/fixtures/spx-universe-acceptance-2026-08-25.json` freezes the bounded
+21-35 DTE, 7300-8050, 25-point grid used by the downstream
+`SPX-CANDIDATE-CONSTRUCTION-V1` acceptance gate. Live validation returned 110
+of 186 requested contracts, populated every expiration/side group, and
+contained no future evidence. The focused fixture preserves the contracts
+needed to prove that a consumer can select the following exact 28-DTE Iron
+Condor without using a Backtester selector:
+
+- long 7350P / short 7400P;
+- short 7900C / long 7950C.
+
+The candidate decision remains frozen at `2026-08-25T14:30:00Z`. A live
+exact-leg `/simulate-trade` validation reused those four OCC symbols at the
+provider-supported `2026-08-25T19:45:00Z` sampling boundary and returned
+13.55 credit, followed by 13.60 credit at `2026-08-26T19:45:00Z`. The later
+simulation timestamps are replay outcome evidence and do not participate in
+the earlier candidate decision.
+
+Front and back contracts for the 21-DTE/35-DTE Double Diagonal profile are
+also present, but their historical deltas cannot be reconstructed from
+timestamp-aligned parity evidence. The acceptance path therefore reports
+`INSUFFICIENT_TIMESTAMP_SAFE_CONTRACTS` for all four target-delta legs rather
+than substituting future data or estimating unsupported deltas.
