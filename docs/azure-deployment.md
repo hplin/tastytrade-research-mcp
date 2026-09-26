@@ -22,13 +22,13 @@ tastytrade OAuth credentials in Azure Key Vault-backed Container App secrets.
 - Health URL:
   `https://tastytrade-research-mcp.victoriousfield-047d2c99.westus2.azurecontainerapps.io/healthz`
 - Production revision:
-  `tastytrade-research-mcp--issue17-202609252238`
+  `tastytrade-research-mcp--issue20-28b861d`
 - ACR image:
-  `hplintradingmcp.azurecr.io/tastytrade-research-mcp:issue17-202609252238`
+  `hplintradingmcp.azurecr.io/tastytrade-research-mcp:issue20-28b861d`
 - Image digest:
-  `sha256:fb59846fc4291d6a6e459218ef6b08dd4e2d8e1714b3966a817a2d5e53453ad9`
+  `sha256:a848c358a04032ef3e172f163021c661e39cedd8956b2fd9b386dde05405cdef`
 - Source commit:
-  `06d7dd5bfc6cc54469f7f4fc9489bb2b20ad20b5`
+  `28b861d8b42ccd5f98d953c290053d3037894631`
 - Managed identity: `mi-tastytrade-research-mcp`
 
 Production OAuth uses Entra resource application
@@ -138,7 +138,7 @@ OAUTH_RESOURCE_NAME=Tastytrade Research MCP
 ```
 
 For emergency rollback, reactivate revision
-`tastytrade-research-mcp--oauth20260925043410` and move 100% traffic to it.
+`tastytrade-research-mcp--issue17-202609252238` and move 100% traffic to it.
 That revision retains the same Entra OAuth and Key Vault-backed tastytrade
 configuration as the current production revision.
 
