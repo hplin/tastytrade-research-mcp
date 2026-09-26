@@ -6,6 +6,10 @@ import {
 } from "./backtest-selector.js";
 import { ExactDecimal } from "./decimal.js";
 import type { ExecutionReferences } from "./execution-evidence.js";
+import {
+  reconstructHistoricalSpxCandidates,
+  type HistoricalCandidateCandles,
+} from "./historical-spx-reconstruction.js";
 import type { OptionSide } from "./spread-adapter.js";
 import { normalizeRfc3339 } from "./time.js";
 
@@ -41,7 +45,7 @@ export type HistoricalCandidateProvenance = {
 export type HistoricalSpxCandidate = {
   provider_symbol: string;
   simulation_symbol: string;
-  occ_symbol: null;
+  occ_symbol: string | null;
   underlying: "SPX";
   expiration: string;
   strike: string;
@@ -56,6 +60,9 @@ export type HistoricalSpxCandidate = {
   historical_price: string | null;
   historical_price_effect: "DEBIT" | "CREDIT" | null;
   selected_historical_delta: string | null;
+  selected_historical_iv: string | null;
+  historical_volume: string | null;
+  historical_open_interest: string | null;
   underlying_price: string | null;
   observation_age_ms: number;
   confidence: "MEDIUM";
@@ -69,6 +76,7 @@ export type HistoricalCandidateAttempt = {
   backtest_id: string | null;
   status:
     | "CANDIDATE_FOUND"
+    | "RECONSTRUCTED_CANDIDATE_FOUND"
     | "NO_ELIGIBLE_TRIAL"
     | "INVALID_PROVIDER_LOGS"
     | "PROVIDER_ERROR";
@@ -100,13 +108,17 @@ export type HistoricalSpxCandidatesResult = {
     exact_provider_contract_identity: boolean;
     exact_leg_simulation: boolean;
     historical_bid_ask: false;
+    historical_contract_iv: boolean;
     historical_iv_surface: false;
     historical_skew: false;
     historical_term_structure: false;
-    historical_open_interest: false;
-    historical_volume: false;
+    historical_open_interest: boolean;
+    historical_volume: boolean;
     backtester_entry_time_configurable: false;
     exact_checkpoint_selection: boolean;
+    exact_checkpoint_simulation: boolean;
+    deterministic_checkpoint_reconstruction: boolean;
+    historical_contract_universe_reconstructed: boolean;
     forward_outcomes_included: false;
   };
   attempts: HistoricalCandidateAttempt[];
@@ -121,7 +133,7 @@ export type HistoricalCandidateBacktester = {
   simulateTrade(request: JsonObject): Promise<unknown>;
 };
 
-type CandidatePlanItem = {
+export type CandidatePlanItem = {
   option_side: OptionSide;
   selector: NormalizedHistoricalCandidateSelector;
   backtest_request: JsonObject;
@@ -164,16 +176,17 @@ const NEW_YORK_TIMEZONE = "America/New_York";
 
 const LIMITATION_WARNINGS = [
   "HISTORICAL_SELECTOR_CANDIDATE_SET_NOT_FULL_CHAIN",
-  "BACKTEST_LOG_IDENTITY_FIELDS_ARE_UNDOCUMENTED",
   "HISTORICAL_BID_ASK_NOT_AVAILABLE",
   "HISTORICAL_IV_SURFACE_NOT_AVAILABLE",
   "HISTORICAL_SKEW_NOT_AVAILABLE",
   "HISTORICAL_TERM_STRUCTURE_NOT_AVAILABLE",
-  "HISTORICAL_OPEN_INTEREST_NOT_AVAILABLE",
-  "HISTORICAL_VOLUME_NOT_AVAILABLE",
+  "FORWARD_OUTCOMES_EXCLUDED_FROM_CANDIDATE_DISCOVERY",
+] as const;
+
+const BACKTESTER_LIMITATION_WARNINGS = [
+  "BACKTEST_LOG_IDENTITY_FIELDS_ARE_UNDOCUMENTED",
   "BACKTESTER_ENTRY_TIME_NOT_CONFIGURABLE",
   "CHECKPOINT_SELECTION_REQUIRES_EXACT_TIMESTAMP",
-  "FORWARD_OUTCOMES_EXCLUDED_FROM_CANDIDATE_DISCOVERY",
 ] as const;
 
 function objectValue(value: unknown): Record<string, unknown> | null {
@@ -580,6 +593,9 @@ function baseCandidateFromTrial(
           historical_price: null,
           historical_price_effect: null,
           selected_historical_delta: null,
+          selected_historical_iv: null,
+          historical_volume: null,
+          historical_open_interest: null,
           underlying_price: normalizedDecimal(
             trial.underlyingPriceAtOpen,
             "logs.trials.underlyingPriceAtOpen",
@@ -838,13 +854,51 @@ function errorMessage(error: unknown): string {
 export async function discoverHistoricalSpxCandidates(
   backtester: HistoricalCandidateBacktester,
   input: HistoricalSpxCandidatesInput,
+  candles?: HistoricalCandidateCandles,
 ): Promise<HistoricalSpxCandidatesResult> {
   const plan = prepareHistoricalSpxCandidates(input);
   const contracts: HistoricalSpxCandidate[] = [];
   const attempts: HistoricalCandidateAttempt[] = [];
   const warnings: string[] = [...LIMITATION_WARNINGS];
+  let reconstructedCandidates: Array<HistoricalSpxCandidate | null> =
+    plan.items.map(() => null);
+  let reconstructedCount = 0;
+  let usedBacktester = false;
 
-  for (const item of plan.items) {
+  if (candles) {
+    try {
+      const reconstruction = await reconstructHistoricalSpxCandidates(
+        plan,
+        candles,
+      );
+      reconstructedCandidates = reconstruction.candidates;
+      warnings.push(...reconstruction.warnings);
+    } catch (error) {
+      warnings.push(
+        `CHECKPOINT_RECONSTRUCTION_FAILED:${errorMessage(error)}`,
+      );
+    }
+  }
+
+  for (const [itemIndex, item] of plan.items.entries()) {
+    const reconstructed = reconstructedCandidates[itemIndex];
+    if (reconstructed) {
+      reconstructedCount += 1;
+      contracts.push(reconstructed);
+      attempts.push({
+        option_side: item.option_side,
+        selector: item.selector,
+        backtest_id: null,
+        status: "RECONSTRUCTED_CANDIDATE_FOUND",
+        error: null,
+      });
+      continue;
+    }
+
+    if (!usedBacktester) {
+      warnings.push(...BACKTESTER_LIMITATION_WARNINGS);
+      usedBacktester = true;
+    }
     let id: string | null = null;
     try {
       const created = await backtester.createBacktest(item.backtest_request);
@@ -928,6 +982,24 @@ export async function discoverHistoricalSpxCandidates(
         ? "COMPLETE"
         : "PARTIAL";
   const provenance = contracts.flatMap((candidate) => candidate.provenance);
+  if (
+    contracts.length === 0 ||
+    contracts.every((candidate) => candidate.selected_historical_iv === null)
+  ) {
+    warnings.push("HISTORICAL_CONTRACT_IV_NOT_AVAILABLE");
+  }
+  if (
+    contracts.length === 0 ||
+    contracts.every((candidate) => candidate.historical_open_interest === null)
+  ) {
+    warnings.push("HISTORICAL_OPEN_INTEREST_NOT_AVAILABLE");
+  }
+  if (
+    contracts.length === 0 ||
+    contracts.every((candidate) => candidate.historical_volume === null)
+  ) {
+    warnings.push("HISTORICAL_VOLUME_NOT_AVAILABLE");
+  }
 
   return {
     contract_version: "1.0.0",
@@ -954,13 +1026,30 @@ export async function discoverHistoricalSpxCandidates(
       exact_provider_contract_identity: contracts.length > 0,
       exact_leg_simulation: contracts.length > 0,
       historical_bid_ask: false,
+      historical_contract_iv: contracts.some(
+        (candidate) => candidate.selected_historical_iv !== null,
+      ),
       historical_iv_surface: false,
       historical_skew: false,
       historical_term_structure: false,
-      historical_open_interest: false,
-      historical_volume: false,
+      historical_open_interest: contracts.some(
+        (candidate) => candidate.historical_open_interest !== null,
+      ),
+      historical_volume: contracts.some(
+        (candidate) => candidate.historical_volume !== null,
+      ),
       backtester_entry_time_configurable: false,
       exact_checkpoint_selection: contracts.length > 0,
+      exact_checkpoint_simulation:
+        contracts.length > 0 &&
+        reconstructedCount === 0 &&
+        contracts.every(
+          (candidate) =>
+            candidate.historical_price !== null &&
+            candidate.selected_historical_delta !== null,
+        ),
+      deterministic_checkpoint_reconstruction: reconstructedCount > 0,
+      historical_contract_universe_reconstructed: reconstructedCount > 0,
       forward_outcomes_included: false,
     },
     attempts,

@@ -44,6 +44,22 @@ export type HistoricalCandlesInput = {
   max_candles?: number;
 };
 
+export type HistoricalCandleInstrument = {
+  symbol: string;
+  streamer_symbol?: string;
+  instrument_type: InstrumentType;
+};
+
+export type HistoricalCandlesBatchInput = {
+  instruments: HistoricalCandleInstrument[];
+  interval: string;
+  start_time: string;
+  end_time: string;
+  session?: CandleSession;
+  timeout_ms?: number;
+  max_candles?: number;
+};
+
 export type HistoricalCandle = {
   source_time: string;
   open: string;
@@ -108,6 +124,7 @@ type DxlinkSocket = {
 export type DxlinkSocketFactory = (url: string) => DxlinkSocket;
 
 type RawCandle = {
+  eventSymbol: string;
   index: string;
   timestamp: number;
   flags: number;
@@ -304,25 +321,38 @@ export function parseDxlinkCandleData(data: unknown): {
   candles: RawCandle[];
   snapshotComplete: boolean;
   snapshotTruncated: boolean;
+  completedSymbols: string[];
+  truncatedSymbols: string[];
 } {
   if (!Array.isArray(data)) {
     return {
       candles: [],
       snapshotComplete: false,
       snapshotTruncated: false,
+      completedSymbols: [],
+      truncatedSymbols: [],
     };
   }
   const candles: RawCandle[] = [];
   let snapshotComplete = false;
   let snapshotTruncated = false;
+  const completedSymbols = new Set<string>();
+  const truncatedSymbols = new Set<string>();
 
   for (let index = 0; index + 1 < data.length; index += 2) {
     if (data[index] !== "Candle") continue;
     for (const row of parseRows(data[index + 1])) {
+      const eventSymbol = typeof row[1] === "string" ? row[1] : "";
       const flags = Number(row[2]);
       if (!Number.isFinite(flags)) continue;
-      if ((flags & SNAPSHOT_END) !== 0) snapshotComplete = true;
-      if ((flags & SNAPSHOT_SNIP) !== 0) snapshotTruncated = true;
+      if ((flags & SNAPSHOT_END) !== 0) {
+        snapshotComplete = true;
+        if (eventSymbol) completedSymbols.add(eventSymbol);
+      }
+      if ((flags & SNAPSHOT_SNIP) !== 0) {
+        snapshotTruncated = true;
+        if (eventSymbol) truncatedSymbols.add(eventSymbol);
+      }
       if ((flags & REMOVE_EVENT) !== 0) continue;
 
       const timestamp = Number(row[4]);
@@ -340,6 +370,7 @@ export function parseDxlinkCandleData(data: unknown): {
         continue;
       }
       candles.push({
+        eventSymbol,
         index: String(row[3]),
         timestamp,
         flags,
@@ -357,7 +388,13 @@ export function parseDxlinkCandleData(data: unknown): {
     }
   }
 
-  return { candles, snapshotComplete, snapshotTruncated };
+  return {
+    candles,
+    snapshotComplete,
+    snapshotTruncated,
+    completedSymbols: [...completedSymbols],
+    truncatedSymbols: [...truncatedSymbols],
+  };
 }
 
 function decodeMessageData(data: unknown): Promise<string> {
@@ -545,17 +582,55 @@ export class TastytradeHistoricalCandlesClient {
   async getHistoricalCandles(
     input: HistoricalCandlesInput,
   ): Promise<HistoricalCandlesResult> {
-    const symbol = input.symbol.trim().toUpperCase();
-    const streamerSymbol = (input.streamer_symbol ?? symbol).trim();
-    if (!symbol || !streamerSymbol) {
-      throw new Error("symbol and streamer_symbol must be non-empty.");
-    }
-    if (/[{}]/.test(streamerSymbol)) {
-      throw new Error(
-        "streamer_symbol must not include Candle interval attributes.",
-      );
-    }
+    const [result] = await this.getHistoricalCandlesBatch({
+      instruments: [
+        {
+          symbol: input.symbol,
+          streamer_symbol: input.streamer_symbol,
+          instrument_type: input.instrument_type,
+        },
+      ],
+      interval: input.interval,
+      start_time: input.start_time,
+      end_time: input.end_time,
+      session: input.session,
+      timeout_ms: input.timeout_ms,
+      max_candles: input.max_candles,
+    });
+    return result;
+  }
 
+  async getHistoricalCandlesBatch(
+    input: HistoricalCandlesBatchInput,
+  ): Promise<HistoricalCandlesResult[]> {
+    if (
+      !Array.isArray(input.instruments) ||
+      input.instruments.length < 1 ||
+      input.instruments.length > 100
+    ) {
+      throw new Error("instruments must contain between 1 and 100 items.");
+    }
+    const instruments = input.instruments.map((instrument, index) => {
+      const symbol = instrument.symbol.trim().toUpperCase();
+      const streamerSymbol = (
+        instrument.streamer_symbol ?? symbol
+      ).trim();
+      if (!symbol || !streamerSymbol) {
+        throw new Error(
+          `instruments[${index}].symbol and streamer_symbol must be non-empty.`,
+        );
+      }
+      if (/[{}]/.test(streamerSymbol)) {
+        throw new Error(
+          `instruments[${index}].streamer_symbol must not include Candle interval attributes.`,
+        );
+      }
+      return {
+        symbol,
+        streamerSymbol,
+        instrumentType: instrument.instrument_type,
+      };
+    });
     const interval = input.interval.trim();
     const intervalMs = intervalMilliseconds(interval);
     const start = normalizeTimestamp(input.start_time, "start_time");
@@ -590,96 +665,103 @@ export class TastytradeHistoricalCandlesClient {
       );
     }
     const session = sessionConfiguration(input.session);
-    const quoteToken = await this.getQuoteToken();
-    const candleSymbol =
+    const candleSymbols = instruments.map((instrument) =>
       session.kind === "REGULAR"
-        ? `${streamerSymbol}{=${interval},a=s,tho=true}`
-        : `${streamerSymbol}{=${interval}}`;
+        ? `${instrument.streamerSymbol}{=${interval},a=s,tho=true}`
+        : `${instrument.streamerSymbol}{=${interval}}`,
+    );
+    if (new Set(candleSymbols).size !== candleSymbols.length) {
+      throw new Error("instruments must have unique streamer_symbol values.");
+    }
+    const quoteToken = await this.getQuoteToken();
     const snapshot = await this.readSnapshot({
       quoteToken,
-      candleSymbol,
+      candleSymbols,
       startMs,
       timeoutMs,
       maxCandles,
     });
 
-    const byIndex = new Map<string, RawCandle>();
-    for (const candle of snapshot.candles) byIndex.set(candle.index, candle);
-    const filtered = [...byIndex.values()]
-      .filter(
-        (candle) =>
-          candle.timestamp >= startMs &&
-          candle.timestamp <= endMs &&
-          isWithinSession(candle.timestamp, session),
-      )
-      .sort((left, right) => left.timestamp - right.timestamp);
-    if (filtered.length > maxCandles) {
-      throw new Error(
-        `DXLink returned ${filtered.length} candles, exceeding max_candles=${maxCandles}; narrow the requested range.`,
-      );
-    }
+    const completedSymbols = new Set(snapshot.completedSymbols);
+    const truncatedSymbols = new Set(snapshot.truncatedSymbols);
+    return instruments.map((instrument, instrumentIndex) => {
+      const candleSymbol = candleSymbols[instrumentIndex];
+      const byIndex = new Map<string, RawCandle>();
+      for (const candle of snapshot.candles) {
+        if (candle.eventSymbol === candleSymbol) {
+          byIndex.set(candle.index, candle);
+        }
+      }
+      const filtered = [...byIndex.values()]
+        .filter(
+          (candle) =>
+            candle.timestamp >= startMs &&
+            candle.timestamp <= endMs &&
+            isWithinSession(candle.timestamp, session),
+        )
+        .sort((left, right) => left.timestamp - right.timestamp);
+      const candles: HistoricalCandle[] = filtered.map((candle) => ({
+        source_time: new Date(candle.timestamp).toISOString(),
+        open: candle.open!,
+        high: candle.high!,
+        low: candle.low!,
+        close: candle.close!,
+        volume: candle.volume,
+        vwap: candle.vwap,
+        bid_volume: candle.bidVolume,
+        ask_volume: candle.askVolume,
+        implied_volatility: candle.impliedVolatility,
+        open_interest: candle.openInterest,
+      }));
+      const warnings = [
+        ...gapWarnings(candles, intervalMs, session),
+        ...edgeCoverageWarnings(candles, startMs, endMs, intervalMs),
+      ];
+      if (session.kind === "CUSTOM") {
+        warnings.push(
+          "CUSTOM_SESSION_FILTERS_COMPLETE_SOURCE_BARS_WITHOUT_REAGGREGATION",
+        );
+      }
+      if (truncatedSymbols.has(candleSymbol)) {
+        warnings.push("DXLINK_SNAPSHOT_SNIPPED_NARROW_TIME_RANGE");
+      }
+      if (!completedSymbols.has(candleSymbol)) {
+        warnings.push("DXLINK_SNAPSHOT_END_NOT_OBSERVED");
+      }
+      if (candles.length === 0) {
+        warnings.push("NO_CANDLES_IN_REQUESTED_RANGE_AND_SESSION");
+      }
 
-    const candles: HistoricalCandle[] = filtered.map((candle) => ({
-      source_time: new Date(candle.timestamp).toISOString(),
-      open: candle.open!,
-      high: candle.high!,
-      low: candle.low!,
-      close: candle.close!,
-      volume: candle.volume,
-      vwap: candle.vwap,
-      bid_volume: candle.bidVolume,
-      ask_volume: candle.askVolume,
-      implied_volatility: candle.impliedVolatility,
-      open_interest: candle.openInterest,
-    }));
-    const warnings = [
-      ...gapWarnings(candles, intervalMs, session),
-      ...edgeCoverageWarnings(candles, startMs, endMs, intervalMs),
-    ];
-    if (session.kind === "CUSTOM") {
-      warnings.push(
-        "CUSTOM_SESSION_FILTERS_COMPLETE_SOURCE_BARS_WITHOUT_REAGGREGATION",
-      );
-    }
-    if (snapshot.snapshotTruncated) {
-      warnings.push("DXLINK_SNAPSHOT_SNIPPED_NARROW_TIME_RANGE");
-    }
-    if (!snapshot.snapshotComplete) {
-      warnings.push("DXLINK_SNAPSHOT_END_NOT_OBSERVED");
-    }
-    if (candles.length === 0) {
-      warnings.push("NO_CANDLES_IN_REQUESTED_RANGE_AND_SESSION");
-    }
-
-    return {
-      contract_version: "1.0.0",
-      symbol,
-      streamer_symbol: streamerSymbol,
-      instrument_type: input.instrument_type,
-      interval,
-      requested_range: { start, end },
-      actual_range:
-        candles.length === 0
-          ? null
-          : {
-              start: candles[0].source_time,
-              end: candles.at(-1)!.source_time,
-            },
-      timezone: session.timezone,
-      session: session.kind,
-      source: "tastytrade-dxlink",
-      source_timestamp_unit: "epoch_milliseconds",
-      snapshot_complete: snapshot.snapshotComplete,
-      snapshot_truncated: snapshot.snapshotTruncated,
-      resampled: false,
-      candles,
-      warnings,
-    };
+      return {
+        contract_version: "1.0.0",
+        symbol: instrument.symbol,
+        streamer_symbol: instrument.streamerSymbol,
+        instrument_type: instrument.instrumentType,
+        interval,
+        requested_range: { start, end },
+        actual_range:
+          candles.length === 0
+            ? null
+            : {
+                start: candles[0].source_time,
+                end: candles.at(-1)!.source_time,
+              },
+        timezone: session.timezone,
+        session: session.kind,
+        source: "tastytrade-dxlink",
+        source_timestamp_unit: "epoch_milliseconds",
+        snapshot_complete: completedSymbols.has(candleSymbol),
+        snapshot_truncated: truncatedSymbols.has(candleSymbol),
+        resampled: false,
+        candles,
+        warnings,
+      };
+    });
   }
 
   private readSnapshot(input: {
     quoteToken: QuoteToken;
-    candleSymbol: string;
+    candleSymbols: string[];
     startMs: number;
     timeoutMs: number;
     maxCandles: number;
@@ -687,10 +769,14 @@ export class TastytradeHistoricalCandlesClient {
     candles: RawCandle[];
     snapshotComplete: boolean;
     snapshotTruncated: boolean;
+    completedSymbols: string[];
+    truncatedSymbols: string[];
   }> {
     return new Promise((resolve, reject) => {
       const socket = this.socketFactory(input.quoteToken.url);
       const candles: RawCandle[] = [];
+      const completedSymbols = new Set<string>();
+      const truncatedSymbols = new Set<string>();
       let subscribed = false;
       let settled = false;
       let keepalive: ReturnType<typeof setInterval> | null = null;
@@ -711,7 +797,12 @@ export class TastytradeHistoricalCandlesClient {
         if (settled) return;
         settled = true;
         cleanup();
-        resolve({ candles, ...result });
+        resolve({
+          candles,
+          completedSymbols: [...completedSymbols],
+          truncatedSymbols: [...truncatedSymbols],
+          ...result,
+        });
       };
       const fail = (error: Error) => {
         if (settled) return;
@@ -808,15 +899,13 @@ export class TastytradeHistoricalCandlesClient {
                   type: "FEED_SUBSCRIPTION",
                   channel: 3,
                   reset: true,
-                  add: [
-                    {
-                      type: "Candle",
-                      symbol: input.candleSymbol,
-                      // Production DXLink currently expects milliseconds. The
-                      // published AsyncAPI description incorrectly says seconds.
-                      fromTime: input.startMs,
-                    },
-                  ],
+                  add: input.candleSymbols.map((symbol) => ({
+                    type: "Candle",
+                    symbol,
+                    // Production DXLink expects milliseconds despite the
+                    // published AsyncAPI description saying seconds.
+                    fromTime: input.startMs,
+                  })),
                 });
               } else if (
                 message.type === "FEED_DATA" &&
@@ -835,22 +924,33 @@ export class TastytradeHistoricalCandlesClient {
                   return;
                 }
                 candles.push(...parsed.candles);
-                if (parsed.snapshotComplete || parsed.snapshotTruncated) {
+                for (const symbol of parsed.completedSymbols) {
+                  completedSymbols.add(symbol);
+                }
+                for (const symbol of parsed.truncatedSymbols) {
+                  truncatedSymbols.add(symbol);
+                }
+                const finished = input.candleSymbols.every(
+                  (symbol) =>
+                    completedSymbols.has(symbol) ||
+                    truncatedSymbols.has(symbol),
+                );
+                if (finished) {
                   if (socket.readyState === DXLINK_OPEN) {
                     send({
                       type: "FEED_SUBSCRIPTION",
                       channel: 3,
-                      remove: [
-                        {
-                          type: "Candle",
-                          symbol: input.candleSymbol,
-                        },
-                      ],
+                      remove: input.candleSymbols.map((symbol) => ({
+                        type: "Candle",
+                        symbol,
+                      })),
                     });
                   }
                   finish({
-                    snapshotComplete: parsed.snapshotComplete,
-                    snapshotTruncated: parsed.snapshotTruncated,
+                    snapshotComplete: input.candleSymbols.every((symbol) =>
+                      completedSymbols.has(symbol),
+                    ),
+                    snapshotTruncated: truncatedSymbols.size > 0,
                   });
                 }
               } else if (

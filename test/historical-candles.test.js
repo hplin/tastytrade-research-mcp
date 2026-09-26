@@ -6,10 +6,15 @@ import {
 
 const FIELDS_PER_ROW = 17;
 
-function row(time, flags = 0, price = "100") {
+function row(
+  time,
+  flags = 0,
+  price = "100",
+  eventSymbol = "SPY{=1h}",
+) {
   return [
     "Candle",
-    "SPY{=1h}",
+    eventSymbol,
     flags,
     String(time),
     time,
@@ -28,8 +33,8 @@ function row(time, flags = 0, price = "100") {
   ];
 }
 
-function marker(time) {
-  const value = row(time, 10);
+function marker(time, eventSymbol = "SPY{=1h}") {
+  const value = row(time, 10, "100", eventSymbol);
   for (let index = 7; index < FIELDS_PER_ROW; index += 1) {
     value[index] = "NaN";
   }
@@ -129,9 +134,9 @@ describe("DXLink candle normalization", () => {
       "2026-09-24T20:00:00.000Z",
     ].map(Date.parse);
     const { client, getSocket } = clientWithRows([
-      row(times[1]),
-      row(times[2]),
-      marker(times[0] - 1),
+      row(times[1], 0, "100", "SPY{=1h,a=s,tho=true}"),
+      row(times[2], 0, "100", "SPY{=1h,a=s,tho=true}"),
+      marker(times[0] - 1, "SPY{=1h,a=s,tho=true}"),
     ]);
 
     const result = await client.getHistoricalCandles({
@@ -158,6 +163,67 @@ describe("DXLink candle normalization", () => {
     expect(subscription.add[0].symbol).toBe(
       "SPY{=1h,a=s,tho=true}",
     );
+  });
+
+  test("retrieves multiple historical candle symbols in one snapshot", async () => {
+    const firstSymbol = ".SPXW260922C7900{=5m}";
+    const secondSymbol = ".SPXW260922P7400{=5m}";
+    const firstTime = Date.parse("2026-08-25T13:55:00.000Z");
+    const secondTime = Date.parse("2026-08-25T13:50:00.000Z");
+    const { client, getSocket } = clientWithRows([
+      row(firstTime, 4, "24.52", firstSymbol),
+      marker(firstTime - 1, firstSymbol),
+      row(secondTime, 4, "35.86", secondSymbol),
+      marker(secondTime - 1, secondSymbol),
+    ]);
+
+    const results = await client.getHistoricalCandlesBatch({
+      instruments: [
+        {
+          symbol: "SPXW  260922C07900000",
+          streamer_symbol: ".SPXW260922C7900",
+          instrument_type: "OPTION",
+        },
+        {
+          symbol: "SPXW  260922P07400000",
+          streamer_symbol: ".SPXW260922P7400",
+          instrument_type: "OPTION",
+        },
+      ],
+      interval: "5m",
+      start_time: "2026-08-25T13:30:00.000Z",
+      end_time: "2026-08-25T14:30:00.000Z",
+      session: { kind: "ALL" },
+    });
+
+    expect(results).toHaveLength(2);
+    expect(results[0].candles).toEqual([
+      expect.objectContaining({
+        source_time: "2026-08-25T13:55:00.000Z",
+        close: "24.52",
+      }),
+    ]);
+    expect(results[1].candles).toEqual([
+      expect.objectContaining({
+        source_time: "2026-08-25T13:50:00.000Z",
+        close: "35.86",
+      }),
+    ]);
+    const subscription = getSocket().sent.find(
+      (message) => message.type === "FEED_SUBSCRIPTION" && message.add,
+    );
+    expect(subscription.add).toEqual([
+      {
+        type: "Candle",
+        symbol: firstSymbol,
+        fromTime: Date.parse("2026-08-25T13:30:00.000Z"),
+      },
+      {
+        type: "Candle",
+        symbol: secondSymbol,
+        fromTime: Date.parse("2026-08-25T13:30:00.000Z"),
+      },
+    ]);
   });
 
   test("supports a non-standard overnight session", async () => {

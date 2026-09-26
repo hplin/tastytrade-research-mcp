@@ -32,7 +32,7 @@ The project is intentionally separate from the official
 | Tool | Purpose |
 | --- | --- |
 | `tastytrade_price_option_package` | Price verticals, iron condors, and double diagonals with explicit native/synthetic provenance |
-| `tastytrade_discover_historical_spx_candidates` | Recover checkpoint-safe SPX contracts from a caller-supplied Backtester selector grid, failing closed unless selection occurred exactly at `as_of` |
+| `tastytrade_discover_historical_spx_candidates` | Reconstruct timestamp-safe historical SPXW candidates from completed DXLink evidence, with exact-timestamp Backtester fallback |
 | `tastytrade_prepare_spx_spread` | Deterministically normalize SPX legs without calling an upstream service |
 | `tastytrade_simulate_spx_spread` | Run exact-leg SPX historical simulation and normalize its result |
 | `tastytrade_create_spx_spread_backtest` | Submit supported SPX structures through relative Backtester selectors |
@@ -105,8 +105,8 @@ entry decisions.
 ## Historical SPX candidate discovery
 
 `tastytrade_discover_historical_spx_candidates` is the
-`REGRESSION_RESEARCH` bridge between selector-based Backtester evidence and
-exact-leg simulation.
+`REGRESSION_RESEARCH` bridge between timestamp-safe selector evidence and
+exact contract identity.
 
 The official option-chain and REST quote endpoints do not document an
 historical `as_of` parameter. Backtester logs currently expose exact selected
@@ -116,22 +116,31 @@ time-of-day field, and a live request containing undocumented
 `entryTime: "14:30:00Z"` was silently ignored: the SPX trial still opened at
 `19:45:00Z`.
 
-The adapter therefore:
+For `DELTA` and `PERCENTAGE_OTM`, the adapter reconstructs a bounded SPXW
+universe from generated OCC/streamer symbols and completed 5-minute DXLink
+candles. It enforces `bar start + interval <= as_of`, a 60-minute option
+observation limit, timestamp-aligned call/put parity for the forward, and
+contract-candle IV for Black-76-style delta. Selection is deterministic by
+selector error, observation age, DTE distance, and strike.
 
-- runs one bounded Backtester job per selector/side;
-- never sends or trusts `entryTime`;
-- accepts only a provider trial and opening order whose timestamps equal
-  `as_of`;
-- rejects both stale prior selections and later same-day selections;
-- uses the recovered provider symbol for exact point-in-time simulation;
-- returns `HISTORICAL_SELECTOR_CANDIDATE_SET`, never a full-chain snapshot;
-- excludes all future trials, closes, P/L, and outcome fields; and
-- keeps bid/ask, IV, skew, term structure, OI, and volume unavailable.
+Generated contract identity becomes eligible only when DXLink returns
+historical evidence for that exact symbol. The result preserves checkpoint
+selection time, observation age, price, contract IV, reconstructed delta,
+volume/OI when present, OCC identity, and field-level provenance.
 
-For checkpoints such as 07:30 PT, where Backtester selection occurs later,
-the result is `NOT_AVAILABLE`. Callers, including
-`spx-spread-historical-replay`, must preserve that fail-closed result rather
-than substitute a prior-day contract.
+Exact-timestamp Backtester selection remains the fallback for unsupported
+selectors or insufficient reconstruction evidence. It never sends or trusts
+`entryTime`, and it accepts only a trial and opening order exactly at
+`as_of`. Stale and future trials remain fail-closed.
+
+The capability returns `HISTORICAL_SELECTOR_CANDIDATE_SET`, never a
+full-chain snapshot. Historical bid/ask, ATM IV surface, skew, and term
+structure remain unavailable. Exact symbols are `/simulate-trade` compatible,
+but the capability separately reports whether an exact simulation snapshot
+exists at the arbitrary checkpoint.
+
+The live 2026-08-25 07:30 PT smoke test returns four timestamp-safe CALL/PUT
+Delta-20 and 1%-OTM candidates without creating Backtester jobs.
 
 The full provider findings, contract, anti-lookahead rules, and limitations
 are documented in

@@ -1,0 +1,162 @@
+{
+  "metadata": {
+    "description": "Sanitized DXLink candle evidence for deterministic SPXW candidate reconstruction at the 2026-08-25 07:30 PT checkpoint.",
+    "as_of": "2026-08-25T14:30:00.000Z",
+    "interval": "5m",
+    "expiration_date": "2026-09-22"
+  },
+  "underlying": {
+    "symbol": "SPX",
+    "streamer_symbol": "SPX",
+    "candle": {
+      "event_type": "Candle",
+      "event_symbol": "SPX{=5m}",
+      "source_time": "2026-08-25T14:25:00.000Z",
+      "open": "7660.91",
+      "high": "7666.42",
+      "low": "7659.67",
+      "close": "7664.96",
+      "volume": "2859431",
+      "vwap": "7663.18",
+      "bid_volume": null,
+      "ask_volume": null,
+      "implied_volatility": "0.156",
+      "open_interest": null
+    }
+  },
+  "options": [
+    {
+      "symbol": "SPXW  260922C07700000",
+      "streamer_symbol": ".SPXW260922C7700",
+      "candle": {
+        "event_type": "Candle",
+        "event_symbol": ".SPXW260922C7700{=5m}",
+        "source_time": "2026-08-25T14:05:00.000Z",
+        "open": "97.20",
+        "high": "98.10",
+        "low": "97.20",
+        "close": "97.84",
+        "volume": "8",
+        "vwap": "97.76",
+        "bid_volume": null,
+        "ask_volume": null,
+        "implied_volatility": "0.125",
+        "open_interest": "544"
+      }
+    },
+    {
+      "symbol": "SPXW  260922P07700000",
+      "streamer_symbol": ".SPXW260922P7700",
+      "candle": {
+        "event_type": "Candle",
+        "event_symbol": ".SPXW260922P7700{=5m}",
+        "source_time": "2026-08-25T14:05:00.000Z",
+        "open": "109.10",
+        "high": "110.05",
+        "low": "109.10",
+        "close": "109.55",
+        "volume": "11",
+        "vwap": "109.62",
+        "bid_volume": null,
+        "ask_volume": null,
+        "implied_volatility": "0.128",
+        "open_interest": "613"
+      }
+    },
+    {
+      "symbol": "SPXW  260922C07900000",
+      "streamer_symbol": ".SPXW260922C7900",
+      "candle": {
+        "event_type": "Candle",
+        "event_symbol": ".SPXW260922C7900{=5m}",
+        "source_time": "2026-08-25T13:55:00.000Z",
+        "open": "24.10",
+        "high": "24.80",
+        "low": "24.10",
+        "close": "24.52",
+        "volume": "14",
+        "vwap": "24.49",
+        "bid_volume": null,
+        "ask_volume": null,
+        "implied_volatility": "0.1083390992764817",
+        "open_interest": "1298"
+      }
+    },
+    {
+      "symbol": "SPXW  260922P07425000",
+      "streamer_symbol": ".SPXW260922P7425",
+      "candle": {
+        "event_type": "Candle",
+        "event_symbol": ".SPXW260922P7425{=5m}",
+        "source_time": "2026-08-25T13:50:00.000Z",
+        "open": "38.10",
+        "high": "38.90",
+        "low": "38.10",
+        "close": "38.50",
+        "volume": "22",
+        "vwap": "38.44",
+        "bid_volume": null,
+        "ask_volume": null,
+        "implied_volatility": "0.1577087636780021",
+        "open_interest": "2115"
+      }
+    },
+    {
+      "symbol": "SPXW  260922C07740000",
+      "streamer_symbol": ".SPXW260922C7740",
+      "candle": {
+        "event_type": "Candle",
+        "event_symbol": ".SPXW260922C7740{=5m}",
+        "source_time": "2026-08-25T13:45:00.000Z",
+        "open": "81.40",
+        "high": "82.65",
+        "low": "81.40",
+        "close": "82.09",
+        "volume": "7",
+        "vwap": "82.03",
+        "bid_volume": null,
+        "ask_volume": null,
+        "implied_volatility": "0.1192894253387136",
+        "open_interest": "682"
+      }
+    },
+    {
+      "symbol": "SPXW  260922P07590000",
+      "streamer_symbol": ".SPXW260922P7590",
+      "candle": {
+        "event_type": "Candle",
+        "event_symbol": ".SPXW260922P7590{=5m}",
+        "source_time": "2026-08-25T14:05:00.000Z",
+        "open": "70.85",
+        "high": "71.90",
+        "low": "70.85",
+        "close": "71.58",
+        "volume": "18",
+        "vwap": "71.51",
+        "bid_volume": null,
+        "ask_volume": null,
+        "implied_volatility": "0.135",
+        "open_interest": "1926"
+      }
+    },
+    {
+      "symbol": "SPXW  260922C07925000",
+      "streamer_symbol": ".SPXW260922C7925",
+      "candle": {
+        "event_type": "Candle",
+        "event_symbol": ".SPXW260922C7925{=5m}",
+        "source_time": "2026-08-25T14:30:00.000Z",
+        "open": "19.10",
+        "high": "19.60",
+        "low": "19.10",
+        "close": "19.45",
+        "volume": "5",
+        "vwap": "19.41",
+        "bid_volume": null,
+        "ask_volume": null,
+        "implied_volatility": "0.13",
+        "open_interest": "931"
+      }
+    }
+  ]
+}

@@ -14,7 +14,9 @@ import {
 } from "./backtester-client.js";
 import {
   TastytradeHistoricalCandlesClient,
+  type HistoricalCandlesBatchInput,
   type HistoricalCandlesInput,
+  type HistoricalCandlesResult,
 } from "./historical-candles.js";
 import {
   discoverHistoricalSpxCandidates,
@@ -554,7 +556,7 @@ export const TOOLS: Tool[] = [
   {
     name: "tastytrade_discover_historical_spx_candidates",
     description:
-      "Discover checkpoint-safe historical SPX contracts from a caller-supplied Backtester selector grid. Backtester entry time is not configurable, so a contract is returned only when the provider trial and opening order occurred exactly at as_of; otherwise the tool fails closed without stale or future substitution.",
+      "Discover checkpoint-safe historical SPX contracts from a selector grid. DELTA and PERCENTAGE_OTM selectors are deterministically reconstructed from completed DXLink SPX/SPXW candles at or before as_of; exact-timestamp Backtester selection remains a fallback, and stale or future evidence always fails closed.",
     inputSchema: HISTORICAL_SPX_CANDIDATES_SCHEMA,
   },
   {
@@ -611,7 +613,12 @@ export type BacktesterService = {
 };
 
 export type HistoricalCandlesService = {
-  getHistoricalCandles(request: HistoricalCandlesInput): Promise<unknown>;
+  getHistoricalCandles(
+    request: HistoricalCandlesInput,
+  ): Promise<HistoricalCandlesResult>;
+  getHistoricalCandlesBatch?(
+    request: HistoricalCandlesBatchInput,
+  ): Promise<HistoricalCandlesResult[]>;
 };
 
 export type ResearchServices = {
@@ -656,6 +663,14 @@ export function createResearchServer(
   const backtester = services.backtester ?? new TastytradeBacktesterClient();
   const candles =
     services.candles ?? new TastytradeHistoricalCandlesClient();
+  const reconstructionCandles = candles.getHistoricalCandlesBatch
+    ? {
+        getHistoricalCandles: (request: HistoricalCandlesInput) =>
+          candles.getHistoricalCandles(request),
+        getHistoricalCandlesBatch: (request: HistoricalCandlesBatchInput) =>
+          candles.getHistoricalCandlesBatch!(request),
+      }
+    : undefined;
   const server = new Server(
     {
       name: "tastytrade-research-mcp",
@@ -724,6 +739,7 @@ export function createResearchServer(
           await discoverHistoricalSpxCandidates(
             backtester,
             requestArg<HistoricalSpxCandidatesInput>(args),
+            reconstructionCandles,
           ),
         );
       case "tastytrade_prepare_spx_spread":

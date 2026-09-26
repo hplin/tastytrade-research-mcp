@@ -15,6 +15,7 @@ const fixture = loadFixture("spx-candidate-2026-04-15.json");
 const entryTimeIgnoredFixture = loadFixture(
   "spx-candidate-entry-time-ignored-2026-08-25.json",
 );
+const pathBFixture = loadFixture("spx-candidate-path-b-2026-08-25.json");
 
 const CHECKPOINT_REQUEST = {
   underlying: "SPX",
@@ -48,12 +49,92 @@ const ENTRY_TIME_IGNORED_REQUEST = {
   references: { checkpoint_id: "spx-2026-08-25-0730-pt" },
 };
 
+const PATH_B_REQUEST = {
+  underlying: "SPX",
+  as_of: "2026-08-25T14:30:00.000Z",
+  min_dte: 21,
+  max_dte: 35,
+  sides: ["CALL", "PUT"],
+  selector_grid: [
+    {
+      method: "DELTA",
+      value: "20",
+      days_until_expiration: 28,
+    },
+    {
+      method: "PERCENTAGE_OTM",
+      value: "0.01",
+      days_until_expiration: 28,
+    },
+  ],
+  lookback_calendar_days: 0,
+  phase: "REGRESSION_RESEARCH",
+  references: { checkpoint_id: "spx-2026-08-25-0730-pt" },
+};
+
 function fixtureBacktester(source = fixture, logs = source.logs) {
   return {
     createBacktest: jest.fn(async () => source.create_response),
     getBacktest: jest.fn(async () => source.create_response),
     getBacktestLogs: jest.fn(async () => logs),
     simulateTrade: jest.fn(async () => source.simulation ?? { snapshots: [] }),
+  };
+}
+
+function candleResult(symbol, streamerSymbol, candles) {
+  return {
+    contract_version: "1.0.0",
+    symbol,
+    streamer_symbol: streamerSymbol,
+    instrument_type: symbol === "SPX" ? "INDEX" : "OPTION",
+    interval: "5m",
+    requested_range: {
+      start: "2026-08-25T13:25:00.000Z",
+      end: "2026-08-25T14:30:00.000Z",
+    },
+    actual_range:
+      candles.length === 0
+        ? null
+        : {
+            start: candles[0].source_time,
+            end: candles.at(-1).source_time,
+          },
+    timezone: "UTC",
+    session: "ALL",
+    source: "tastytrade-dxlink",
+    source_timestamp_unit: "epoch_milliseconds",
+    candles,
+    snapshot_complete: true,
+    snapshot_truncated: false,
+    resampled: false,
+    warnings: [],
+  };
+}
+
+function fixturePathBCandles(source = pathBFixture) {
+  const bySymbol = new Map(
+    source.options.map((option) => [option.symbol, option]),
+  );
+
+  return {
+    getHistoricalCandles: jest.fn(async (input) => {
+      expect(input.symbol).toBe("SPX");
+      return candleResult(
+        source.underlying.symbol,
+        source.underlying.streamer_symbol,
+        [structuredClone(source.underlying.candle)],
+      );
+    }),
+    getHistoricalCandlesBatch: jest.fn(async (input) =>
+      input.instruments.map((instrument) => {
+        const option = bySymbol.get(instrument.symbol);
+        return candleResult(
+          instrument.symbol,
+          instrument.streamer_symbol,
+          option ? [structuredClone(option.candle)] : [],
+        );
+      }),
+    ),
   };
 }
 
@@ -114,6 +195,7 @@ describe("historical SPX candidate discovery", () => {
         full_historical_chain: false,
         exact_provider_contract_identity: true,
         exact_leg_simulation: true,
+        exact_checkpoint_simulation: true,
         backtester_entry_time_configurable: false,
         exact_checkpoint_selection: true,
         forward_outcomes_included: false,
@@ -224,6 +306,215 @@ describe("historical SPX candidate discovery", () => {
         "CALL:DELTA:20:28:FUTURE_TRIALS_EXCLUDED:1",
         "CALL:DELTA:20:28:NO_BACKTEST_TRIAL_AT_EXACT_AS_OF",
       ]),
+    );
+  });
+
+  test("reconstructs timestamp-safe 07:30 candidates from DXLink evidence", async () => {
+    const backtester = fixtureBacktester(entryTimeIgnoredFixture);
+    const candles = fixturePathBCandles();
+    const result = await discoverHistoricalSpxCandidates(
+      backtester,
+      PATH_B_REQUEST,
+      candles,
+    );
+
+    expect(result).toMatchObject({
+      status: "COMPLETE",
+      as_of: "2026-08-25T14:30:00.000Z",
+      capabilities: {
+        exact_provider_contract_identity: true,
+        exact_leg_simulation: true,
+        exact_checkpoint_simulation: false,
+        exact_checkpoint_selection: true,
+        deterministic_checkpoint_reconstruction: true,
+        historical_contract_universe_reconstructed: true,
+      },
+    });
+    expect(result.contracts).toHaveLength(4);
+    expect(result.contracts).toEqual([
+      expect.objectContaining({
+        occ_symbol: "SPXW  260922C07900000",
+        provider_symbol: "SPXW  260922C07900000",
+        simulation_symbol: "SPXW  260922C07900000",
+        expiration: "2026-09-22T20:00:00.000Z",
+        strike: "7900",
+        option_side: "CALL",
+        selected_at: "2026-08-25T14:30:00.000Z",
+        selection_method: "DELTA",
+        selector_value: "20",
+        requested_dte: 28,
+        selected_dte: 28,
+        dte_at_as_of: 28,
+        historical_price: "24.52",
+        selected_historical_iv: "0.1083390992764817",
+        historical_volume: "14",
+        historical_open_interest: "1298",
+        underlying_price: "7664.96",
+        observation_age_ms: 1_800_000,
+      }),
+      expect.objectContaining({
+        occ_symbol: "SPXW  260922C07740000",
+        strike: "7740",
+        option_side: "CALL",
+        selected_at: "2026-08-25T14:30:00.000Z",
+        selection_method: "PERCENTAGE_OTM",
+        selector_value: "0.01",
+        observation_age_ms: 2_400_000,
+      }),
+      expect.objectContaining({
+        occ_symbol: "SPXW  260922P07425000",
+        strike: "7425",
+        option_side: "PUT",
+        selected_at: "2026-08-25T14:30:00.000Z",
+        selection_method: "DELTA",
+        selector_value: "20",
+        observation_age_ms: 2_100_000,
+      }),
+      expect.objectContaining({
+        occ_symbol: "SPXW  260922P07590000",
+        strike: "7590",
+        option_side: "PUT",
+        selected_at: "2026-08-25T14:30:00.000Z",
+        selection_method: "PERCENTAGE_OTM",
+        selector_value: "0.01",
+        observation_age_ms: 1_200_000,
+      }),
+    ]);
+    expect(
+      result.contracts
+        .filter((candidate) => candidate.selection_method === "DELTA")
+        .every(
+          (candidate) =>
+            Math.abs(Math.abs(Number(candidate.selected_historical_delta)) - 20) <
+            2,
+        ),
+    ).toBe(true);
+    expect(result.attempts.every((attempt) => attempt.status === "RECONSTRUCTED_CANDIDATE_FOUND")).toBe(
+      true,
+    );
+    expect(result.warnings).toEqual(
+      expect.arrayContaining([
+        "HISTORICAL_CONTRACT_UNIVERSE_RECONSTRUCTED_FROM_DXLINK",
+        "OPTION_CANDLE_SOURCE_TIME_IS_INTERVAL_START",
+        "DELTA_DERIVED_FROM_CANDLE_IV_AND_PUT_CALL_PARITY_FORWARD",
+      ]),
+    );
+    expect(result.warnings).not.toContain(
+      "BACKTEST_LOG_IDENTITY_FIELDS_ARE_UNDOCUMENTED",
+    );
+    expect(
+      result.provenance.every(
+        (item) => Date.parse(item.source_timestamp) <= Date.parse(result.as_of),
+      ),
+    ).toBe(true);
+    expect(backtester.createBacktest).not.toHaveBeenCalled();
+    expect(backtester.simulateTrade).not.toHaveBeenCalled();
+    expect(candles.getHistoricalCandles).toHaveBeenCalledTimes(1);
+    expect(candles.getHistoricalCandlesBatch).toHaveBeenCalled();
+    expect(
+      candles.getHistoricalCandlesBatch.mock.calls.every(
+        ([input]) =>
+          input.instruments.length <= 20 &&
+          Date.parse(input.end_time) <= Date.parse(PATH_B_REQUEST.as_of),
+      ),
+    ).toBe(true);
+    expect(
+      result.contracts.some(
+        (candidate) => candidate.occ_symbol === "SPXW  260922C07925000",
+      ),
+    ).toBe(false);
+  });
+
+  test("fails reconstructed delta closed when historical IV is unavailable", async () => {
+    const source = structuredClone(pathBFixture);
+    for (const option of source.options) {
+      option.candle.implied_volatility = null;
+    }
+    const backtester = fixtureBacktester(entryTimeIgnoredFixture);
+    const result = await discoverHistoricalSpxCandidates(
+      backtester,
+      {
+        ...PATH_B_REQUEST,
+        sides: ["CALL"],
+        selector_grid: [PATH_B_REQUEST.selector_grid[0]],
+      },
+      fixturePathBCandles(source),
+    );
+
+    expect(result.status).toBe("NOT_AVAILABLE");
+    expect(result.contracts).toEqual([]);
+    expect(result.warnings).toContain(
+      "CALL:DELTA:20:28:NO_TIMESTAMP_SAFE_RECONSTRUCTED_CANDIDATE",
+    );
+  });
+
+  test("uses an option bar only after the full five-minute interval completes", async () => {
+    const source = structuredClone(pathBFixture);
+    const future = source.options.find(
+      (option) => option.symbol === "SPXW  260922C07925000",
+    );
+    future.candle.source_time = "2026-08-25T14:25:00.000Z";
+    const result = await discoverHistoricalSpxCandidates(
+      fixtureBacktester(entryTimeIgnoredFixture),
+      {
+        ...PATH_B_REQUEST,
+        sides: ["CALL"],
+        selector_grid: [PATH_B_REQUEST.selector_grid[0]],
+      },
+      fixturePathBCandles(source),
+    );
+
+    expect(result.status).toBe("COMPLETE");
+    expect(result.contracts[0]).toMatchObject({
+      occ_symbol: "SPXW  260922C07925000",
+      selected_at: PATH_B_REQUEST.as_of,
+      observation_age_ms: 0,
+    });
+  });
+
+  test("rejects reconstructed option evidence older than sixty minutes", async () => {
+    const source = structuredClone(pathBFixture);
+    const candidate = source.options.find(
+      (option) => option.symbol === "SPXW  260922C07900000",
+    );
+    candidate.candle.source_time = "2026-08-25T13:20:00.000Z";
+    const result = await discoverHistoricalSpxCandidates(
+      fixtureBacktester(entryTimeIgnoredFixture),
+      {
+        ...PATH_B_REQUEST,
+        sides: ["CALL"],
+        selector_grid: [PATH_B_REQUEST.selector_grid[0]],
+      },
+      fixturePathBCandles(source),
+    );
+
+    expect(result.status).toBe("NOT_AVAILABLE");
+    expect(result.contracts).toEqual([]);
+    expect(result.warnings).toContain(
+      "CALL:DELTA:20:28:NO_TIMESTAMP_SAFE_RECONSTRUCTED_CANDIDATE",
+    );
+  });
+
+  test("requires a timestamp-aligned put-call pair for reconstructed delta", async () => {
+    const source = structuredClone(pathBFixture);
+    const parityPut = source.options.find(
+      (option) => option.symbol === "SPXW  260922P07700000",
+    );
+    parityPut.candle.source_time = "2026-08-25T14:00:00.000Z";
+    const result = await discoverHistoricalSpxCandidates(
+      fixtureBacktester(entryTimeIgnoredFixture),
+      {
+        ...PATH_B_REQUEST,
+        sides: ["CALL"],
+        selector_grid: [PATH_B_REQUEST.selector_grid[0]],
+      },
+      fixturePathBCandles(source),
+    );
+
+    expect(result.status).toBe("NOT_AVAILABLE");
+    expect(result.contracts).toEqual([]);
+    expect(result.warnings).toContain(
+      "CALL:DELTA:20:28:NO_TIMESTAMP_SAFE_RECONSTRUCTED_CANDIDATE",
     );
   });
 

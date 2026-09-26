@@ -20,10 +20,33 @@ describe("MCP research server", () => {
       simulateTrade: jest.fn(async () => ({ snapshots: [] })),
     };
     const candles = {
-      getHistoricalCandles: jest.fn(async () => ({
-        candles: [],
-        resampled: false,
-      })),
+      getHistoricalCandles: jest.fn(async (request) =>
+        request.symbol === "SPX"
+          ? {
+              candles: [
+                {
+                  source_time: "2026-04-15T14:25:00.000Z",
+                  close: "5300",
+                  implied_volatility: "0.2",
+                },
+              ],
+              snapshot_complete: true,
+              snapshot_truncated: false,
+              resampled: false,
+            }
+          : {
+              candles: [],
+              resampled: false,
+            },
+      ),
+      getHistoricalCandlesBatch: jest.fn(async (request) =>
+        request.instruments.map((instrument) => ({
+          symbol: instrument.symbol,
+          candles: [],
+          snapshot_complete: true,
+          snapshot_truncated: false,
+        })),
+      ),
     };
     const server = createResearchServer({ backtester, candles });
     const client = new Client({ name: "test-client", version: "1.0.0" });
@@ -149,6 +172,12 @@ describe("MCP research server", () => {
           ],
         }),
       );
+      expect(candles.getHistoricalCandlesBatch).toHaveBeenCalled();
+      expect(
+        candles.getHistoricalCandlesBatch.mock.calls.every(
+          ([request]) => request.instruments.length <= 20,
+        ),
+      ).toBe(true);
 
       await expect(
         client.callTool({
