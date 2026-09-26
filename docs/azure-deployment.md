@@ -110,6 +110,25 @@ connector-specific callback instead, append that exact HTTPS URI to the
 client's web redirect URIs before completing installation; Entra does not
 accept redirect URI wildcards.
 
+## Persistent evidence-cache volume
+
+The immutable historical evidence cache is implemented in the application but remains disabled unless a private persistent filesystem is mounted and `TASTYTRADE_EVIDENCE_CACHE_DIR` is set. Production must not point this setting at replica-local `/tmp` storage.
+
+For the current Azure Container Apps deployment, use a classic private Azure Files share attached to `cae-trading`, mount it read/write into the app (for example `/var/lib/tastytrade-evidence-cache`), and set:
+
+```text
+TASTYTRADE_EVIDENCE_CACHE_DIR=/var/lib/tastytrade-evidence-cache
+TASTYTRADE_EVIDENCE_CACHE_DEFAULT_MODE=BYPASS
+TASTYTRADE_EVIDENCE_CACHE_MAX_BYTES=1073741824
+TASTYTRADE_EVIDENCE_CACHE_MAX_CONCURRENCY=4
+TASTYTRADE_EVIDENCE_CACHE_DATASET_ID=tastytrade-dxlink-candles
+TASTYTRADE_EVIDENCE_CACHE_LICENSE_SCOPE_ID=private-research
+```
+
+Keep the default mode `BYPASS`; individual regression requests opt into `READ_WRITE` or `CACHE_ONLY`. Do not enable automatic caching for live requests.
+
+Azure requires an environment-level storage definition plus a revision-level `AzureFile` volume and container `volumeMount`. Follow the Microsoft Container Apps Azure Files procedure and keep the storage-account key out of source control. After the new revision is healthy, acceptance requires one `READ_WRITE` historical request to return a non-null `manifest_id`, followed by an exact `CACHE_ONLY` replay of that manifest with no provider call.
+
 ## Build and deploy
 
 Build the image in ACR:

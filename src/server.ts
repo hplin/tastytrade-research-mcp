@@ -107,7 +107,7 @@ const RESOLUTION_PROFILE_SCHEMA = {
   properties: {
     profile_id: {
       type: "string",
-      enum: ["DEFAULT_5M", "HOURLY_VALUATION_RESEARCH"],
+      enum: ["DEFAULT_5M", "HOURLY_VALUATION_RESEARCH", "HOURLY_PROVIDER_ALIGNED_RESEARCH"],
     },
     profile_version: { type: "string", const: "1.0.0" },
     provider_id: {
@@ -1175,7 +1175,7 @@ export const TOOLS: Tool[] = [
   {
     name: "tastytrade_discover_historical_spx_candidates",
     description:
-      "Discover checkpoint-safe historical SPX contracts from a selector grid. Defaults to the versioned 5-minute cohort; native-hour RTH reconstruction is explicit via HOURLY_VALUATION_RESEARCH. Accepts RFC3339 or unambiguous IANA-local checkpoints, supports private exact-manifest source replay, and preserves an opaque candidate-construction profile without implementing grading or final leg selection.",
+      "Discover checkpoint-safe historical SPX contracts from a selector grid. Defaults to the versioned 5-minute cohort; session-aligned native-hour RTH reconstruction is explicit via HOURLY_VALUATION_RESEARCH, while provider-clock hourly bars must use the distinct HOURLY_PROVIDER_ALIGNED_RESEARCH cohort. Accepts RFC3339 or unambiguous IANA-local checkpoints, supports private exact-manifest source replay, and preserves an opaque candidate-construction profile without implementing grading or final leg selection.",
     inputSchema: HISTORICAL_SPX_CANDIDATES_SCHEMA,
   },
   {

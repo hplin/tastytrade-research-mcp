@@ -11,7 +11,9 @@ outcomes to choose a resolution.
 | Profile | Requested | Provider native | Session | Alignment | Default use |
 | --- | --- | --- | --- | --- | --- |
 | `DEFAULT_5M` | `5m` | `5m` | `ALL`, `UTC` | `MIDNIGHT` | Compatibility behavior when no profile is supplied |
-| `HOURLY_VALUATION_RESEARCH` | `1h` | `h` | `REGULAR`, `America/New_York`, 09:30-16:00 | `SESSION` | Explicit opt-in SPX valuation research |
+| `HOURLY_VALUATION_RESEARCH` | `1h` | `h` | `REGULAR`, `America/New_York`, 09:30-16:00 | `SESSION` | Strict 09:30-anchored RTH research; fails closed if provider labels differ |\n| `HOURLY_PROVIDER_ALIGNED_RESEARCH` | `1h` | `h` | `REGULAR`, `America/New_York`, 09:30-16:00 | `MIDNIGHT` | Separate cohort for provider-clock hourly bars observed from DXLink options |
+
+Both hourly profiles request DXLink `{=h,a=s,tho=true}`. Live SPXW probes on 2026-08-27 showed DXLink can return option bars labeled on the UTC top-of-hour grid (for example 13:00-14:00Z) rather than the strict 09:30-10:30 ET grid. The server must not relabel those bars as session-aligned. Use `HOURLY_PROVIDER_ALIGNED_RESEARCH` only when that provider-clock cohort is explicitly intended; its cohort identity stays separate from strict RTH and 5-minute research.
 
 The native-hour profile requests DXLink
 `{=h,a=s,tho=true}`. At a 07:30 `America/Los_Angeles` checkpoint during

@@ -349,6 +349,66 @@ describe("historical exact-leg option packages", () => {
     );
   });
 
+  test("accepts provider-clock hourly option bars only in the provider-aligned cohort", async () => {
+    const bySymbol = new Map(
+      fixture.legs.map((leg) => [leg.provider_symbol, leg]),
+    );
+    const service = {
+      getHistoricalCandlesBatch: jest.fn(async (request) =>
+        request.instruments.map((instrument) => {
+          const leg = bySymbol.get(instrument.symbol);
+          const selected =
+            leg.candles.find(
+              (candle) =>
+                candle.source_time === "2026-08-27T14:05:00.000Z",
+            ) ?? leg.candles.at(-1);
+          return {
+            ...candleResult(instrument, request.interval, [
+              {
+                ...structuredClone(selected),
+                source_time: "2026-08-27T13:00:00.000Z",
+              },
+            ]),
+            timezone: "America/New_York",
+            session: "REGULAR",
+          };
+        }),
+      ),
+    };
+    const result = await getHistoricalOptionPackageAtCheckpoint(
+      service,
+      checkpointRequest({
+        resolution_profile: {
+          profile_id: "HOURLY_PROVIDER_ALIGNED_RESEARCH",
+          profile_version: "1.0.0",
+          max_observation_age_minutes: 120,
+          max_temporal_skew_minutes: 0,
+        },
+      }),
+    );
+
+    expect(result).toMatchObject({
+      status: "AVAILABLE",
+      requested_resolution: "1h",
+      effective_resolution: "1h",
+      temporal_skew_minutes: 0,
+      resolution_profile: {
+        profile_id: "HOURLY_PROVIDER_ALIGNED_RESEARCH",
+        alignment: "MIDNIGHT",
+        effective_aggregation: "1h",
+      },
+    });
+    expect(result.legs).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          bar_start: "2026-08-27T13:00:00.000Z",
+          bar_end: "2026-08-27T14:00:00.000Z",
+          available_at: "2026-08-27T14:00:00.000Z",
+        }),
+      ]),
+    );
+  });
+
   test("does not silently downgrade an hourly research cohort", async () => {
     const service = {
       getHistoricalCandlesBatch: jest.fn(async (request) =>
