@@ -617,6 +617,22 @@ describe("private immutable research evidence cache", () => {
         second.evidence_cache.normalized_content_ids,
       );
       expect(second.evidence_cache.provider_calls_avoided).toBe(1);
+      await expect(
+        getHistoricalOptionPackageAtCheckpoint(service, {
+          ...baseInput,
+          references: {
+            checkpoint_id: "checkpoint-b",
+            paper_order_id: "paper-b",
+          },
+          evidence_cache: {
+            ...baseInput.evidence_cache,
+            mode: "CACHE_ONLY",
+            manifest_ids: first.evidence_cache.manifest_ids,
+          },
+        }),
+      ).rejects.toMatchObject({
+        code: "EVIDENCE_CACHE_POLICY_MISMATCH",
+      });
     });
   });
 
@@ -1089,6 +1105,24 @@ describe("private immutable research evidence cache", () => {
           ),
         ).size,
       ).toBe(1);
+
+      const contextualResults = await Promise.all(
+        ["context-a", "context-b", "context-c"].map((checkpointId) =>
+          service.getHistoricalCandlesBatch({
+            ...sameRequest,
+            evidence_cache: {
+              ...sameRequest.evidence_cache,
+              references: { checkpoint_id: checkpointId },
+            },
+          }),
+        ),
+      );
+      const contextualManifestIds = contextualResults.map(
+        (results) => results[0].evidence_cache.manifest_id,
+      );
+      expect(new Set(contextualManifestIds).size).toBe(3);
+      expect(await cache.listValidManifests(sameRequest)).toHaveLength(4);
+      expect(source.getHistoricalCandlesBatch).toHaveBeenCalledTimes(1);
 
       const distinct = Array.from({ length: 5 }, (_, index) =>
         service.getHistoricalCandlesBatch(

@@ -1033,6 +1033,7 @@ export class FileEvidenceCache {
   private activeProviders = 0;
   private readonly providerWaiters: Array<() => void> = [];
   private storageTail: Promise<void> = Promise.resolve();
+  private readonly requestTails = new Map<string, Promise<void>>();
   private readonly inFlight = new Map<string, Promise<StoredEvidence>>();
   private readonly metrics: EvidenceCacheMetrics = {
     cache_hits: 0,
@@ -1310,6 +1311,29 @@ export class FileEvidenceCache {
       return await operation();
     } finally {
       release();
+    }
+  }
+
+  private async withRequestLock<T>(
+    requestFingerprint: string,
+    operation: () => Promise<T>,
+  ): Promise<T> {
+    const previous =
+      this.requestTails.get(requestFingerprint) ?? Promise.resolve();
+    let release!: () => void;
+    const current = new Promise<void>((resolveLock) => {
+      release = resolveLock;
+    });
+    const tail = previous.then(() => current);
+    this.requestTails.set(requestFingerprint, tail);
+    await previous;
+    try {
+      return await operation();
+    } finally {
+      release();
+      if (this.requestTails.get(requestFingerprint) === tail) {
+        this.requestTails.delete(requestFingerprint);
+      }
     }
   }
 
@@ -1880,162 +1904,170 @@ export class FileEvidenceCache {
         | "RETRYABLE_FAILURE" = "VALID_EVIDENCE",
     retryableUntilOverride: string | null = null,
   ): Promise<StoredEvidence> {
-    const requestIndex = await this.readRequestIndex(
-      plan.requestFingerprint,
-    );
-    const previous =
-      reusedEvidence ?? (await this.previousEvidence(requestIndex?.value ?? null));
-    const normalized = this.validateProviderResults(plan, results);
-    const providerObject = objectEnvelope(
-      "SANITIZED_PROVIDER_PAYLOAD",
-      providerPayload(plan.sourceIdentity, normalized),
-    );
-    const normalizedObject = objectEnvelope(
-      "NORMALIZED_RESULT",
-      normalized,
-    );
-    normalizedObject.reference.derived_from = [
-      providerObject.reference.content_id,
-    ];
-    const revision = (requestIndex?.value.manifest_ids.length ?? 0) + 1;
-    const recordedAt = this.now();
-    const retryableUntil =
-      cacheEligibility === "RETRYABLE_FAILURE"
-        ? retryableUntilOverride ??
-          new Date(
-            this.clock() + this.retryableFailureTtlMs,
-          ).toISOString()
-        : null;
-    const body = {
-      contract_version: EVIDENCE_CACHE_CONTRACT_VERSION,
-      manifest_type: "HISTORICAL_SOURCE_EVIDENCE" as const,
-      request_fingerprint: plan.requestFingerprint,
-      revision,
-      recorded_at: recordedAt,
-      retrieved_at: [
-        ...new Set(normalized.map((result) => result.retrieved_at)),
-      ].sort(),
-      source_identity: plan.sourceIdentity,
-      context: plan.context,
-      status: this.status(plan, normalized),
-      objects: {
-        provider_payload: providerObject.reference,
-        normalized_result: normalizedObject.reference,
-      },
-      lineage: {
-        normalized_result_derived_from: [
-          providerObject.reference.content_id,
-        ],
-        preserves_bar_fields: [
-          "source_time",
-          "bar_start",
-          "bar_end",
-          "available_at",
-          "retrieved_at",
-        ] as [
-          "source_time",
-          "bar_start",
-          "bar_end",
-          "available_at",
-          "retrieved_at",
-        ],
-        retrieved_at_is_not_availability: true as const,
-      },
-      diff: {
-        previous_manifest_id: previous?.manifest.manifest_id ?? null,
-        provider_payload_changed:
-          previous !== null &&
-          previous.manifest.objects.provider_payload.content_id !==
-            providerObject.reference.content_id,
-        normalized_result_changed:
-          previous !== null &&
-          previous.manifest.objects.normalized_result.content_id !==
-            normalizedObject.reference.content_id,
-        changed_symbols:
-          previous === null
-            ? []
-            : changedSymbols(previous.results, normalized),
-      },
-      reused_evidence_from_manifest_id:
-        reusedEvidence?.manifest.manifest_id ?? null,
-      cache_eligibility: cacheEligibility,
-      retryable_until: retryableUntil,
-    };
-    const manifest = manifestWithId(body);
-    const manifestBytes = serialized(manifest);
-    const mutableFiles =
-      cacheEligibility === "VALID_EVIDENCE"
-        ? [
-            {
-              path: this.requestIndexPath(plan.requestFingerprint),
-              bytes: serialized(
-                indexWithChecksum({
-                  contract_version: EVIDENCE_CACHE_CONTRACT_VERSION,
-                  index_type: "REQUEST_REVISIONS",
-                  request_fingerprint: plan.requestFingerprint,
-                  updated_at: recordedAt,
-                  manifest_ids: [
-                    ...(requestIndex?.value.manifest_ids ?? []),
-                    manifest.manifest_id,
-                  ],
-                }),
-              ),
-              description: "Mutable evidence request index",
-            },
-          ]
-        : [
-            {
-              path: this.failureIndexPath(plan.requestFingerprint),
-              bytes: serialized(
-                indexWithChecksum({
-                  contract_version: EVIDENCE_CACHE_CONTRACT_VERSION,
-                  index_type: "RETRYABLE_FAILURE",
-                  request_fingerprint: plan.requestFingerprint,
-                  manifest_id: manifest.manifest_id,
-                  expires_at: retryableUntil!,
-                  updated_at: recordedAt,
-                }),
-              ),
-              description: "Mutable retryable-failure index",
-            },
-          ];
-    const bytesWritten = await this.commit(
-      [
-        {
-          path: this.objectPath(providerObject.reference.content_id),
-          bytes: providerObject.bytes,
-          description: "Sanitized provider evidence object",
-        },
-        {
-          path: this.objectPath(normalizedObject.reference.content_id),
-          bytes: normalizedObject.bytes,
-          description: "Normalized evidence object",
-        },
-        {
-          path: this.manifestPath(manifest.manifest_id),
-          bytes: manifestBytes,
-          description: "Immutable evidence manifest",
-        },
-      ],
-      mutableFiles,
-    );
-    if (cacheEligibility === "VALID_EVIDENCE") {
-      await rm(this.failureIndexPath(plan.requestFingerprint), {
-        force: true,
-      });
-    }
-    const verifiedManifest = await this.readManifest(manifest.manifest_id);
-    if (verifiedManifest.manifest_type !== "HISTORICAL_SOURCE_EVIDENCE") {
-      throw new EvidenceCacheError(
-        "EVIDENCE_CACHE_CHECKSUM_MISMATCH",
-        "New evidence manifest did not read back as source evidence.",
+    return this.withRequestLock(plan.requestFingerprint, async () => {
+      const requestIndex = await this.readRequestIndex(
+        plan.requestFingerprint,
       );
-    }
-    const loaded = await this.loadEvidence(verifiedManifest);
-    return {
-      ...loaded,
-      bytesWritten,
-    };
+      const previous =
+        reusedEvidence ??
+        (await this.previousEvidence(requestIndex?.value ?? null));
+      const normalized = this.validateProviderResults(plan, results);
+      const providerObject = objectEnvelope(
+        "SANITIZED_PROVIDER_PAYLOAD",
+        providerPayload(plan.sourceIdentity, normalized),
+      );
+      const normalizedObject = objectEnvelope(
+        "NORMALIZED_RESULT",
+        normalized,
+      );
+      normalizedObject.reference.derived_from = [
+        providerObject.reference.content_id,
+      ];
+      const revision = (requestIndex?.value.manifest_ids.length ?? 0) + 1;
+      const recordedAt = this.now();
+      const retryableUntil =
+        cacheEligibility === "RETRYABLE_FAILURE"
+          ? retryableUntilOverride ??
+            new Date(
+              this.clock() + this.retryableFailureTtlMs,
+            ).toISOString()
+          : null;
+      const body = {
+        contract_version: EVIDENCE_CACHE_CONTRACT_VERSION,
+        manifest_type: "HISTORICAL_SOURCE_EVIDENCE" as const,
+        request_fingerprint: plan.requestFingerprint,
+        revision,
+        recorded_at: recordedAt,
+        retrieved_at: [
+          ...new Set(normalized.map((result) => result.retrieved_at)),
+        ].sort(),
+        source_identity: plan.sourceIdentity,
+        context: plan.context,
+        status: this.status(plan, normalized),
+        objects: {
+          provider_payload: providerObject.reference,
+          normalized_result: normalizedObject.reference,
+        },
+        lineage: {
+          normalized_result_derived_from: [
+            providerObject.reference.content_id,
+          ],
+          preserves_bar_fields: [
+            "source_time",
+            "bar_start",
+            "bar_end",
+            "available_at",
+            "retrieved_at",
+          ] as [
+            "source_time",
+            "bar_start",
+            "bar_end",
+            "available_at",
+            "retrieved_at",
+          ],
+          retrieved_at_is_not_availability: true as const,
+        },
+        diff: {
+          previous_manifest_id: previous?.manifest.manifest_id ?? null,
+          provider_payload_changed:
+            previous !== null &&
+            previous.manifest.objects.provider_payload.content_id !==
+              providerObject.reference.content_id,
+          normalized_result_changed:
+            previous !== null &&
+            previous.manifest.objects.normalized_result.content_id !==
+              normalizedObject.reference.content_id,
+          changed_symbols:
+            previous === null
+              ? []
+              : changedSymbols(previous.results, normalized),
+        },
+        reused_evidence_from_manifest_id:
+          reusedEvidence?.manifest.manifest_id ?? null,
+        cache_eligibility: cacheEligibility,
+        retryable_until: retryableUntil,
+      };
+      const manifest = manifestWithId(body);
+      const manifestBytes = serialized(manifest);
+      const mutableFiles =
+        cacheEligibility === "VALID_EVIDENCE"
+          ? [
+              {
+                path: this.requestIndexPath(plan.requestFingerprint),
+                bytes: serialized(
+                  indexWithChecksum({
+                    contract_version: EVIDENCE_CACHE_CONTRACT_VERSION,
+                    index_type: "REQUEST_REVISIONS",
+                    request_fingerprint: plan.requestFingerprint,
+                    updated_at: recordedAt,
+                    manifest_ids: [
+                      ...(requestIndex?.value.manifest_ids ?? []),
+                      manifest.manifest_id,
+                    ],
+                  }),
+                ),
+                description: "Mutable evidence request index",
+              },
+            ]
+          : [
+              {
+                path: this.failureIndexPath(plan.requestFingerprint),
+                bytes: serialized(
+                  indexWithChecksum({
+                    contract_version: EVIDENCE_CACHE_CONTRACT_VERSION,
+                    index_type: "RETRYABLE_FAILURE",
+                    request_fingerprint: plan.requestFingerprint,
+                    manifest_id: manifest.manifest_id,
+                    expires_at: retryableUntil!,
+                    updated_at: recordedAt,
+                  }),
+                ),
+                description: "Mutable retryable-failure index",
+              },
+            ];
+      const bytesWritten = await this.commit(
+        [
+          {
+            path: this.objectPath(providerObject.reference.content_id),
+            bytes: providerObject.bytes,
+            description: "Sanitized provider evidence object",
+          },
+          {
+            path: this.objectPath(normalizedObject.reference.content_id),
+            bytes: normalizedObject.bytes,
+            description: "Normalized evidence object",
+          },
+          {
+            path: this.manifestPath(manifest.manifest_id),
+            bytes: manifestBytes,
+            description: "Immutable evidence manifest",
+          },
+        ],
+        mutableFiles,
+      );
+      if (cacheEligibility === "VALID_EVIDENCE") {
+        await rm(this.failureIndexPath(plan.requestFingerprint), {
+          force: true,
+        });
+      }
+      const verifiedManifest = await this.readManifest(
+        manifest.manifest_id,
+      );
+      if (
+        verifiedManifest.manifest_type !==
+        "HISTORICAL_SOURCE_EVIDENCE"
+      ) {
+        throw new EvidenceCacheError(
+          "EVIDENCE_CACHE_CHECKSUM_MISMATCH",
+          "New evidence manifest did not read back as source evidence.",
+        );
+      }
+      const loaded = await this.loadEvidence(verifiedManifest);
+      return {
+        ...loaded,
+        bytesWritten,
+      };
+    });
   }
 
   private async materializeContext(
@@ -2307,7 +2339,7 @@ export class FileEvidenceCache {
     const matching = expanded.manifests.filter(
       (manifest) =>
         manifest.request_fingerprint === plan.requestFingerprint &&
-        manifest.context.evidence_role === plan.context.evidence_role,
+        contextMatches(manifest.context, plan.context),
     );
     if (matching.length === 0) {
       throw new EvidenceCacheError(
