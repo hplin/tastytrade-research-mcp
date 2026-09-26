@@ -554,7 +554,7 @@ export const TOOLS: Tool[] = [
   {
     name: "tastytrade_discover_historical_spx_candidates",
     description:
-      "Discover timestamp-safe historical SPX contracts selected by a caller-supplied Backtester selector grid. Returns exact provider identities when logs support them, enriches only at or before as_of, and never claims a full historical chain or future outcome.",
+      "Discover checkpoint-safe historical SPX contracts from a caller-supplied Backtester selector grid. Backtester entry time is not configurable, so a contract is returned only when the provider trial and opening order occurred exactly at as_of; otherwise the tool fails closed without stale or future substitution.",
     inputSchema: HISTORICAL_SPX_CANDIDATES_SCHEMA,
   },
   {

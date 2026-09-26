@@ -32,7 +32,7 @@ The project is intentionally separate from the official
 | Tool | Purpose |
 | --- | --- |
 | `tastytrade_price_option_package` | Price verticals, iron condors, and double diagonals with explicit native/synthetic provenance |
-| `tastytrade_discover_historical_spx_candidates` | Recover timestamp-safe SPX contracts from a caller-supplied Backtester selector grid without claiming a full historical chain |
+| `tastytrade_discover_historical_spx_candidates` | Recover checkpoint-safe SPX contracts from a caller-supplied Backtester selector grid, failing closed unless selection occurred exactly at `as_of` |
 | `tastytrade_prepare_spx_spread` | Deterministically normalize SPX legs without calling an upstream service |
 | `tastytrade_simulate_spx_spread` | Run exact-leg SPX historical simulation and normalize its result |
 | `tastytrade_create_spx_spread_backtest` | Submit supported SPX structures through relative Backtester selectors |
@@ -111,14 +111,27 @@ exact-leg simulation.
 The official option-chain and REST quote endpoints do not document an
 historical `as_of` parameter. Backtester logs currently expose exact selected
 strike, expiration, side, and a provider-internal symbol, but those log fields
-are undocumented. The adapter therefore:
+are undocumented. The documented Backtester `EntryConditions` also has no
+time-of-day field, and a live request containing undocumented
+`entryTime: "14:30:00Z"` was silently ignored: the SPX trial still opened at
+`19:45:00Z`.
+
+The adapter therefore:
 
 - runs one bounded Backtester job per selector/side;
-- accepts only the latest provider selection at or before `as_of`;
+- never sends or trusts `entryTime`;
+- accepts only a provider trial and opening order whose timestamps equal
+  `as_of`;
+- rejects both stale prior selections and later same-day selections;
 - uses the recovered provider symbol for exact point-in-time simulation;
 - returns `HISTORICAL_SELECTOR_CANDIDATE_SET`, never a full-chain snapshot;
 - excludes all future trials, closes, P/L, and outcome fields; and
 - keeps bid/ask, IV, skew, term structure, OI, and volume unavailable.
+
+For checkpoints such as 07:30 PT, where Backtester selection occurs later,
+the result is `NOT_AVAILABLE`. Callers, including
+`spx-spread-historical-replay`, must preserve that fail-closed result rather
+than substitute a prior-day contract.
 
 The full provider findings, contract, anti-lookahead rules, and limitations
 are documented in

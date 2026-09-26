@@ -131,6 +131,10 @@ describe("MCP research server", () => {
           skew: null,
           term_structure: null,
         },
+        capabilities: {
+          backtester_entry_time_configurable: false,
+          exact_checkpoint_selection: false,
+        },
       });
       expect(backtester.createBacktest).toHaveBeenCalledWith(
         expect.objectContaining({

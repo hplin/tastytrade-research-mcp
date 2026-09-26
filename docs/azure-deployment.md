@@ -150,5 +150,6 @@ After deployment, verify:
 4. A real Entra token connects, lists all 14 tools, and can call a local-only
    tool such as `tastytrade_price_option_package`.
 5. A live provider smoke test can call
-   `tastytrade_discover_historical_spx_candidates` and returns timestamp-safe
-   `HISTORICAL_SELECTOR_CANDIDATE_SET` evidence.
+   `tastytrade_discover_historical_spx_candidates` and returns exact-checkpoint
+   `HISTORICAL_SELECTOR_CANDIDATE_SET` evidence or a fail-closed
+   `NOT_AVAILABLE` result without stale/future substitution.
