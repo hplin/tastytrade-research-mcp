@@ -378,6 +378,8 @@ describe("historical exact-leg option packages", () => {
     const result = await getHistoricalOptionPackageAtCheckpoint(
       service,
       checkpointRequest({
+        max_observation_age_minutes: 120,
+        max_temporal_skew_minutes: 0,
         resolution_profile: {
           profile_id: "HOURLY_PROVIDER_ALIGNED_RESEARCH",
           profile_version: "1.0.0",
