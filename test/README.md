@@ -24,9 +24,12 @@ The suite builds the TypeScript project before running Jest and covers:
 - SPX adapter normalization and 0DTE exclusion;
 - double-diagonal aggregate Backtester limitations;
 - Backtester simulation normalization;
-- timestamp-safe SPX selector candidate discovery;
+- checkpoint-safe SPX selector candidate discovery;
 - exact provider identity recovery from captured Backtester logs;
-- strict exclusion of trials and outcomes later than `as_of`;
+- strict exclusion of stale and future selector trials that do not occur
+  exactly at `as_of`;
+- empirical coverage proving undocumented Backtester `entryTime` is ignored
+  and must not be trusted;
 - point-in-time price/delta enrichment for recovered SPX contracts;
 - provider log-shape drift returning `NOT_AVAILABLE` instead of guessed identity;
 - DXLink compact Candle parsing and snapshot flags;
@@ -39,7 +42,8 @@ The suite builds the TypeScript project before running Jest and covers:
 - RFC 9728 protected-resource metadata and OAuth challenges.
 
 Live credentials are not used by automated tests. The sanitized
-`spx-candidate-2026-04-15.json` fixture was captured from research-only
-Backtester and simulation endpoints. Provider smoke tests should load
-credentials from the environment, must not print them, and should use
-research-only endpoints.
+`spx-candidate-2026-04-15.json` identity fixture and
+`spx-candidate-entry-time-ignored-2026-08-25.json` checkpoint fixture were
+captured from research-only Backtester and simulation investigation. Provider
+smoke tests should load credentials from the environment, must not print them,
+and should use research-only endpoints.

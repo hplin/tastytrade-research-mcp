@@ -105,6 +105,8 @@ export type HistoricalSpxCandidatesResult = {
     historical_term_structure: false;
     historical_open_interest: false;
     historical_volume: false;
+    backtester_entry_time_configurable: false;
+    exact_checkpoint_selection: boolean;
     forward_outcomes_included: false;
   };
   attempts: HistoricalCandidateAttempt[];
@@ -140,6 +142,7 @@ export type HistoricalSpxCandidatesPlan = {
 type CandidateExtraction = {
   candidate: HistoricalSpxCandidate | null;
   future_trials_excluded: number;
+  stale_trials_excluded: number;
   invalid_logs: boolean;
   warnings: string[];
 };
@@ -168,6 +171,8 @@ const LIMITATION_WARNINGS = [
   "HISTORICAL_TERM_STRUCTURE_NOT_AVAILABLE",
   "HISTORICAL_OPEN_INTEREST_NOT_AVAILABLE",
   "HISTORICAL_VOLUME_NOT_AVAILABLE",
+  "BACKTESTER_ENTRY_TIME_NOT_CONFIGURABLE",
+  "CHECKPOINT_SELECTION_REQUIRES_EXACT_TIMESTAMP",
   "FORWARD_OUTCOMES_EXCLUDED_FROM_CANDIDATE_DISCOVERY",
 ] as const;
 
@@ -485,7 +490,7 @@ function baseCandidateFromTrial(
       order.datetime,
       "logs.trials.orders.datetime",
     );
-    if (!selectedAt || Date.parse(selectedAt) > asOfTime) continue;
+    if (!selectedAt || Date.parse(selectedAt) !== asOfTime) continue;
     const legs = Array.isArray(order.legs) ? order.legs : [];
     for (const rawLeg of legs) {
       const leg = objectValue(rawLeg);
@@ -650,17 +655,19 @@ function extractCandidate(
     return {
       candidate: null,
       future_trials_excluded: 0,
+      stale_trials_excluded: 0,
       invalid_logs: true,
       warnings: ["BACKTEST_LOGS_DID_NOT_CONTAIN_TRIALS"],
     };
   }
 
   const asOfTime = Date.parse(plan.as_of);
-  const eligible: Array<{
+  const checkpointTrials: Array<{
     opened_at: string;
     trial: Record<string, unknown>;
   }> = [];
   let futureTrialsExcluded = 0;
+  let staleTrialsExcluded = 0;
   let malformedTrials = 0;
   for (const [index, rawTrial] of response.trials.entries()) {
     const trial = objectValue(rawTrial);
@@ -680,16 +687,27 @@ function extractCandidate(
       futureTrialsExcluded += 1;
       continue;
     }
-    eligible.push({ opened_at: openedAt, trial });
+    if (Date.parse(openedAt) < asOfTime) {
+      staleTrialsExcluded += 1;
+      continue;
+    }
+    checkpointTrials.push({ opened_at: openedAt, trial });
   }
-  eligible.sort((left, right) =>
-    right.opened_at.localeCompare(left.opened_at),
-  );
 
-  const latest = eligible[0];
-  if (latest) {
+  if (checkpointTrials.length > 1) {
+    return {
+      candidate: null,
+      future_trials_excluded: futureTrialsExcluded,
+      stale_trials_excluded: staleTrialsExcluded,
+      invalid_logs: true,
+      warnings: ["MULTIPLE_BACKTEST_TRIALS_AT_EXACT_AS_OF"],
+    };
+  }
+
+  const checkpointTrial = checkpointTrials[0];
+  if (checkpointTrial) {
     const extraction = baseCandidateFromTrial(
-      latest.trial,
+      checkpointTrial.trial,
       item,
       backtestIdValue,
       plan.as_of,
@@ -699,6 +717,7 @@ function extractCandidate(
     return {
       candidate: extraction.candidate,
       future_trials_excluded: futureTrialsExcluded,
+      stale_trials_excluded: staleTrialsExcluded,
       invalid_logs: extraction.invalid_logs,
       warnings: extraction.warning ? [extraction.warning] : [],
     };
@@ -707,11 +726,16 @@ function extractCandidate(
   return {
     candidate: null,
     future_trials_excluded: futureTrialsExcluded,
-    invalid_logs: malformedTrials > 0,
+    stale_trials_excluded: staleTrialsExcluded,
+    invalid_logs:
+      malformedTrials > 0 &&
+      futureTrialsExcluded === 0 &&
+      staleTrialsExcluded === 0,
     warnings: [
-      malformedTrials > 0
-        ? "BACKTEST_LOGS_CONTAINED_MALFORMED_TRIALS"
-        : "NO_BACKTEST_TRIAL_AT_OR_BEFORE_AS_OF",
+      ...(malformedTrials > 0
+        ? ["BACKTEST_LOGS_CONTAINED_MALFORMED_TRIALS"]
+        : []),
+      "NO_BACKTEST_TRIAL_AT_EXACT_AS_OF",
     ],
   };
 }
@@ -833,6 +857,11 @@ export async function discoverHistoricalSpxCandidates(
           `${attemptKey(item)}:FUTURE_TRIALS_EXCLUDED:${extraction.future_trials_excluded}`,
         );
       }
+      if (extraction.stale_trials_excluded > 0) {
+        warnings.push(
+          `${attemptKey(item)}:STALE_TRIALS_EXCLUDED:${extraction.stale_trials_excluded}`,
+        );
+      }
       warnings.push(
         ...extraction.warnings.map(
           (warning) => `${attemptKey(item)}:${warning}`,
@@ -930,6 +959,8 @@ export async function discoverHistoricalSpxCandidates(
       historical_term_structure: false,
       historical_open_interest: false,
       historical_volume: false,
+      backtester_entry_time_configurable: false,
+      exact_checkpoint_selection: contracts.length > 0,
       forward_outcomes_included: false,
     },
     attempts,

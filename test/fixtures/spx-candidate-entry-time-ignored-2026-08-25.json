@@ -1,0 +1,68 @@
+{
+  "metadata": {
+    "captured_on": "2026-09-25",
+    "checkpoint": "2026-08-25T14:30:00.000Z",
+    "requested_entry_time": "14:30:00Z",
+    "observed_trial_open_time": "2026-08-25T19:45:00.000Z",
+    "source": "sanitized live Backtester capability spike recorded in issue #20",
+    "sanitized": true
+  },
+  "submitted_request": {
+    "symbol": "SPX",
+    "startDate": "2026-08-25",
+    "endDate": "2026-08-25",
+    "legs": [
+      {
+        "type": "equity-option",
+        "direction": "long",
+        "side": "call",
+        "quantity": 1,
+        "strikeSelection": "delta",
+        "delta": 20,
+        "daysUntilExpiration": 28
+      }
+    ],
+    "entryConditions": {
+      "frequency": "every day",
+      "entryTime": "14:30:00Z"
+    },
+    "exitConditions": {
+      "afterDaysInTrade": 1
+    }
+  },
+  "create_response": {
+    "id": "fixture-spx-entry-time-ignored-2026-08-25",
+    "status": "completed"
+  },
+  "logs": {
+    "trials": [
+      {
+        "openDateTime": "2026-08-25T19:45:00Z",
+        "orders": [
+          {
+            "legs": [
+              {
+                "action": "buy to open",
+                "quantity": "1",
+                "instrument": {
+                  "side": "call",
+                  "type": "equity-option",
+                  "strike": "7670",
+                  "symbol": "SPX",
+                  "expiration": "2026-09-24T20:00:00Z",
+                  "internalSymbol": "equity-option.SPX.20260924200000.C.7670000",
+                  "underlyingSymbol": "SPX"
+                }
+              }
+            ],
+            "datetime": "2026-08-25T19:45:00Z"
+          }
+        ]
+      }
+    ],
+    "snapshots": {}
+  },
+  "simulation": {
+    "snapshots": []
+  }
+}
