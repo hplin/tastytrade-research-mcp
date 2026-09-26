@@ -32,6 +32,13 @@ timestamp, and explicit research limits:
     ],
     "max_observation_age_minutes": 30,
     "max_temporal_skew_minutes": 10,
+    "resolution_profile": {
+      "profile_id": "DEFAULT_5M",
+      "profile_version": "1.0.0"
+    },
+    "candidate_construction_profile": {
+      "version": "candidate-construction/7"
+    },
     "phase": "REGRESSION_RESEARCH"
   }
 }
@@ -42,10 +49,16 @@ the provider symbol, derived DXLink streamer symbol, side, strike, expiration,
 action, quantity, historical close, IV when present, bar-start timestamp,
 availability timestamp, observation age, and provider provenance.
 
+`as_of` may be replaced by an unambiguous IANA `local_checkpoint`. The
+normalized checkpoint, deterministic request ID, opaque
+`candidate_construction_profile`, and full resolution/cohort metadata are
+returned. The candidate profile is preserved verbatim; package valuation does
+not implement grading, DD buckets, or final leg selection.
+
 DXLink candle timestamps are bar starts. A candle is eligible only when:
 
 ```text
-source_timestamp + interval <= as_of
+available_at <= as_of
 ```
 
 Observation age is measured from that availability timestamp, not from the bar
@@ -77,11 +90,20 @@ coarser supported resolutions and records every attempt. It never silently
 resamples, and it does not describe a local budget exhaustion as a provider
 hard limit.
 
+When no profile is supplied, the historical compatibility fallback order is
+preserved. `HOURLY_VALUATION_RESEARCH` is explicit opt-in, requests native
+`h` bars aligned to the 09:30 New York regular-session open, and has no
+fallback by default. Resolution selection always uses the first provider
+available aggregation in the declared order; package values or downstream
+outcomes never influence the choice.
+
 A path point is emitted only when every exact leg has a candle with the same
-bar-start timestamp and the full bar was available within the requested
-window. The point's `as_of` is the bar availability timestamp. Missing legs
-produce a structured `gap`; observations are never interpolated, carried
-forward, or repaired with later data.
+profile-aligned `bar_start`, the full bar was available within the requested
+window, and availability skew is within the profile limit. The point preserves
+`bar_start`, `bar_end`, `available_at`, and `retrieved_at`; its `as_of` is the
+latest leg availability timestamp. Missing or skewed legs produce a structured
+`gap`; observations are never interpolated, carried forward, or repaired with
+later data.
 
 `fill_verification_path` is shaped for the direct-path mode of
 `tastytrade_verify_historical_fill`:

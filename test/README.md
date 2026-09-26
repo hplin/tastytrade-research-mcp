@@ -19,6 +19,13 @@ The suite builds the TypeScript project before running Jest and covers:
 - checkpoint observation age and multi-leg temporal-skew rejection;
 - bounded 1-minute to 5-minute package-path fallback without resampling;
 - exact package-path gaps without interpolation or forward fill;
+- default five-minute and explicit native-hour resolution profiles;
+- requested/native/effective aggregation and provider-cohort separation;
+- completed versus incomplete native-hour RTH bars at a 07:30 PT checkpoint;
+- IANA-local checkpoint conversion before and after Pacific DST, including
+  rejection of ambiguous and nonexistent local instants;
+- preservation of bar start/end, availability, retrieval, and opaque
+  candidate-construction metadata;
 - `LIMIT_TOUCH` and `CONSERVATIVE_CROSS`;
 - sparse first-touch intervals, complete no-touch paths, and
   `NOT_VERIFIABLE`/`NOT_ASSESSABLE`;

@@ -41,6 +41,7 @@ function candleResult(instrument, interval, candles) {
           },
     timezone: "UTC",
     session: "ALL",
+    retrieved_at: "2026-08-27T16:00:00.000Z",
     source: "tastytrade-dxlink",
     source_timestamp_unit: "epoch_milliseconds",
     snapshot_complete: true,
@@ -127,12 +128,20 @@ describe("historical exact-leg option packages", () => {
     );
 
     expect(result).toMatchObject({
+      request_id: expect.stringMatching(/^[a-f0-9]{64}$/),
       status: "AVAILABLE",
       evidence_type: "HISTORICAL_OPTION_PACKAGE_REFERENCE",
       family: "DEBIT_VERTICAL",
       underlying: "SPX",
       as_of: fixture.checkpoint,
       effective_resolution: "5m",
+      resolution_profile: {
+        profile_id: "DEFAULT_5M",
+        requested_aggregation: "5m",
+        native_aggregation: "5m",
+        effective_aggregation: "5m",
+      },
+      candidate_construction_profile: null,
       reference_value: {
         value: "21.06",
         price_effect: "DEBIT",
@@ -154,7 +163,10 @@ describe("historical exact-leg option packages", () => {
         strike: "7750",
         expiration: "2026-09-24",
         source_timestamp: "2026-08-27T13:35:00.000Z",
+        bar_start: "2026-08-27T13:35:00.000Z",
+        bar_end: "2026-08-27T13:40:00.000Z",
         available_at: "2026-08-27T13:40:00.000Z",
+        retrieved_at: "2026-08-27T16:00:00.000Z",
         observation_age_minutes: 50,
         reference_value: "81.31",
         bid: null,
@@ -244,6 +256,182 @@ describe("historical exact-leg option packages", () => {
     );
     expect(result.warnings).toContain(
       "INCOMPLETE_OR_FUTURE_CANDLES_IGNORED:SPXW  260924C07800000:1",
+    );
+  });
+
+  test("uses completed native-hour RTH legs and never the bar starting at the checkpoint", async () => {
+    const bySymbol = new Map(
+      fixture.legs.map((leg) => [leg.provider_symbol, leg]),
+    );
+    const service = {
+      getHistoricalCandlesBatch: jest.fn(async (request) =>
+        request.instruments.map((instrument) => {
+          const leg = bySymbol.get(instrument.symbol);
+          const selected =
+            leg.candles.find(
+              (candle) =>
+                candle.source_time === "2026-08-27T14:05:00.000Z",
+            ) ?? leg.candles.at(-1);
+          return {
+            ...candleResult(instrument, request.interval, [
+              {
+                ...structuredClone(selected),
+                source_time: "2026-08-27T13:30:00.000Z",
+              },
+              {
+                ...structuredClone(selected),
+                source_time: fixture.checkpoint,
+                close: "0.01",
+              },
+            ]),
+            timezone: "America/New_York",
+            session: "REGULAR",
+          };
+        }),
+      ),
+    };
+    const candidateConstructionProfile = {
+      version: "candidate-construction/7",
+      final_selection: { implemented_elsewhere: true },
+    };
+    const result = await getHistoricalOptionPackageAtCheckpoint(
+      service,
+      checkpointRequest({
+        resolution_profile: {
+          profile_id: "HOURLY_VALUATION_RESEARCH",
+          profile_version: "1.0.0",
+          max_observation_age_minutes: 60,
+          max_temporal_skew_minutes: 30,
+        },
+        candidate_construction_profile: candidateConstructionProfile,
+      }),
+    );
+
+    expect(result).toMatchObject({
+      status: "AVAILABLE",
+      requested_resolution: "1h",
+      effective_resolution: "1h",
+      reference_value: { value: "21.06", price_effect: "DEBIT" },
+      temporal_skew_minutes: 0,
+      resolution_profile: {
+        profile_id: "HOURLY_VALUATION_RESEARCH",
+        requested_aggregation: "1h",
+        native_aggregation: "h",
+        effective_aggregation: "1h",
+        alignment: "SESSION",
+      },
+    });
+    expect(result.candidate_construction_profile).toBe(
+      candidateConstructionProfile,
+    );
+    expect(result.legs).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          bar_start: "2026-08-27T13:30:00.000Z",
+          bar_end: fixture.checkpoint,
+          available_at: fixture.checkpoint,
+          retrieved_at: "2026-08-27T16:00:00.000Z",
+        }),
+      ]),
+    );
+    expect(
+      result.legs.some((leg) => leg.reference_value === "0.01"),
+    ).toBe(false);
+    expect(service.getHistoricalCandlesBatch).toHaveBeenCalledTimes(1);
+    expect(service.getHistoricalCandlesBatch).toHaveBeenCalledWith(
+      expect.objectContaining({
+        interval: "1h",
+        session: {
+          kind: "REGULAR",
+          timezone: "America/New_York",
+        },
+      }),
+    );
+  });
+
+  test("does not silently downgrade an hourly research cohort", async () => {
+    const service = {
+      getHistoricalCandlesBatch: jest.fn(async (request) =>
+        request.instruments.map((instrument) => ({
+          ...candleResult(instrument, request.interval, []),
+          status: "NOT_AVAILABLE",
+          snapshot_complete: false,
+          provider_snapshot_complete: false,
+          failure_reasons: ["REQUESTED_WINDOW_NOT_COVERED"],
+        })),
+      ),
+    };
+    const result = await getHistoricalOptionPackageAtCheckpoint(
+      service,
+      checkpointRequest({
+        resolution_profile: {
+          profile_id: "HOURLY_VALUATION_RESEARCH",
+          profile_version: "1.0.0",
+        },
+      }),
+    );
+
+    expect(result).toMatchObject({
+      status: "NOT_AVAILABLE",
+      requested_resolution: "1h",
+      effective_resolution: null,
+      resolution_attempts: [
+        {
+          resolution: "1h",
+          status: "UNAVAILABLE",
+          reason: "DXLINK_SNAPSHOT_INCOMPLETE",
+        },
+      ],
+      resolution_profile: {
+        profile_id: "HOURLY_VALUATION_RESEARCH",
+        effective_aggregation: null,
+        effective_cohort_id: null,
+        fallback_policy: { allowed: false, aggregations: [] },
+      },
+    });
+    expect(service.getHistoricalCandlesBatch).toHaveBeenCalledTimes(1);
+  });
+
+  test("fails closed on provider hourly bars outside the declared session grid", async () => {
+    const service = {
+      getHistoricalCandlesBatch: jest.fn(async (request) =>
+        request.instruments.map((instrument, index) =>
+          candleResult(instrument, request.interval, [
+            {
+              source_time: "2026-08-27T13:00:00.000Z",
+              open: index === 0 ? "81.31" : "60.25",
+              high: index === 0 ? "81.31" : "60.25",
+              low: index === 0 ? "81.31" : "60.25",
+              close: index === 0 ? "81.31" : "60.25",
+              volume: "1",
+              vwap: index === 0 ? "81.31" : "60.25",
+              bid_volume: null,
+              ask_volume: "1",
+              implied_volatility: "0.1",
+              open_interest: "10",
+            },
+          ]),
+        ),
+      ),
+    };
+
+    const result = await getHistoricalOptionPackageAtCheckpoint(
+      service,
+      checkpointRequest({
+        resolution_profile: {
+          profile_id: "HOURLY_VALUATION_RESEARCH",
+          profile_version: "1.0.0",
+        },
+      }),
+    );
+
+    expect(result.status).toBe("NOT_AVAILABLE");
+    expect(result.reference_value).toBeNull();
+    expect(result.warnings).toEqual(
+      expect.arrayContaining([
+        "PROVIDER_BAR_ALIGNMENT_MISMATCH_IGNORED:SPXW  260924C07750000:1",
+        "PROVIDER_BAR_ALIGNMENT_MISMATCH_IGNORED:SPXW  260924C07800000:1",
+      ]),
     );
   });
 
@@ -421,6 +609,65 @@ describe("historical exact-leg option packages", () => {
         "NO_INTERPOLATION_OR_FORWARD_FILL",
       ]),
     );
+  });
+
+  test("aligns an hourly package path to the New York RTH session", async () => {
+    const service = {
+      getHistoricalCandlesBatch: jest.fn(async (request) =>
+        request.instruments.map((instrument, index) =>
+          candleResult(instrument, request.interval, [
+            {
+              source_time: "2026-08-27T13:30:00.000Z",
+              open: index === 0 ? "81.31" : "60.25",
+              high: index === 0 ? "81.31" : "60.25",
+              low: index === 0 ? "81.31" : "60.25",
+              close: index === 0 ? "81.31" : "60.25",
+              volume: "1",
+              vwap: index === 0 ? "81.31" : "60.25",
+              bid_volume: null,
+              ask_volume: "1",
+              implied_volatility: "0.1",
+              open_interest: "10",
+            },
+          ]),
+        ),
+      ),
+    };
+    const result = await getHistoricalOptionPackagePath(
+      service,
+      pathRequest({
+        start_time: "2026-08-27T13:30:00.000Z",
+        end_time: fixture.checkpoint,
+        resolution: "1h",
+        resolution_profile: {
+          profile_id: "HOURLY_VALUATION_RESEARCH",
+          profile_version: "1.0.0",
+        },
+      }),
+    );
+
+    expect(result).toMatchObject({
+      status: "AVAILABLE",
+      requested_resolution: "1h",
+      effective_resolution: "1h",
+      expected_point_count: 1,
+      observed_point_count: 1,
+      resolution_profile: {
+        profile_id: "HOURLY_VALUATION_RESEARCH",
+        alignment: "SESSION",
+        effective_aggregation: "1h",
+      },
+      path: [
+        expect.objectContaining({
+          as_of: fixture.checkpoint,
+          source_timestamp: "2026-08-27T13:30:00.000Z",
+          bar_start: "2026-08-27T13:30:00.000Z",
+          bar_end: fixture.checkpoint,
+          available_at: fixture.checkpoint,
+        }),
+      ],
+    });
+    expect(service.getHistoricalCandlesBatch).toHaveBeenCalledTimes(1);
   });
 
   test("surfaces provider failures that are not bounded-resolution limitations", async () => {

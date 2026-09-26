@@ -10,8 +10,21 @@ import {
   reconstructHistoricalSpxCandidates,
   type HistoricalCandidateCandles,
 } from "./historical-spx-reconstruction.js";
+import {
+  normalizeCandidateConstructionProfile,
+  normalizeResolutionProfile,
+  withEffectiveAggregation,
+  type CandidateConstructionProfile,
+  type ResolutionProfile,
+  type ResolutionProfileInput,
+} from "./resolution-profile.js";
 import type { OptionSide } from "./spread-adapter.js";
-import { normalizeRfc3339 } from "./time.js";
+import {
+  normalizeRfc3339,
+  resolveCheckpoint,
+  type LocalCheckpointInput,
+  type ResolvedCheckpoint,
+} from "./time.js";
 
 export type HistoricalCandidateSelector = BacktestStrikeSelector & {
   days_until_expiration: number;
@@ -19,12 +32,15 @@ export type HistoricalCandidateSelector = BacktestStrikeSelector & {
 
 export type HistoricalSpxCandidatesInput = {
   underlying: "SPX";
-  as_of: string;
+  as_of?: string;
+  local_checkpoint?: LocalCheckpointInput;
   min_dte?: number;
   max_dte?: number;
   sides?: OptionSide[];
   selector_grid: HistoricalCandidateSelector[];
   lookback_calendar_days?: number;
+  resolution_profile?: ResolutionProfileInput;
+  candidate_construction_profile?: Record<string, unknown>;
   phase: "REGRESSION_RESEARCH";
   references?: ExecutionReferences;
 };
@@ -64,6 +80,10 @@ export type HistoricalSpxCandidate = {
   historical_volume: string | null;
   historical_open_interest: string | null;
   underlying_price: string | null;
+  bar_start: string | null;
+  bar_end: string | null;
+  available_at: string | null;
+  retrieved_at: string | null;
   observation_age_ms: number;
   confidence: "MEDIUM";
   provenance: HistoricalCandidateProvenance[];
@@ -90,6 +110,8 @@ export type HistoricalSpxCandidatesResult = {
   evidence_type: "HISTORICAL_SELECTOR_CANDIDATE_SET";
   evidence_phase: "REGRESSION_RESEARCH";
   as_of: string;
+  checkpoint: ResolvedCheckpoint;
+  retrieved_at: string | null;
   underlying: "SPX";
   requested_dte_range: {
     min: number;
@@ -122,6 +144,8 @@ export type HistoricalSpxCandidatesResult = {
     forward_outcomes_included: false;
   };
   attempts: HistoricalCandidateAttempt[];
+  resolution_profile: ResolutionProfile;
+  candidate_construction_profile: CandidateConstructionProfile | null;
   references: ExecutionReferences;
   warnings: string[];
 };
@@ -142,12 +166,15 @@ export type CandidatePlanItem = {
 export type HistoricalSpxCandidatesPlan = {
   request_id: string;
   as_of: string;
+  checkpoint: ResolvedCheckpoint;
   session_date: string;
   start_date: string;
   min_dte: number;
   max_dte: number;
   lookback_calendar_days: number;
   items: CandidatePlanItem[];
+  resolution_profile: ResolutionProfile;
+  candidate_construction_profile: CandidateConstructionProfile | null;
   references: ExecutionReferences;
 };
 
@@ -309,7 +336,30 @@ export function prepareHistoricalSpxCandidates(
     throw new Error("phase must be REGRESSION_RESEARCH.");
   }
 
-  const asOf = normalizeRfc3339(input.as_of, "as_of");
+  const checkpoint = resolveCheckpoint(
+    input.as_of,
+    input.local_checkpoint,
+    "historical_spx_candidates",
+  );
+  const asOf = checkpoint.instant;
+  const resolutionProfile = normalizeResolutionProfile(
+    input.resolution_profile,
+    {
+      default_requested_aggregation: "5m",
+      default_max_observation_age_minutes: 60,
+      default_max_temporal_skew_minutes: 0,
+      default_fallback_aggregations: [],
+    },
+  );
+  if (resolutionProfile.fallback_policy.allowed) {
+    throw new Error(
+      "Historical SPX selector reconstruction does not support resolution fallback; request a single cohort explicitly.",
+    );
+  }
+  const candidateConstructionProfile =
+    normalizeCandidateConstructionProfile(
+      input.candidate_construction_profile,
+    );
   const minDte = integerInRange(
     input.min_dte,
     DEFAULT_MIN_DTE,
@@ -432,15 +482,21 @@ export function prepareHistoricalSpxCandidates(
         selector: item.selector,
         backtest_request: item.backtest_request,
       })),
+      checkpoint,
+      resolution_profile: resolutionProfile,
+      candidate_construction_profile: candidateConstructionProfile,
       references,
     }),
     as_of: asOf,
+    checkpoint,
     session_date: sessionDate,
     start_date: startDate,
     min_dte: minDte,
     max_dte: maxDte,
     lookback_calendar_days: lookbackCalendarDays,
     items,
+    resolution_profile: resolutionProfile,
+    candidate_construction_profile: candidateConstructionProfile,
     references,
   };
 }
@@ -600,6 +656,10 @@ function baseCandidateFromTrial(
             trial.underlyingPriceAtOpen,
             "logs.trials.underlyingPriceAtOpen",
           ),
+          bar_start: null,
+          bar_end: null,
+          available_at: selectedAt,
+          retrieved_at: null,
           observation_age_ms: asOfTime - Date.parse(selectedAt),
           confidence: "MEDIUM",
           provenance: [
@@ -1008,6 +1068,13 @@ export async function discoverHistoricalSpxCandidates(
     evidence_type: "HISTORICAL_SELECTOR_CANDIDATE_SET",
     evidence_phase: "REGRESSION_RESEARCH",
     as_of: plan.as_of,
+    checkpoint: plan.checkpoint,
+    retrieved_at:
+      contracts
+        .map((contract) => contract.retrieved_at)
+        .filter((value): value is string => value !== null)
+        .sort()
+        .at(-1) ?? null,
     underlying: "SPX",
     requested_dte_range: {
       min: plan.min_dte,
@@ -1053,6 +1120,14 @@ export async function discoverHistoricalSpxCandidates(
       forward_outcomes_included: false,
     },
     attempts,
+    resolution_profile: withEffectiveAggregation(
+      plan.resolution_profile,
+      reconstructedCount > 0
+        ? plan.resolution_profile.requested_aggregation
+        : null,
+    ),
+    candidate_construction_profile:
+      plan.candidate_construction_profile,
     references: plan.references,
     warnings: [...new Set(warnings)],
   };

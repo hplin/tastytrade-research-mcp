@@ -32,10 +32,10 @@ The project is intentionally separate from the official
 | Tool | Purpose |
 | --- | --- |
 | `tastytrade_price_option_package` | Price verticals, iron condors, and double diagonals with explicit native/synthetic provenance |
-| `tastytrade_discover_historical_spx_candidates` | Reconstruct timestamp-safe historical SPXW candidates from completed DXLink evidence, with exact-timestamp Backtester fallback |
-| `tastytrade_get_historical_spx_candidate_universe` | Return a bounded multi-strike, multi-expiration SPXW universe for downstream deterministic spread construction |
-| `tastytrade_get_historical_option_package_at_checkpoint` | Reconstruct an exact-leg SPX package reference at a historical checkpoint with explicit age and skew controls |
-| `tastytrade_get_historical_option_package_path` | Return aligned completed-candle package points and explicit gaps at the finest retrievable resolution |
+| `tastytrade_discover_historical_spx_candidates` | Reconstruct timestamp-safe historical SPXW candidates under a versioned resolution profile, with exact-timestamp Backtester fallback |
+| `tastytrade_get_historical_spx_candidate_universe` | Return a bounded multi-strike, multi-expiration SPXW universe with explicit resolution/provider cohort identity |
+| `tastytrade_get_historical_option_package_at_checkpoint` | Reconstruct an exact-leg SPX package reference at an RFC3339 or IANA-local checkpoint with explicit age and skew controls |
+| `tastytrade_get_historical_option_package_path` | Return profile-aligned completed-candle package points and explicit gaps without interpolation |
 | `tastytrade_prepare_spx_spread` | Deterministically normalize SPX legs without calling an upstream service |
 | `tastytrade_simulate_spx_spread` | Run exact-leg SPX historical simulation and normalize its result |
 | `tastytrade_create_spx_spread_backtest` | Submit supported SPX structures through relative Backtester selectors |
@@ -43,6 +43,9 @@ The project is intentionally separate from the official
 | `tastytrade_get_historical_candles` | Retrieve normalized DXLink OHLCV candles without resampling |
 
 Use MCP `tools/list` for the complete JSON input schemas.
+The shared profile contract and the optional seven-date live capability gate
+are documented in
+[`docs/resolution-profiles.md`](docs/resolution-profiles.md).
 
 ## Execution evidence contract
 
@@ -121,11 +124,12 @@ time-of-day field, and a live request containing undocumented
 `19:45:00Z`.
 
 For `DELTA` and `PERCENTAGE_OTM`, the adapter reconstructs a bounded SPXW
-universe from generated OCC/streamer symbols and completed 5-minute DXLink
-candles. It enforces `bar start + interval <= as_of`, a 60-minute option
-observation limit, timestamp-aligned call/put parity for the forward, and
-contract-candle IV for Black-76-style delta. Selection is deterministic by
-selector error, observation age, DTE distance, and strike.
+universe from generated OCC/streamer symbols and completed DXLink candles.
+Omitting `resolution_profile` preserves the 5-minute cohort; native-hour RTH
+research requires explicit `HOURLY_VALUATION_RESEARCH`. It enforces
+`available_at <= as_of`, profile age/skew limits, aligned call/put parity for
+the forward, and contract-candle IV for Black-76-style delta. Selection is
+deterministic by selector error, observation age, DTE distance, and strike.
 
 Generated contract identity becomes eligible only when DXLink returns
 historical evidence for that exact symbol. The result preserves checkpoint
@@ -174,6 +178,13 @@ it to 24 hours; older pre-checkpoint observations are then retained only as
 availability counts remain machine-readable, and aggregate field capability
 flags are true only when every returned contract supports the field.
 
+Both historical SPX tools accept either RFC3339 `as_of` or an unambiguous
+IANA `local_checkpoint`. They preserve `bar_start`, `bar_end`,
+`available_at`, and `retrieved_at`, and return the normalized resolution
+profile with deterministic requested/effective cohort IDs. An opaque
+versioned `candidate_construction_profile` is returned unchanged; this MCP
+does not duplicate grading, DD-bucket, or final-leg-selection rules.
+
 See
 [`docs/historical-spx-universe.md`](docs/historical-spx-universe.md)
 for the input contract, reconstruction rules, and live checkpoint findings.
@@ -186,6 +197,12 @@ each leg's exact OCC identity, derived streamer symbol, historical close, IV,
 bar-start timestamp, availability timestamp, age, and provenance. Explicit
 age and temporal-skew limits fail closed. Candle-derived values are always
 `VALUATION_ONLY`; historical bid/ask is not fabricated.
+
+The checkpoint and path results include deterministic request IDs plus
+requested/native/effective aggregation, session, alignment, age/skew,
+fallback, and cohort metadata. The default checkpoint behavior remains the
+existing 5-minute compatibility path. Native-hour New York RTH valuation is
+explicit opt-in and does not silently fall into the 5-minute cohort.
 
 `tastytrade_get_historical_option_package_path` emits a point only when every
 leg has an exact timestamp-aligned completed bar. It never interpolates or
@@ -230,8 +247,10 @@ snapshot boundary.
 
 The normalized output includes:
 
+- deterministic request and cohort identity;
 - requested and actual UTC ranges;
-- source timestamp per bar;
+- `source_time`, `bar_start`, `bar_end`, `available_at`, and `retrieved_at`
+  per bar;
 - explicit instrument type and interval;
 - `ALL`, US `REGULAR`, or caller-defined `CUSTOM` session filtering with an
   IANA timezone;

@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { ExactDecimal } from "./decimal.js";
 import {
   createExecutionEvidence,
@@ -16,7 +17,27 @@ import type {
   PriceEffect,
   SpreadFamily,
 } from "./package-pricing.js";
-import { normalizeRfc3339 } from "./time.js";
+import {
+  alignedBarStarts,
+  candleSessionForResolutionProfile,
+  historicalBarMatchesResolutionProfile,
+  normalizeCandidateConstructionProfile,
+  normalizeResolutionProfile,
+  resolutionCandidates,
+  resolutionMilliseconds,
+  resolutionProfileInput,
+  resolveHistoricalBarTiming,
+  withEffectiveAggregation,
+  type CandidateConstructionProfile,
+  type ResolutionProfile,
+  type ResolutionProfileInput,
+} from "./resolution-profile.js";
+import {
+  normalizeRfc3339,
+  resolveCheckpoint,
+  type LocalCheckpointInput,
+  type ResolvedCheckpoint,
+} from "./time.js";
 
 export type HistoricalOptionPackageLegInput = {
   provider_symbol: string;
@@ -27,10 +48,13 @@ export type HistoricalOptionPackageLegInput = {
 export type HistoricalOptionPackageCheckpointInput = {
   family: SpreadFamily;
   underlying: "SPX";
-  as_of: string;
+  as_of?: string;
+  local_checkpoint?: LocalCheckpointInput;
   legs: HistoricalOptionPackageLegInput[];
   max_observation_age_minutes?: number;
   max_temporal_skew_minutes?: number;
+  resolution_profile?: ResolutionProfileInput;
+  candidate_construction_profile?: Record<string, unknown>;
   phase: "REGRESSION_RESEARCH";
   references?: ExecutionReferences;
 };
@@ -42,6 +66,8 @@ export type HistoricalOptionPackagePathInput = {
   end_time: string;
   resolution: HistoricalPackageResolution;
   legs: HistoricalOptionPackageLegInput[];
+  resolution_profile?: ResolutionProfileInput;
+  candidate_construction_profile?: Record<string, unknown>;
   phase: "REGRESSION_RESEARCH";
   references?: ExecutionReferences;
 };
@@ -74,7 +100,10 @@ export type HistoricalOptionPackageLegObservation = {
   implied_volatility: string | null;
   delta: null;
   source_timestamp: string | null;
+  bar_start: string | null;
+  bar_end: string | null;
   available_at: string | null;
+  retrieved_at: string | null;
   observation_age_minutes: number | null;
   freshness_status: FreshnessStatus | "MISSING";
   provenance: HistoricalLegProvenance;
@@ -93,14 +122,19 @@ export type HistoricalPackageResolutionAttempt = {
 
 export type HistoricalOptionPackageCheckpointResult = {
   contract_version: "1.0.0";
+  request_id: string;
   status: "AVAILABLE" | "NOT_AVAILABLE";
   evidence_type: "HISTORICAL_OPTION_PACKAGE_REFERENCE";
   evidence_phase: "REGRESSION_RESEARCH";
   family: SpreadFamily;
   underlying: "SPX";
   as_of: string;
-  requested_resolution: "5m";
+  checkpoint: ResolvedCheckpoint;
+  requested_resolution: HistoricalPackageResolution;
   effective_resolution: HistoricalPackageResolution | null;
+  retrieved_at: string | null;
+  resolution_profile: ResolutionProfile;
+  candidate_construction_profile: CandidateConstructionProfile | null;
   resolution_attempts: HistoricalPackageResolutionAttempt[];
   reference_value: HistoricalPackageReferenceValue | null;
   synthetic_mid: null;
@@ -125,9 +159,13 @@ export type HistoricalOptionPackageCheckpointResult = {
 export type HistoricalOptionPackagePathPoint = {
   as_of: string;
   source_timestamp: string;
+  bar_start: string;
+  bar_end: string;
+  available_at: string;
+  retrieved_at: string | null;
   reference_value: string;
   price_effect: PriceEffect;
-  temporal_skew_minutes: 0;
+  temporal_skew_minutes: number;
   temporal_alignment: "ALIGNED";
   valuation_quality: "COMPLETE";
   synthetic_mid: null;
@@ -147,6 +185,7 @@ export type HistoricalOptionPackagePathGap = {
 
 export type HistoricalOptionPackagePathResult = {
   contract_version: "1.0.0";
+  request_id: string;
   status: "AVAILABLE" | "PARTIAL" | "NOT_AVAILABLE";
   evidence_type: "HISTORICAL_PATH";
   evidence_phase: "REGRESSION_RESEARCH";
@@ -156,6 +195,9 @@ export type HistoricalOptionPackagePathResult = {
   end_time: string;
   requested_resolution: HistoricalPackageResolution;
   effective_resolution: HistoricalPackageResolution | null;
+  retrieved_at: string | null;
+  resolution_profile: ResolutionProfile;
+  candidate_construction_profile: CandidateConstructionProfile | null;
   resolution_attempts: HistoricalPackageResolutionAttempt[];
   expected_point_count: number;
   observed_point_count: number;
@@ -193,7 +235,7 @@ type ParsedLeg = HistoricalOptionPackageLegInput & {
 type HistoricalLegProvenance = {
   provider_symbol: string;
   streamer_symbol: string;
-  source: "tastytrade-dxlink";
+  source: string;
   interval: HistoricalPackageResolution;
   reference_field: "close";
   source_timestamp_semantics: "BAR_START";
@@ -229,11 +271,15 @@ const CANDLE_MAX_OUTPUT = 20_000;
 const CANDLE_MAX_RECEIVED_EVENTS = 20_000;
 const CANDLE_MAX_BUFFER_BYTES = 32 * 1024 * 1024;
 
-function resolutionMilliseconds(resolution: HistoricalPackageResolution): number {
-  const amount = Number.parseInt(resolution, 10);
-  return resolution.endsWith("h")
-    ? amount * 60 * 60_000
-    : amount * 60_000;
+function stableRequestId(value: unknown): string {
+  return createHash("sha256").update(JSON.stringify(value)).digest("hex");
+}
+
+function packageResolution(value: string): HistoricalPackageResolution {
+  if (!PATH_RESOLUTIONS.includes(value as HistoricalPackageResolution)) {
+    throw new Error(`Unsupported historical package resolution: ${value}.`);
+  }
+  return value as HistoricalPackageResolution;
 }
 
 function minuteValue(milliseconds: number): number {
@@ -442,13 +488,15 @@ function isLegacyLocalBudgetError(error: unknown): boolean {
 async function retrieveWithFallback(
   service: HistoricalOptionPackageCandlesService,
   legs: ParsedLeg[],
-  resolutions: HistoricalPackageResolution[],
+  profile: ResolutionProfile,
   range: (resolution: HistoricalPackageResolution) => {
     start: string;
     end: string;
   },
 ): Promise<SelectedCandleBatch> {
   const attempts: HistoricalPackageResolutionAttempt[] = [];
+  const resolutions = resolutionCandidates(profile).map(packageResolution);
+  const session = candleSessionForResolutionProfile(profile);
   for (const resolution of resolutions) {
     const requestedRange = range(resolution);
     try {
@@ -461,7 +509,8 @@ async function retrieveWithFallback(
         interval: resolution,
         start_time: requestedRange.start,
         end_time: requestedRange.end,
-        session: { kind: "ALL", timezone: "UTC" },
+        session,
+        resolution_profile: resolutionProfileInput(profile),
         max_output_candles: CANDLE_MAX_OUTPUT,
         max_received_events: CANDLE_MAX_RECEIVED_EVENTS,
         max_buffer_bytes: CANDLE_MAX_BUFFER_BYTES,
@@ -528,11 +577,12 @@ function legProvenance(
   leg: ParsedLeg,
   resolution: HistoricalPackageResolution,
   result: HistoricalCandlesResult | undefined,
+  profile: ResolutionProfile,
 ): HistoricalLegProvenance {
   return {
     provider_symbol: leg.provider_symbol,
     streamer_symbol: leg.streamer_symbol,
-    source: "tastytrade-dxlink",
+    source: profile.provider_id,
     interval: resolution,
     reference_field: "close",
     source_timestamp_semantics: "BAR_START",
@@ -569,9 +619,15 @@ function observedLeg(
   candle: HistoricalCandle | null,
   evaluatedAt: number,
   maxObservationAgeMs: number,
+  profile: ResolutionProfile,
   extraWarnings: string[] = [],
 ): HistoricalOptionPackageLegObservation {
-  const provenance = legProvenance(leg, resolution, result);
+  const provenance = legProvenance(
+    leg,
+    resolution,
+    result,
+    profile,
+  );
   const warnings = [...extraWarnings];
   if (!result) warnings.push("PROVIDER_RESULT_MISSING");
   if (result && !result.snapshot_complete) {
@@ -582,12 +638,16 @@ function observedLeg(
   }
   if (!candle) warnings.push("MISSING_LEG_EVIDENCE");
 
-  const intervalMs = resolutionMilliseconds(resolution);
-  const sourceTimestamp = candle
-    ? normalizeRfc3339(candle.source_time, `${leg.provider_symbol}.source_time`)
+  const timing = candle
+    ? resolveHistoricalBarTiming(
+        candle,
+        resolution,
+        result?.retrieved_at,
+      )
     : null;
+  const sourceTimestamp = timing?.bar_start ?? null;
   const availableAtMs =
-    sourceTimestamp === null ? null : Date.parse(sourceTimestamp) + intervalMs;
+    timing === null ? null : Date.parse(timing.available_at);
   const observationAgeMs =
     availableAtMs === null ? null : evaluatedAt - availableAtMs;
   let freshnessStatus: HistoricalOptionPackageLegObservation["freshness_status"] =
@@ -633,8 +693,10 @@ function observedLeg(
           ),
     delta: null,
     source_timestamp: sourceTimestamp,
-    available_at:
-      availableAtMs === null ? null : new Date(availableAtMs).toISOString(),
+    bar_start: timing?.bar_start ?? null,
+    bar_end: timing?.bar_end ?? null,
+    available_at: timing?.available_at ?? null,
+    retrieved_at: timing?.retrieved_at ?? null,
     observation_age_minutes:
       observationAgeMs === null ? null : minuteValue(observationAgeMs),
     freshness_status: freshnessStatus,
@@ -643,10 +705,13 @@ function observedLeg(
   };
 }
 
-function resultSource(resolution: HistoricalPackageResolution | null): string {
+function resultSource(
+  profile: ResolutionProfile,
+  resolution: HistoricalPackageResolution | null,
+): string {
   return resolution
-    ? `tastytrade-dxlink:historical-option-package{=${resolution}}`
-    : "tastytrade-dxlink:historical-option-package";
+    ? `${profile.provider_id}:historical-option-package{=${resolution}}`
+    : `${profile.provider_id}:historical-option-package`;
 }
 
 function resolutionWarnings(
@@ -662,9 +727,10 @@ function resolutionWarnings(
 function emptyCheckpointLegs(
   legs: ParsedLeg[],
   resolution: HistoricalPackageResolution,
+  profile: ResolutionProfile,
 ): HistoricalOptionPackageLegObservation[] {
   return legs.map((leg) =>
-    observedLeg(leg, resolution, undefined, null, 0, 0),
+    observedLeg(leg, resolution, undefined, null, 0, 0, profile),
   );
 }
 
@@ -678,25 +744,81 @@ export async function getHistoricalOptionPackageAtCheckpoint(
   if (input.phase !== "REGRESSION_RESEARCH") {
     throw new Error("phase must be REGRESSION_RESEARCH.");
   }
-  const asOf = normalizeRfc3339(input.as_of, "as_of");
+  const checkpoint = resolveCheckpoint(
+    input.as_of,
+    input.local_checkpoint,
+    "historical_option_package_checkpoint",
+  );
+  const asOf = checkpoint.instant;
   const asOfMs = Date.parse(asOf);
-  const maxObservationAgeMinutes = normalizeMinuteLimit(
+  const legacyMaxObservationAgeMinutes = normalizeMinuteLimit(
     input.max_observation_age_minutes,
     DEFAULT_MAX_OBSERVATION_AGE_MINUTES,
     "max_observation_age_minutes",
   );
-  const maxTemporalSkewMinutes = normalizeMinuteLimit(
+  const legacyMaxTemporalSkewMinutes = normalizeMinuteLimit(
     input.max_temporal_skew_minutes,
     DEFAULT_MAX_TEMPORAL_SKEW_MINUTES,
     "max_temporal_skew_minutes",
   );
+  if (
+    input.max_observation_age_minutes !== undefined &&
+    input.resolution_profile?.max_observation_age_minutes !== undefined &&
+    input.max_observation_age_minutes !==
+      input.resolution_profile.max_observation_age_minutes
+  ) {
+    throw new Error(
+      "max_observation_age_minutes must match resolution_profile.max_observation_age_minutes when both are provided.",
+    );
+  }
+  if (
+    input.max_temporal_skew_minutes !== undefined &&
+    input.resolution_profile?.max_temporal_skew_minutes !== undefined &&
+    input.max_temporal_skew_minutes !==
+      input.resolution_profile.max_temporal_skew_minutes
+  ) {
+    throw new Error(
+      "max_temporal_skew_minutes must match resolution_profile.max_temporal_skew_minutes when both are provided.",
+    );
+  }
+  const resolutionProfile = normalizeResolutionProfile(
+    input.resolution_profile,
+    {
+      default_requested_aggregation: "5m",
+      default_max_observation_age_minutes:
+        legacyMaxObservationAgeMinutes,
+      default_max_temporal_skew_minutes:
+        legacyMaxTemporalSkewMinutes,
+      default_fallback_aggregations: CHECKPOINT_RESOLUTIONS.slice(1),
+    },
+  );
+  const requestedResolution = packageResolution(
+    resolutionProfile.requested_aggregation,
+  );
+  const maxObservationAgeMinutes =
+    resolutionProfile.max_observation_age_minutes;
+  const maxTemporalSkewMinutes =
+    resolutionProfile.max_temporal_skew_minutes;
   const maxObservationAgeMs = maxObservationAgeMinutes * 60_000;
   const maxTemporalSkewMs = maxTemporalSkewMinutes * 60_000;
   const legs = normalizeLegs(input.family, input.legs);
+  const candidateConstructionProfile =
+    normalizeCandidateConstructionProfile(
+      input.candidate_construction_profile,
+    );
+  const requestId = stableRequestId({
+    family: input.family,
+    underlying: input.underlying,
+    checkpoint,
+    legs,
+    resolution_profile: resolutionProfile,
+    candidate_construction_profile: candidateConstructionProfile,
+    references: input.references ?? {},
+  });
   const selected = await retrieveWithFallback(
     service,
     legs,
-    CHECKPOINT_RESOLUTIONS,
+    resolutionProfile,
     (resolution) => {
       const intervalMs = resolutionMilliseconds(resolution);
       const diagnosticLookbackMs = Math.max(
@@ -710,14 +832,18 @@ export async function getHistoricalOptionPackageAtCheckpoint(
     },
   );
   const warnings = [
-    ...resolutionWarnings("5m", selected.resolution),
+    ...resolutionWarnings(requestedResolution, selected.resolution),
     "HISTORICAL_BID_ASK_NOT_AVAILABLE",
     "VALUATION_ONLY_NOT_EXECUTABLE",
   ];
 
   if (!selected.resolution) {
-    const source = resultSource(null);
-    const observations = emptyCheckpointLegs(legs, "5m");
+    const source = resultSource(resolutionProfile, null);
+    const observations = emptyCheckpointLegs(
+      legs,
+      requestedResolution,
+      resolutionProfile,
+    );
     warnings.push(
       ...observations.flatMap((leg) =>
         leg.warnings.map(
@@ -741,14 +867,22 @@ export async function getHistoricalOptionPackageAtCheckpoint(
     });
     return {
       contract_version: "1.0.0",
+      request_id: requestId,
       status: "NOT_AVAILABLE",
       evidence_type: "HISTORICAL_OPTION_PACKAGE_REFERENCE",
       evidence_phase: "REGRESSION_RESEARCH",
       family: input.family,
       underlying: input.underlying,
       as_of: asOf,
-      requested_resolution: "5m",
+      checkpoint,
+      requested_resolution: requestedResolution,
       effective_resolution: null,
+      retrieved_at: null,
+      resolution_profile: withEffectiveAggregation(
+        resolutionProfile,
+        null,
+      ),
+      candidate_construction_profile: candidateConstructionProfile,
       resolution_attempts: selected.attempts,
       reference_value: null,
       synthetic_mid: null,
@@ -771,7 +905,8 @@ export async function getHistoricalOptionPackageAtCheckpoint(
     };
   }
 
-  const intervalMs = resolutionMilliseconds(selected.resolution);
+  const selectedResolution = selected.resolution;
+  const intervalMs = resolutionMilliseconds(selectedResolution);
   const byStreamer = resultByStreamerSymbol(selected.results);
   const observations = legs.map((leg) => {
     const result = byStreamer.get(leg.streamer_symbol);
@@ -783,15 +918,25 @@ export async function getHistoricalOptionPackageAtCheckpoint(
       );
     const eligible: HistoricalCandle[] = [];
     let ignoredIncomplete = 0;
+    let ignoredMisaligned = 0;
     for (const candle of result?.candles ?? []) {
-      const sourceTime = Date.parse(
-        normalizeRfc3339(
-          candle.source_time,
-          `${leg.provider_symbol}.source_time`,
-        ),
+      const timing = resolveHistoricalBarTiming(
+        candle,
+        selectedResolution,
+        result?.retrieved_at,
       );
-      if (sourceTime < rangeStartMs) continue;
-      if (sourceTime + intervalMs > asOfMs) {
+      if (Date.parse(timing.bar_start) < rangeStartMs) continue;
+      if (
+        !historicalBarMatchesResolutionProfile(
+          timing,
+          selectedResolution,
+          resolutionProfile,
+        )
+      ) {
+        ignoredMisaligned += 1;
+        continue;
+      }
+      if (Date.parse(timing.available_at) > asOfMs) {
         ignoredIncomplete += 1;
         continue;
       }
@@ -799,19 +944,37 @@ export async function getHistoricalOptionPackageAtCheckpoint(
     }
     eligible.sort(
       (left, right) =>
-        Date.parse(left.source_time) - Date.parse(right.source_time),
+        Date.parse(
+          resolveHistoricalBarTiming(
+            left,
+            selectedResolution,
+            result?.retrieved_at,
+          ).available_at,
+        ) -
+        Date.parse(
+          resolveHistoricalBarTiming(
+            right,
+            selectedResolution,
+            result?.retrieved_at,
+          ).available_at,
+        ),
     );
-    const extraWarnings =
-      ignoredIncomplete > 0
+    const extraWarnings = [
+      ...(ignoredIncomplete > 0
         ? [`INCOMPLETE_OR_FUTURE_CANDLES_IGNORED:${ignoredIncomplete}`]
-        : [];
+        : []),
+      ...(ignoredMisaligned > 0
+        ? [`PROVIDER_BAR_ALIGNMENT_MISMATCH_IGNORED:${ignoredMisaligned}`]
+        : []),
+    ];
     return observedLeg(
       leg,
-      selected.resolution!,
+      selectedResolution,
       result,
       eligible.at(-1) ?? null,
       asOfMs,
       maxObservationAgeMs,
+      resolutionProfile,
       extraWarnings,
     );
   });
@@ -829,6 +992,12 @@ export async function getHistoricalOptionPackageAtCheckpoint(
       } else if (warning.startsWith("INCOMPLETE_OR_FUTURE_CANDLES_IGNORED:")) {
         warnings.push(
           `INCOMPLETE_OR_FUTURE_CANDLES_IGNORED:${observation.provider_symbol}:${warning.split(":")[1]}`,
+        );
+      } else if (
+        warning.startsWith("PROVIDER_BAR_ALIGNMENT_MISMATCH_IGNORED:")
+      ) {
+        warnings.push(
+          `PROVIDER_BAR_ALIGNMENT_MISMATCH_IGNORED:${observation.provider_symbol}:${warning.split(":")[1]}`,
         );
       } else if (
         warning === "DXLINK_SNAPSHOT_INCOMPLETE" ||
@@ -889,7 +1058,7 @@ export async function getHistoricalOptionPackageAtCheckpoint(
     : hasStale
       ? "STALE"
       : "FRESH";
-  const source = resultSource(selected.resolution);
+  const source = resultSource(resolutionProfile, selected.resolution);
   const oldestSource =
     sourceTimestamps.length > 0
       ? new Date(Math.min(...sourceTimestamps)).toISOString()
@@ -906,6 +1075,12 @@ export async function getHistoricalOptionPackageAtCheckpoint(
     availableTimestamps.length > 0
       ? new Date(Math.max(...availableTimestamps)).toISOString()
       : null;
+  const retrievedAt =
+    observations
+      .map((observation) => observation.retrieved_at)
+      .filter((value): value is string => value !== null)
+      .sort()
+      .at(-1) ?? null;
   const evidence = createExecutionEvidence({
     evidence_type: "HISTORICAL_OPTION_PACKAGE_REFERENCE",
     evidence_phase: "POST_SESSION_REGRESSION",
@@ -925,14 +1100,22 @@ export async function getHistoricalOptionPackageAtCheckpoint(
 
   return {
     contract_version: "1.0.0",
+    request_id: requestId,
     status: available ? "AVAILABLE" : "NOT_AVAILABLE",
     evidence_type: "HISTORICAL_OPTION_PACKAGE_REFERENCE",
     evidence_phase: "REGRESSION_RESEARCH",
     family: input.family,
     underlying: input.underlying,
     as_of: asOf,
-    requested_resolution: "5m",
+    checkpoint,
+    requested_resolution: requestedResolution,
     effective_resolution: selected.resolution,
+    retrieved_at: retrievedAt,
+    resolution_profile: withEffectiveAggregation(
+      resolutionProfile,
+      selected.resolution,
+    ),
+    candidate_construction_profile: candidateConstructionProfile,
     resolution_attempts: selected.attempts,
     reference_value: referenceValue,
     synthetic_mid: null,
@@ -966,23 +1149,6 @@ function candidateResolutions(
   return PATH_RESOLUTIONS.slice(index);
 }
 
-function alignedSourceTimes(
-  startMs: number,
-  endMs: number,
-  intervalMs: number,
-): number[] {
-  const first = Math.ceil(startMs / intervalMs) * intervalMs;
-  const times: number[] = [];
-  for (
-    let sourceTime = first;
-    sourceTime + intervalMs <= endMs;
-    sourceTime += intervalMs
-  ) {
-    times.push(sourceTime);
-  }
-  return times;
-}
-
 export async function getHistoricalOptionPackagePath(
   service: HistoricalOptionPackageCandlesService,
   input: HistoricalOptionPackagePathInput,
@@ -1003,17 +1169,51 @@ export async function getHistoricalOptionPackagePath(
   if (endMs - startMs > MAX_RESEARCH_WINDOW_MS) {
     throw new Error("Historical option package paths are limited to 24 hours.");
   }
+  const legacyResolutions = candidateResolutions(input.resolution);
+  const resolutionProfile = normalizeResolutionProfile(
+    input.resolution_profile,
+    {
+      default_requested_aggregation: input.resolution,
+      default_max_observation_age_minutes: 0,
+      default_max_temporal_skew_minutes: 0,
+      default_fallback_aggregations: legacyResolutions.slice(1),
+    },
+  );
+  const requestedResolution = packageResolution(
+    resolutionProfile.requested_aggregation,
+  );
+  if (
+    input.resolution_profile &&
+    requestedResolution !== input.resolution
+  ) {
+    throw new Error(
+      `resolution must match resolution_profile requested aggregation ${requestedResolution}.`,
+    );
+  }
   const legs = normalizeLegs(input.family, input.legs);
-  const resolutions = candidateResolutions(input.resolution);
+  const candidateConstructionProfile =
+    normalizeCandidateConstructionProfile(
+      input.candidate_construction_profile,
+    );
+  const requestId = stableRequestId({
+    family: input.family,
+    underlying: input.underlying,
+    start_time: startTime,
+    end_time: endTime,
+    legs,
+    resolution_profile: resolutionProfile,
+    candidate_construction_profile: candidateConstructionProfile,
+    references: input.references ?? {},
+  });
   const selected = await retrieveWithFallback(
     service,
     legs,
-    resolutions,
+    resolutionProfile,
     () => ({ start: startTime, end: endTime }),
   );
-  const source = resultSource(selected.resolution);
+  const source = resultSource(resolutionProfile, selected.resolution);
   const warnings = [
-    ...resolutionWarnings(input.resolution, selected.resolution),
+    ...resolutionWarnings(requestedResolution, selected.resolution),
     "HISTORICAL_BID_ASK_NOT_AVAILABLE",
     "VALUATION_ONLY_NOT_EXECUTABLE",
     "NO_INTERPOLATION_OR_FORWARD_FILL",
@@ -1036,6 +1236,7 @@ export async function getHistoricalOptionPackagePath(
     });
     return {
       contract_version: "1.0.0",
+      request_id: requestId,
       status: "NOT_AVAILABLE",
       evidence_type: "HISTORICAL_PATH",
       evidence_phase: "REGRESSION_RESEARCH",
@@ -1043,8 +1244,14 @@ export async function getHistoricalOptionPackagePath(
       underlying: input.underlying,
       start_time: startTime,
       end_time: endTime,
-      requested_resolution: input.resolution,
+      requested_resolution: requestedResolution,
       effective_resolution: null,
+      retrieved_at: null,
+      resolution_profile: withEffectiveAggregation(
+        resolutionProfile,
+        null,
+      ),
+      candidate_construction_profile: candidateConstructionProfile,
       resolution_attempts: selected.attempts,
       expected_point_count: 0,
       observed_point_count: 0,
@@ -1055,30 +1262,59 @@ export async function getHistoricalOptionPackagePath(
       fill_verification_compatible: true,
       supported_fill_models: ["LIMIT_TOUCH"],
       source,
-      leg_sources: legs.map((leg) => legProvenance(leg, input.resolution, undefined)),
+      leg_sources: legs.map((leg) =>
+        legProvenance(
+          leg,
+          requestedResolution,
+          undefined,
+          resolutionProfile,
+        ),
+      ),
       warnings: evidence.warnings,
       evidence,
     };
   }
 
   const intervalMs = resolutionMilliseconds(selected.resolution);
-  const expectedTimes = alignedSourceTimes(startMs, endMs, intervalMs);
+  const effectiveProfile = withEffectiveAggregation(
+    resolutionProfile,
+    selected.resolution,
+  );
+  const expectedTimes = alignedBarStarts(
+    startMs,
+    endMs,
+    effectiveProfile,
+  );
   const byStreamer = resultByStreamerSymbol(selected.results);
   const candleMaps = new Map<string, Map<number, HistoricalCandle>>();
+  const misalignedCounts = new Map<string, number>();
   for (const leg of legs) {
     const result = byStreamer.get(leg.streamer_symbol);
     const candles = new Map<number, HistoricalCandle>();
     for (const candle of result?.candles ?? []) {
-      const sourceTime = Date.parse(
-        normalizeRfc3339(
-          candle.source_time,
-          `${leg.provider_symbol}.source_time`,
-        ),
+      const timing = resolveHistoricalBarTiming(
+        candle,
+        selected.resolution,
+        result?.retrieved_at,
       );
+      if (
+        !historicalBarMatchesResolutionProfile(
+          timing,
+          selected.resolution,
+          effectiveProfile,
+        )
+      ) {
+        misalignedCounts.set(
+          leg.streamer_symbol,
+          (misalignedCounts.get(leg.streamer_symbol) ?? 0) + 1,
+        );
+        continue;
+      }
+      const sourceTime = Date.parse(timing.bar_start);
       if (
         sourceTime >= startMs &&
         sourceTime <= endMs &&
-        sourceTime + intervalMs <= endMs
+        Date.parse(timing.available_at) <= endMs
       ) {
         candles.set(sourceTime, candle);
       }
@@ -1107,7 +1343,11 @@ export async function getHistoricalOptionPackagePath(
         );
       } else if (!candle) {
         missingProviderSymbols.push(leg.provider_symbol);
-        reasons.add("MISSING_LEG_EVIDENCE");
+        reasons.add(
+          (misalignedCounts.get(leg.streamer_symbol) ?? 0) > 0
+            ? "PROVIDER_BAR_ALIGNMENT_MISMATCH"
+            : "MISSING_LEG_EVIDENCE",
+        );
       }
       return observedLeg(
         leg,
@@ -1116,13 +1356,46 @@ export async function getHistoricalOptionPackagePath(
         candle,
         availableAt,
         0,
+        effectiveProfile,
       );
     });
+    const observationAvailableTimes = observations
+      .map((observation) =>
+        observation.available_at === null
+          ? null
+          : Date.parse(observation.available_at),
+      )
+      .filter((value): value is number => value !== null);
+    for (const observation of observations) {
+      if (observation.freshness_status !== "FRESH") {
+        missingProviderSymbols.push(observation.provider_symbol);
+        reasons.add("EVIDENCE_NOT_AVAILABLE_AT_EVALUATION_TIME");
+      }
+    }
+    const temporalSkewMs =
+      observationAvailableTimes.length === legs.length
+        ? Math.max(...observationAvailableTimes) -
+          Math.min(...observationAvailableTimes)
+        : null;
+    if (
+      temporalSkewMs !== null &&
+      temporalSkewMs >
+        effectiveProfile.max_temporal_skew_minutes * 60_000
+    ) {
+      reasons.add("TEMPORAL_ALIGNMENT_FAILED");
+      for (const observation of observations) {
+        missingProviderSymbols.push(observation.provider_symbol);
+      }
+    }
     if (missingProviderSymbols.length > 0) {
       gaps.push({
         source_timestamp: new Date(sourceTime).toISOString(),
-        available_at: new Date(availableAt).toISOString(),
-        missing_provider_symbols: missingProviderSymbols,
+        available_at: new Date(
+          observationAvailableTimes.length > 0
+            ? Math.max(...observationAvailableTimes)
+            : availableAt,
+        ).toISOString(),
+        missing_provider_symbols: [...new Set(missingProviderSymbols)],
         reasons: [...reasons],
       });
       continue;
@@ -1145,12 +1418,26 @@ export async function getHistoricalOptionPackagePath(
       });
       continue;
     }
+    const retrievedAt =
+      observations
+        .map((observation) => observation.retrieved_at)
+        .filter((value): value is string => value !== null)
+        .sort()
+        .at(-1) ?? null;
+    const pointAvailableAt =
+      observationAvailableTimes.length > 0
+        ? Math.max(...observationAvailableTimes)
+        : availableAt;
     path.push({
-      as_of: new Date(availableAt).toISOString(),
+      as_of: new Date(pointAvailableAt).toISOString(),
       source_timestamp: new Date(sourceTime).toISOString(),
+      bar_start: new Date(sourceTime).toISOString(),
+      bar_end: new Date(availableAt).toISOString(),
+      available_at: new Date(pointAvailableAt).toISOString(),
+      retrieved_at: retrievedAt,
       reference_value: referenceValue.value,
       price_effect: referenceValue.price_effect,
-      temporal_skew_minutes: 0,
+      temporal_skew_minutes: minuteValue(temporalSkewMs ?? 0),
       temporal_alignment: "ALIGNED",
       valuation_quality: "COMPLETE",
       synthetic_mid: null,
@@ -1197,6 +1484,7 @@ export async function getHistoricalOptionPackagePath(
 
   return {
     contract_version: "1.0.0",
+    request_id: requestId,
     status,
     evidence_type: "HISTORICAL_PATH",
     evidence_phase: "REGRESSION_RESEARCH",
@@ -1204,8 +1492,16 @@ export async function getHistoricalOptionPackagePath(
     underlying: input.underlying,
     start_time: startTime,
     end_time: endTime,
-    requested_resolution: input.resolution,
+    requested_resolution: requestedResolution,
     effective_resolution: selected.resolution,
+    retrieved_at:
+      path
+        .map((point) => point.retrieved_at)
+        .filter((value): value is string => value !== null)
+        .sort()
+        .at(-1) ?? null,
+    resolution_profile: effectiveProfile,
+    candidate_construction_profile: candidateConstructionProfile,
     resolution_attempts: selected.attempts,
     expected_point_count: expectedTimes.length,
     observed_point_count: path.length,
@@ -1226,6 +1522,7 @@ export async function getHistoricalOptionPackagePath(
         leg,
         selected.resolution!,
         byStreamer.get(leg.streamer_symbol),
+        effectiveProfile,
       ),
     ),
     warnings: evidence.warnings,

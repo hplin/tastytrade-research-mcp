@@ -224,9 +224,20 @@ describe("DXLink candle normalization", () => {
       status: "AVAILABLE",
       snapshot_complete: true,
       provider_snapshot_complete: true,
+      retrieved_at: "2026-09-25T12:00:00.000Z",
+      resolution_profile: {
+        profile_id: "DIRECT_CANDLE_REQUEST",
+        requested_aggregation: "1h",
+        native_aggregation: "h",
+        effective_aggregation: "1h",
+      },
       candles: [
         expect.objectContaining({
           source_time: "2026-08-25T14:00:00.000Z",
+          bar_start: "2026-08-25T14:00:00.000Z",
+          bar_end: "2026-08-25T15:00:00.000Z",
+          available_at: "2026-08-25T15:00:00.000Z",
+          retrieved_at: "2026-09-25T12:00:00.000Z",
           close: "100.5",
         }),
       ],
@@ -242,6 +253,49 @@ describe("DXLink candle normalization", () => {
         snapshot_snip_seen: false,
         timeout_stage: null,
       },
+    });
+  });
+
+  test("uses the explicit native-hour RTH profile and session alignment", async () => {
+    const barStart = Date.parse("2026-03-09T13:30:00.000Z");
+    const { client, getSocket } = clientWithRows([
+      row(barStart, 0, "100", "SPX{=h,a=s,tho=true}"),
+      marker(barStart - 1, "SPX{=h,a=s,tho=true}"),
+    ]);
+
+    const result = await client.getHistoricalCandles({
+      symbol: "SPX",
+      instrument_type: "INDEX",
+      interval: "1h",
+      start_time: "2026-03-09T13:30:00.000Z",
+      end_time: "2026-03-09T14:30:00.000Z",
+      resolution_profile: {
+        profile_id: "HOURLY_VALUATION_RESEARCH",
+        profile_version: "1.0.0",
+      },
+    });
+
+    const subscription = getSocket().sent.find(
+      (message) => message.type === "FEED_SUBSCRIPTION" && message.add,
+    );
+    expect(subscription.add[0].symbol).toBe("SPX{=h,a=s,tho=true}");
+    expect(result).toMatchObject({
+      timezone: "America/New_York",
+      session: "REGULAR",
+      resolution_profile: {
+        profile_id: "HOURLY_VALUATION_RESEARCH",
+        requested_aggregation: "1h",
+        native_aggregation: "h",
+        effective_aggregation: "1h",
+        alignment: "SESSION",
+      },
+      candles: [
+        expect.objectContaining({
+          bar_start: "2026-03-09T13:30:00.000Z",
+          bar_end: "2026-03-09T14:30:00.000Z",
+          available_at: "2026-03-09T14:30:00.000Z",
+        }),
+      ],
     });
   });
 

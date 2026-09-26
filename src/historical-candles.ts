@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import axios, { type AxiosInstance } from "axios";
 import {
   OAUTH_BASE_URL,
@@ -6,6 +7,13 @@ import {
 } from "./config.js";
 import { ExactDecimal } from "./decimal.js";
 import { TastytradeOAuthClient } from "./oauth-client.js";
+import {
+  normalizeResolutionProfile,
+  withEffectiveAggregation,
+  type ResolutionProfile,
+  type ResolutionProfileInput,
+  type ResolutionProfileSession,
+} from "./resolution-profile.js";
 import { normalizeRfc3339 } from "./time.js";
 
 export type InstrumentType =
@@ -40,6 +48,7 @@ export type HistoricalCandlesInput = {
   start_time: string;
   end_time: string;
   session?: CandleSession;
+  resolution_profile?: ResolutionProfileInput;
   deadline_ms?: number;
   max_output_candles?: number;
   max_received_events?: number;
@@ -60,6 +69,7 @@ export type HistoricalCandlesBatchInput = {
   start_time: string;
   end_time: string;
   session?: CandleSession;
+  resolution_profile?: ResolutionProfileInput;
   deadline_ms?: number;
   max_output_candles?: number;
   max_received_events?: number;
@@ -70,6 +80,10 @@ export type HistoricalCandlesBatchInput = {
 
 export type HistoricalCandle = {
   source_time: string;
+  bar_start: string;
+  bar_end: string;
+  available_at: string;
+  retrieved_at: string;
   open: string;
   high: string;
   low: string;
@@ -109,6 +123,7 @@ export type HistoricalCandlesTimeoutStage =
 
 export type HistoricalCandlesResult = {
   contract_version: "1.0.0";
+  request_id: string;
   status: "AVAILABLE" | "PARTIAL" | "NOT_AVAILABLE";
   symbol: string;
   streamer_symbol: string;
@@ -124,6 +139,8 @@ export type HistoricalCandlesResult = {
   } | null;
   timezone: string;
   session: CandleSession["kind"];
+  retrieved_at: string;
+  resolution_profile: ResolutionProfile;
   source: "tastytrade-dxlink";
   source_timestamp_unit: "epoch_milliseconds";
   snapshot_complete: boolean;
@@ -559,6 +576,7 @@ function sessionConfiguration(session: CandleSession | undefined): {
       endMinute: null,
     };
   }
+
   if (session.kind === "REGULAR") {
     return {
       kind: "REGULAR",
@@ -573,6 +591,67 @@ function sessionConfiguration(session: CandleSession | undefined): {
     startMinute: parseClock(session.start_time, "session.start_time"),
     endMinute: parseClock(session.end_time, "session.end_time"),
   };
+}
+
+function resolutionSession(
+  session: CandleSession | undefined,
+): ResolutionProfileSession {
+  const normalized = sessionConfiguration(session);
+  if (normalized.kind === "ALL") {
+    return {
+      kind: "ALL",
+      timezone: normalized.timezone,
+      start_time: null,
+      end_time: null,
+    };
+  }
+  if (normalized.kind === "REGULAR") {
+    return {
+      kind: "REGULAR",
+      timezone: normalized.timezone,
+      start_time: "09:30",
+      end_time: "16:00",
+    };
+  }
+  const customSession = session as Extract<CandleSession, { kind: "CUSTOM" }>;
+  return {
+    kind: "CUSTOM",
+    timezone: normalized.timezone,
+    start_time: customSession.start_time,
+    end_time: customSession.end_time,
+  };
+}
+
+function candleSession(profile: ResolutionProfile): CandleSession {
+  if (profile.session.kind === "ALL") {
+    return {
+      kind: "ALL",
+      timezone: profile.session.timezone,
+    };
+  }
+  if (profile.session.kind === "REGULAR") {
+    return {
+      kind: "REGULAR",
+      timezone: profile.session.timezone,
+    };
+  }
+  return {
+    kind: "CUSTOM",
+    timezone: profile.session.timezone,
+    start_time: profile.session.start_time,
+    end_time: profile.session.end_time,
+  };
+}
+
+function sameSession(
+  left: ResolutionProfileSession,
+  right: ResolutionProfileSession,
+): boolean {
+  return JSON.stringify(left) === JSON.stringify(right);
+}
+
+function stableRequestId(value: unknown): string {
+  return createHash("sha256").update(JSON.stringify(value)).digest("hex");
 }
 
 function localTimeParts(
@@ -992,6 +1071,7 @@ export class TastytradeHistoricalCandlesClient {
       start_time: input.start_time,
       end_time: input.end_time,
       session: input.session,
+      resolution_profile: input.resolution_profile,
       deadline_ms: input.deadline_ms,
       max_output_candles: input.max_output_candles,
       max_received_events: input.max_received_events,
@@ -1049,7 +1129,45 @@ export class TastytradeHistoricalCandlesClient {
       0,
       Math.ceil((this.clock() - startMs) / intervalMs) + 1,
     );
-    const session = sessionConfiguration(input.session);
+    const directSession = resolutionSession(input.session);
+    const normalizedProfile = normalizeResolutionProfile(
+      input.resolution_profile,
+      {
+        default_requested_aggregation: interval,
+        default_max_observation_age_minutes: 0,
+        default_max_temporal_skew_minutes: 0,
+        default_fallback_aggregations: [],
+        default_profile_id: "DIRECT_CANDLE_REQUEST",
+        direct_session: directSession,
+        direct_alignment:
+          directSession.kind === "ALL" ? "MIDNIGHT" : "SESSION",
+      },
+    );
+    if (
+      input.resolution_profile &&
+      normalizedProfile.requested_aggregation !== interval.toLowerCase() &&
+      !normalizedProfile.fallback_policy.aggregations.includes(
+        interval.toLowerCase(),
+      )
+    ) {
+      throw new Error(
+        `interval must match the requested aggregation or an allowed fallback in resolution_profile ${normalizedProfile.profile_id}.`,
+      );
+    }
+    if (
+      input.resolution_profile &&
+      input.session &&
+      !sameSession(directSession, normalizedProfile.session)
+    ) {
+      throw new Error(
+        "session must match the selected resolution_profile session.",
+      );
+    }
+    const effectiveProfile = withEffectiveAggregation(
+      normalizedProfile,
+      interval.toLowerCase(),
+    );
+    const session = sessionConfiguration(candleSession(effectiveProfile));
     const candleSymbols = instruments.map((instrument) =>
       session.kind === "REGULAR"
         ? `${instrument.streamerSymbol}{=${providerPeriod},a=s,tho=true}`
@@ -1073,6 +1191,20 @@ export class TastytradeHistoricalCandlesClient {
       session,
       budgets,
     });
+    const retrievedAt = new Date(this.clock()).toISOString();
+    const requestId = stableRequestId({
+      instruments,
+      interval,
+      start,
+      end,
+      resolution_profile: normalizedProfile,
+      budgets: {
+        max_output_candles: budgets.maxOutputCandles,
+        max_received_events: budgets.maxReceivedEvents,
+        max_buffer_bytes: budgets.maxBufferBytes,
+        deadline_ms: budgets.deadlineMs,
+      },
+    });
 
     const prepared = instruments.map((instrument, instrumentIndex) => {
       const candleSymbol = candleSymbols[instrumentIndex];
@@ -1080,19 +1212,27 @@ export class TastytradeHistoricalCandlesClient {
       const filtered = [...state.candlesByIndex.values()]
         .map((retained) => retained.candle)
         .sort((left, right) => left.timestamp - right.timestamp);
-      const candles: HistoricalCandle[] = filtered.map((candle) => ({
-        source_time: new Date(candle.timestamp).toISOString(),
-        open: candle.open!,
-        high: candle.high!,
-        low: candle.low!,
-        close: candle.close!,
-        volume: candle.volume,
-        vwap: candle.vwap,
-        bid_volume: candle.bidVolume,
-        ask_volume: candle.askVolume,
-        implied_volatility: candle.impliedVolatility,
-        open_interest: candle.openInterest,
-      }));
+      const candles: HistoricalCandle[] = filtered.map((candle) => {
+        const barStart = new Date(candle.timestamp).toISOString();
+        const barEnd = new Date(candle.timestamp + intervalMs).toISOString();
+        return {
+          source_time: barStart,
+          bar_start: barStart,
+          bar_end: barEnd,
+          available_at: barEnd,
+          retrieved_at: retrievedAt,
+          open: candle.open!,
+          high: candle.high!,
+          low: candle.low!,
+          close: candle.close!,
+          volume: candle.volume,
+          vwap: candle.vwap,
+          bid_volume: candle.bidVolume,
+          ask_volume: candle.askVolume,
+          implied_volatility: candle.impliedVolatility,
+          open_interest: candle.openInterest,
+        };
+      });
       const coverageWarnings = edgeCoverageWarnings(
         candles,
         startMs,
@@ -1161,6 +1301,7 @@ export class TastytradeHistoricalCandlesClient {
 
       return {
         contract_version: "1.0.0" as const,
+        request_id: requestId,
         status: snapshotComplete && failureReasons.length === 0
           ? ("AVAILABLE" as const)
           : candles.length > 0
@@ -1180,6 +1321,8 @@ export class TastytradeHistoricalCandlesClient {
               },
         timezone: session.timezone,
         session: session.kind,
+        retrieved_at: retrievedAt,
+        resolution_profile: effectiveProfile,
         source: "tastytrade-dxlink" as const,
         source_timestamp_unit: "epoch_milliseconds" as const,
         snapshot_complete: snapshotComplete,

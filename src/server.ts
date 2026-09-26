@@ -61,6 +61,72 @@ const DATE_SCHEMA = {
   pattern: DATE_PATTERN,
 } as const;
 
+const LOCAL_CHECKPOINT_SCHEMA = {
+  type: "object",
+  properties: {
+    local_date: DATE_SCHEMA,
+    local_time: {
+      type: "string",
+      pattern:
+        "^([01][0-9]|2[0-3]):[0-5][0-9](?::[0-5][0-9](?:\\.[0-9]{1,3})?)?$",
+    },
+    timezone: {
+      type: "string",
+      minLength: 1,
+      maxLength: 100,
+      description:
+        "IANA timezone such as America/Los_Angeles. Ambiguous and nonexistent local instants are rejected.",
+    },
+  },
+  required: ["local_date", "local_time", "timezone"],
+  additionalProperties: false,
+} as const;
+
+const RESOLUTION_PROFILE_SCHEMA = {
+  type: "object",
+  properties: {
+    profile_id: {
+      type: "string",
+      enum: ["DEFAULT_5M", "HOURLY_VALUATION_RESEARCH"],
+    },
+    profile_version: { type: "string", const: "1.0.0" },
+    provider_id: {
+      type: "string",
+      pattern: "^[A-Za-z0-9][A-Za-z0-9._:-]*$",
+      maxLength: 100,
+    },
+    max_observation_age_minutes: {
+      type: "integer",
+      minimum: 0,
+      maximum: 1440,
+    },
+    max_temporal_skew_minutes: {
+      type: "integer",
+      minimum: 0,
+      maximum: 1440,
+    },
+    allowed_fallback_aggregations: {
+      type: "array",
+      uniqueItems: true,
+      items: {
+        type: "string",
+        pattern: "^[1-9][0-9]*(s|m|h|d|w)$",
+      },
+    },
+  },
+  required: ["profile_id", "profile_version"],
+  additionalProperties: false,
+} as const;
+
+const CANDIDATE_CONSTRUCTION_PROFILE_SCHEMA = {
+  type: "object",
+  properties: {
+    version: { type: "string", minLength: 1, maxLength: 100 },
+  },
+  required: ["version"],
+  additionalProperties: true,
+} as const;
+
 const EMPTY_OBJECT_SCHEMA = {
   type: "object",
   properties: {},
@@ -192,6 +258,7 @@ const HISTORICAL_SPX_CANDIDATES_SCHEMA = {
       properties: {
         underlying: { type: "string", enum: ["SPX"] },
         as_of: RFC3339_SCHEMA,
+        local_checkpoint: LOCAL_CHECKPOINT_SCHEMA,
         min_dte: { type: "integer", minimum: 1, maximum: 365 },
         max_dte: { type: "integer", minimum: 1, maximum: 365 },
         sides: {
@@ -212,6 +279,9 @@ const HISTORICAL_SPX_CANDIDATES_SCHEMA = {
           minimum: 0,
           maximum: 30,
         },
+        resolution_profile: RESOLUTION_PROFILE_SCHEMA,
+        candidate_construction_profile:
+          CANDIDATE_CONSTRUCTION_PROFILE_SCHEMA,
         phase: {
           type: "string",
           enum: ["REGRESSION_RESEARCH"],
@@ -220,9 +290,12 @@ const HISTORICAL_SPX_CANDIDATES_SCHEMA = {
       },
       required: [
         "underlying",
-        "as_of",
         "selector_grid",
         "phase",
+      ],
+      oneOf: [
+        { required: ["as_of"], not: { required: ["local_checkpoint"] } },
+        { required: ["local_checkpoint"], not: { required: ["as_of"] } },
       ],
       additionalProperties: false,
     },
@@ -239,6 +312,7 @@ const HISTORICAL_SPX_UNIVERSE_SCHEMA = {
       properties: {
         underlying: { type: "string", enum: ["SPX"] },
         as_of: RFC3339_SCHEMA,
+        local_checkpoint: LOCAL_CHECKPOINT_SCHEMA,
         min_dte: { type: "integer", minimum: 1, maximum: 365 },
         max_dte: { type: "integer", minimum: 1, maximum: 365 },
         strike_min: { type: "integer", minimum: 1, maximum: 100000 },
@@ -268,6 +342,9 @@ const HISTORICAL_SPX_UNIVERSE_SCHEMA = {
           minimum: 5,
           maximum: 1440,
         },
+        resolution_profile: RESOLUTION_PROFILE_SCHEMA,
+        candidate_construction_profile:
+          CANDIDATE_CONSTRUCTION_PROFILE_SCHEMA,
         phase: {
           type: "string",
           enum: ["REGRESSION_RESEARCH"],
@@ -276,10 +353,13 @@ const HISTORICAL_SPX_UNIVERSE_SCHEMA = {
       },
       required: [
         "underlying",
-        "as_of",
         "strike_min",
         "strike_max",
         "phase",
+      ],
+      oneOf: [
+        { required: ["as_of"], not: { required: ["local_checkpoint"] } },
+        { required: ["local_checkpoint"], not: { required: ["as_of"] } },
       ],
       additionalProperties: false,
     },
@@ -512,6 +592,9 @@ const HISTORICAL_OPTION_PACKAGE_COMMON_PROPERTIES = {
     type: "string",
     enum: ["REGRESSION_RESEARCH"],
   },
+  resolution_profile: RESOLUTION_PROFILE_SCHEMA,
+  candidate_construction_profile:
+    CANDIDATE_CONSTRUCTION_PROFILE_SCHEMA,
   references: REFERENCES_SCHEMA,
 } as const;
 
@@ -523,6 +606,7 @@ const HISTORICAL_OPTION_PACKAGE_CHECKPOINT_SCHEMA = {
       properties: {
         ...HISTORICAL_OPTION_PACKAGE_COMMON_PROPERTIES,
         as_of: RFC3339_SCHEMA,
+        local_checkpoint: LOCAL_CHECKPOINT_SCHEMA,
         max_observation_age_minutes: {
           type: "integer",
           minimum: 0,
@@ -534,7 +618,11 @@ const HISTORICAL_OPTION_PACKAGE_CHECKPOINT_SCHEMA = {
           maximum: 1440,
         },
       },
-      required: ["family", "underlying", "as_of", "legs", "phase"],
+      required: ["family", "underlying", "legs", "phase"],
+      oneOf: [
+        { required: ["as_of"], not: { required: ["local_checkpoint"] } },
+        { required: ["local_checkpoint"], not: { required: ["as_of"] } },
+      ],
       additionalProperties: false,
     },
   },
@@ -643,6 +731,7 @@ const HISTORICAL_CANDLES_SCHEMA = {
         start_time: RFC3339_SCHEMA,
         end_time: RFC3339_SCHEMA,
         session: CANDLE_SESSION_SCHEMA,
+        resolution_profile: RESOLUTION_PROFILE_SCHEMA,
         deadline_ms: {
           type: "integer",
           minimum: 1,
@@ -794,25 +883,25 @@ export const TOOLS: Tool[] = [
   {
     name: "tastytrade_discover_historical_spx_candidates",
     description:
-      "Discover checkpoint-safe historical SPX contracts from a selector grid. DELTA and PERCENTAGE_OTM selectors are deterministically reconstructed from completed DXLink SPX/SPXW candles at or before as_of; exact-timestamp Backtester selection remains a fallback, and stale or future evidence always fails closed.",
+      "Discover checkpoint-safe historical SPX contracts from a selector grid. Defaults to the versioned 5-minute cohort; native-hour RTH reconstruction is explicit via HOURLY_VALUATION_RESEARCH. Accepts RFC3339 or unambiguous IANA-local checkpoints and preserves an opaque candidate-construction profile without implementing grading or final leg selection.",
     inputSchema: HISTORICAL_SPX_CANDIDATES_SCHEMA,
   },
   {
     name: "tastytrade_get_historical_spx_candidate_universe",
     description:
-      "Return a bounded timestamp-safe SPXW contract universe across requested strikes, sides, and min/mid/max DTE expirations. Exact OCC identity requires completed DXLink evidence at or before as_of; optional older pre-checkpoint evidence is labeled stale, coverage gaps/provider errors remain explicit, and the tool never selects a final spread.",
+      "Return a bounded timestamp-safe SPXW contract universe with explicit versioned resolution/cohort metadata. Defaults to 5-minute evidence; native-hour New York RTH is opt-in, incomplete bars are excluded, and the tool preserves but does not interpret candidate-construction policy.",
     inputSchema: HISTORICAL_SPX_UNIVERSE_SCHEMA,
   },
   {
     name: "tastytrade_get_historical_option_package_at_checkpoint",
     description:
-      "Reconstruct an exact-leg SPX option package reference value from completed historical DXLink candles at or before a checkpoint. Enforces explicit age/skew limits and never presents candle closes as executable bid/ask.",
+      "Reconstruct an exact-leg SPX option package reference from completed bars at an RFC3339 or unambiguous IANA-local checkpoint. Returns explicit requested/native/effective resolution, session, alignment, age/skew, fallback, and cohort metadata; candle closes remain valuation-only.",
     inputSchema: HISTORICAL_OPTION_PACKAGE_CHECKPOINT_SCHEMA,
   },
   {
     name: "tastytrade_get_historical_option_package_path",
     description:
-      "Reconstruct a short exact-leg SPX package reference path from aligned completed DXLink candles. Explicitly downgrades unavailable fine resolutions and reports gaps without interpolation or forward fill.",
+      "Reconstruct a short exact-leg SPX package reference path from aligned completed bars under a versioned resolution profile. Declared fallback order is explicit, cohorts remain distinct, and gaps are reported without interpolation or forward fill.",
     inputSchema: HISTORICAL_OPTION_PACKAGE_PATH_SCHEMA,
   },
   {
@@ -842,7 +931,7 @@ export const TOOLS: Tool[] = [
   {
     name: "tastytrade_get_historical_candles",
     description:
-      "Retrieve normalized historical OHLCV candles from tastytrade DXLink for an exact UTC and session window, with canonical provider symbol matching, independent resource budgets, per-symbol snapshot diagnostics, and no resampling.",
+      "Retrieve normalized historical OHLCV candles with explicit bar_start, bar_end, available_at, retrieved_at, and versioned resolution/cohort metadata. Supports exact UTC/session windows, canonical provider symbol matching, independent resource budgets, and no resampling.",
     inputSchema: HISTORICAL_CANDLES_SCHEMA,
   },
 ];
