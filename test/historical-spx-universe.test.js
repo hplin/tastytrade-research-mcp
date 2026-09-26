@@ -113,9 +113,13 @@ describe("historical SPX candidate universe", () => {
       requested_dte_range: { min: 21, max: 35 },
       requested_strike_range: { min: "7375", max: "7950", step: "25" },
       underlying_price: "7664.96",
+      max_observation_age_minutes: 60,
+      freshness_threshold_minutes: 60,
       capabilities: {
         historical_contract_universe_reconstructed: true,
         exact_provider_contract_identity: true,
+        reconstructed_contract_identity: true,
+        provider_returned_contract_identity: false,
         checkpoint_timestamp_safe: true,
         historical_price: true,
         historical_delta: true,
@@ -131,7 +135,17 @@ describe("historical SPX candidate universe", () => {
       requested_contract_count: 144,
       verified_contract_count: 18,
       missing_contract_count: 126,
+      provider_errors: [],
     });
+    expect(result.coverage.gaps).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          expiration: "2026-09-22T20:00:00.000Z",
+          option_side: "CALL",
+          missing_strikes: expect.arrayContaining(["7925"]),
+        }),
+      ]),
+    );
     expect(result.contracts).toHaveLength(18);
     expect(
       new Set(result.contracts.map((contract) => contract.expiration)),
@@ -171,6 +185,7 @@ describe("historical SPX candidate universe", () => {
           historical_open_interest: "1800",
           historical_volume: "18",
           observation_age_ms: 2_100_000,
+          freshness: "FRESH",
           identity_source: "RECONSTRUCTED_OCC_VALIDATED_BY_DXLINK",
         }),
         expect.objectContaining({
@@ -215,5 +230,135 @@ describe("historical SPX candidate universe", () => {
         max_contracts: 500,
       }),
     ).toThrow("requested universe contains");
+  });
+
+  test("labels explicitly allowed stale pre-checkpoint evidence", async () => {
+    const source = structuredClone(fixture);
+    const stale = source.options.find(
+      (option) => option.symbol === "SPXW  260922C07925000",
+    );
+    stale.candle.source_time = "2026-08-25T13:20:00.000Z";
+    const result = await getHistoricalSpxCandidateUniverse(
+      fixtureCandles(source),
+      {
+        ...REQUEST,
+        max_observation_age_minutes: 120,
+      },
+    );
+
+    expect(result.max_observation_age_minutes).toBe(120);
+    expect(result.capabilities.stale_pre_checkpoint_evidence_included).toBe(
+      true,
+    );
+    expect(
+      result.contracts.find(
+        (contract) =>
+          contract.provider_symbol === "SPXW  260922C07925000",
+      ),
+    ).toMatchObject({
+      source_timestamp: "2026-08-25T13:25:00.000Z",
+      observation_age_ms: 3_900_000,
+      freshness: "STALE",
+      confidence: "LOW",
+      warnings: expect.arrayContaining([
+        "STALE_PRE_CHECKPOINT_OBSERVATION",
+      ]),
+    });
+  });
+
+  test("keeps future evidence excluded even with a longer observation window", async () => {
+    const result = await getHistoricalSpxCandidateUniverse(
+      fixtureCandles(),
+      {
+        ...REQUEST,
+        max_observation_age_minutes: 1_440,
+      },
+    );
+
+    expect(
+      result.contracts.some(
+        (contract) =>
+          contract.provider_symbol === "SPXW  260922C07925000",
+      ),
+    ).toBe(false);
+    expect(
+      result.contracts.every(
+        (contract) =>
+          Date.parse(contract.source_timestamp) <= Date.parse(result.as_of),
+      ),
+    ).toBe(true);
+  });
+
+  test("preserves missing fields as null and downgrades aggregate capabilities", async () => {
+    const source = structuredClone(fixture);
+    const incomplete = source.options.find(
+      (option) => option.symbol === "SPXW  260922P07375000",
+    );
+    incomplete.candle.implied_volatility = null;
+    incomplete.candle.open_interest = null;
+    incomplete.candle.volume = null;
+    const result = await getHistoricalSpxCandidateUniverse(
+      fixtureCandles(source),
+      REQUEST,
+    );
+    const contract = result.contracts.find(
+      (item) => item.provider_symbol === incomplete.symbol,
+    );
+
+    expect(contract).toMatchObject({
+      historical_delta: null,
+      historical_iv: null,
+      historical_open_interest: null,
+      historical_volume: null,
+    });
+    expect(result.capabilities).toMatchObject({
+      historical_delta: false,
+      historical_contract_iv: false,
+      historical_open_interest: false,
+      historical_volume: false,
+    });
+    expect(result.field_coverage).toMatchObject({
+      historical_iv: { available: 17, missing: 1 },
+      historical_open_interest: { available: 17, missing: 1 },
+      historical_volume: { available: 17, missing: 1 },
+    });
+  });
+
+  test("returns partial coverage when one provider batch fails", async () => {
+    const candles = fixtureCandles();
+    const retrieve = candles.getHistoricalCandlesBatch;
+    let batchIndex = 0;
+    candles.getHistoricalCandlesBatch = jest.fn(async (input) => {
+      if (batchIndex++ === 0) throw new Error("fixture batch unavailable");
+      return retrieve(input);
+    });
+
+    const result = await getHistoricalSpxCandidateUniverse(candles, REQUEST);
+
+    expect(result.status).toBe("PARTIAL");
+    expect(result.contracts.length).toBeGreaterThan(0);
+    expect(result.coverage.provider_errors).toEqual([
+      expect.objectContaining({
+        message: "fixture batch unavailable",
+      }),
+    ]);
+    expect(result.warnings).toContain("OPTION_BATCH_PROVIDER_ERRORS:1");
+  });
+
+  test("returns PROVIDER_ERROR when underlying evidence retrieval fails", async () => {
+    const candles = fixtureCandles();
+    candles.getHistoricalCandles = jest.fn(async () => {
+      throw new Error("fixture underlying unavailable");
+    });
+
+    const result = await getHistoricalSpxCandidateUniverse(candles, REQUEST);
+
+    expect(result.status).toBe("PROVIDER_ERROR");
+    expect(result.contracts).toEqual([]);
+    expect(result.coverage.provider_errors).toEqual([
+      expect.objectContaining({
+        message: "fixture underlying unavailable",
+      }),
+    ]);
   });
 });

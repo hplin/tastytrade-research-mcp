@@ -19,6 +19,7 @@ Double Diagonal, or other package.
     "strike_step": 25,
     "option_sides": ["CALL", "PUT"],
     "max_contracts": 500,
+    "max_observation_age_minutes": 60,
     "phase": "REGRESSION_RESEARCH",
     "references": {
       "checkpoint_id": "spx-universe-2026-08-25-0730-pt"
@@ -36,6 +37,12 @@ DTE range.
 `max_contracts` (default 500, maximum 1,000). Requests that exceed that bound
 are rejected before opening a provider connection.
 
+`max_observation_age_minutes` defaults to 60 and may be raised to 1,440.
+Evidence older than 60 minutes but still inside the explicit maximum remains
+timestamp-safe, but is labeled `freshness: STALE`, `confidence: LOW`, and
+`STALE_PRE_CHECKPOINT_OBSERVATION`. Extending the maximum never permits
+evidence after `as_of`.
+
 ## Evidence reconstruction
 
 The adapter:
@@ -46,7 +53,7 @@ The adapter:
 3. retrieves option candles in batches of at most 20 symbols;
 4. accepts only complete bars with
    `source_time + 5 minutes <= as_of`;
-5. excludes observations older than 60 minutes;
+5. excludes observations older than the caller's maximum age;
 6. treats a generated contract as historically verified only when DXLink
    returns evidence for that exact symbol; and
 7. derives delta when contract IV and a timestamp-aligned call/put parity pair
@@ -73,7 +80,29 @@ Each verified contract includes:
 The top-level coverage counts requested, verified, and missing contracts.
 `COMPLETE` means every generated contract was verified, `PARTIAL` means at
 least one but not all were verified, and `NOT_AVAILABLE` means none were
-verified.
+verified without a provider failure. `PROVIDER_ERROR` means provider access
+failed before any contract could be returned. A failed option batch produces
+`PARTIAL` when other batches still provide verified contracts.
+
+`coverage.gaps` identifies every incomplete expiration/side segment with
+exact missing strikes and contiguous missing-strike ranges.
+`coverage.provider_errors` identifies the failed stage, batch, symbols, and
+message without converting failure into success-shaped evidence.
+
+`field_coverage` reports available and missing counts for price, delta, IV,
+OI, and volume. The matching capability boolean is true only when every
+returned contract supports that field. For example, one contract with missing
+IV makes `historical_contract_iv: false` even though other contracts retain
+their IV values.
+
+Identity semantics are explicit:
+
+- `reconstructed_contract_identity: true` means OCC identity was generated
+  deterministically and verified by an exact-symbol DXLink candle.
+- `provider_returned_contract_identity: false` means DXLink did not enumerate
+  the historical chain or return the OCC identity as an instrument record.
+- `exact_provider_contract_identity: true` means every returned generated
+  identity was validated by provider-native historical evidence.
 
 This is a bounded candidate universe, not a historical full-chain claim.
 Historical bid/ask remains unavailable.
@@ -90,3 +119,14 @@ returned 34 timestamp-safe contracts across:
 All returned provenance timestamps were at or before the checkpoint. Missing
 contracts, including contracts without a completed candle in the 60-minute
 window, remained explicit coverage gaps.
+
+With an explicitly requested 1,440-minute maximum, the same live checkpoint
+returned 90 verified contracts across CALL and PUT for all three expirations.
+56 were labeled stale pre-checkpoint evidence. Price and volume were available
+for every returned contract, while delta, IV, and OI capabilities remained
+false because their machine-readable field coverage was incomplete.
+
+The response `request_id` includes `as_of`, bounds, explicit expirations,
+freshness maximum, and references. Persisted replay evidence must be treated
+as immutable; a later call with broader freshness or newly available provider
+data is a distinct record and must never silently upgrade an earlier replay.

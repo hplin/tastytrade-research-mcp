@@ -160,6 +160,12 @@ evidence are omitted and counted as coverage gaps. The endpoint preserves
 price, reconstructed delta, contract IV, OI, volume, observation age, and
 field-level provenance when available; it never selects the final spread.
 
+The default freshness maximum is 60 minutes. A caller may explicitly extend
+it to 24 hours; older pre-checkpoint observations are then retained only as
+`STALE`/`LOW` evidence. Coverage gaps, provider batch errors, and per-field
+availability counts remain machine-readable, and aggregate field capability
+flags are true only when every returned contract supports the field.
+
 See
 [`docs/historical-spx-universe.md`](docs/historical-spx-universe.md)
 for the input contract, reconstruction rules, and live checkpoint findings.
