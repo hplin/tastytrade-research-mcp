@@ -289,6 +289,84 @@ describe("historical SPX candidate universe", () => {
     ).toBe(true);
   });
 
+  test("uses a documented spot-forward fallback when parity timestamps do not align", async () => {
+    const source = structuredClone(fixture);
+    source.options.find(
+      (option) => option.symbol === "SPXW  260915P07700000",
+    ).candle.source_time = "2026-08-25T14:00:00.000Z";
+    source.options.find(
+      (option) => option.symbol === "SPXW  260929P07700000",
+    ).candle.source_time = "2026-08-25T14:05:00.000Z";
+
+    const result = await getHistoricalSpxCandidateUniverse(
+      fixtureCandles(source),
+      REQUEST,
+    );
+    const frontPut = result.contracts.find(
+      (contract) =>
+        contract.provider_symbol === "SPXW  260915P07425000",
+    );
+    const middleCall = result.contracts.find(
+      (contract) =>
+        contract.provider_symbol === "SPXW  260922C07900000",
+    );
+    const backCall = result.contracts.find(
+      (contract) =>
+        contract.provider_symbol === "SPXW  260929C07900000",
+    );
+
+    expect(frontPut.historical_delta).not.toBeNull();
+    expect(Number(frontPut.historical_delta)).toBeCloseTo(-19.804, 3);
+    expect(frontPut.warnings).toEqual(
+      expect.arrayContaining([
+        "DELTA_DERIVED_FROM_CANDLE_IV_AND_SPOT_FORWARD_APPROXIMATION",
+        "SPOT_FORWARD_APPROXIMATION_ASSUMES_ZERO_CARRY",
+      ]),
+    );
+    expect(frontPut.provenance).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          source: "tastytrade-research-mcp:spot-forward-zero-carry",
+          source_timestamp: REQUEST.as_of,
+          fields: ["historical_delta"],
+        }),
+      ]),
+    );
+    expect(middleCall.warnings).toContain(
+      "DELTA_DERIVED_FROM_CANDLE_IV_AND_PUT_CALL_PARITY_FORWARD",
+    );
+    expect(backCall.historical_delta).not.toBeNull();
+    expect(backCall.provenance).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          source: "tastytrade-research-mcp:spot-forward-zero-carry",
+          source_timestamp: REQUEST.as_of,
+          fields: ["historical_delta"],
+        }),
+      ]),
+    );
+    expect(result.field_coverage.historical_delta).toEqual({
+      available: 18,
+      missing: 0,
+    });
+    expect(result.capabilities.historical_delta).toBe(true);
+    expect(result.warnings).toEqual(
+      expect.arrayContaining([
+        "DELTA_DERIVED_FROM_CANDLE_IV_AND_PUT_CALL_PARITY_FORWARD",
+        "DELTA_DERIVED_FROM_CANDLE_IV_AND_SPOT_FORWARD_APPROXIMATION",
+        "SPOT_FORWARD_APPROXIMATION_ASSUMES_ZERO_CARRY",
+      ]),
+    );
+    expect(
+      result.contracts.every((contract) =>
+        contract.provenance.every(
+          (item) =>
+            Date.parse(item.source_timestamp) <= Date.parse(REQUEST.as_of),
+        ),
+      ),
+    ).toBe(true);
+  });
+
   test("preserves missing fields as null and downgrades aggregate capabilities", async () => {
     const source = structuredClone(fixture);
     const incomplete = source.options.find(
@@ -311,6 +389,16 @@ describe("historical SPX candidate universe", () => {
       historical_open_interest: null,
       historical_volume: null,
     });
+    expect(contract.provenance).not.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          source: "tastytrade-research-mcp:spot-forward-zero-carry",
+        }),
+      ]),
+    );
+    expect(contract.warnings).not.toContain(
+      "DELTA_DERIVED_FROM_CANDLE_IV_AND_SPOT_FORWARD_APPROXIMATION",
+    );
     expect(result.capabilities).toMatchObject({
       historical_delta: false,
       historical_contract_iv: false,
@@ -318,6 +406,7 @@ describe("historical SPX candidate universe", () => {
       historical_volume: false,
     });
     expect(result.field_coverage).toMatchObject({
+      historical_delta: { available: 17, missing: 1 },
       historical_iv: { available: 17, missing: 1 },
       historical_open_interest: { available: 17, missing: 1 },
       historical_volume: { available: 17, missing: 1 },

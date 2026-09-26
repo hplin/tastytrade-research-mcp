@@ -159,6 +159,11 @@ historical candle for that exact symbol. Contracts without timestamp-safe
 evidence are omitted and counted as coverage gaps. The endpoint preserves
 price, reconstructed delta, contract IV, OI, volume, observation age, and
 field-level provenance when available; it never selects the final spread.
+Delta reconstruction prefers a timestamp-aligned put/call parity forward.
+When parity is unavailable but historical IV exists, the universe endpoint
+uses the completed checkpoint SPX price as an explicitly warned zero-carry
+forward approximation. Missing IV remains null, and this fallback does not
+change the stricter selector-discovery path.
 
 The default freshness maximum is 60 minutes. A caller may explicitly extend
 it to 24 hours; older pre-checkpoint observations are then retained only as

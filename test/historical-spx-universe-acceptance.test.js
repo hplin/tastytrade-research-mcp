@@ -140,25 +140,77 @@ function constructIronCondor(universe) {
 
 function evaluateDoubleDiagonal(universe) {
   const requirements = [
-    ["FRONT_PUT_DELTA", "2026-09-15T20:00:00.000Z", "PUT", 20],
-    ["FRONT_CALL_DELTA", "2026-09-15T20:00:00.000Z", "CALL", 20],
-    ["BACK_PUT_DELTA", "2026-09-29T20:00:00.000Z", "PUT", 30],
-    ["BACK_CALL_DELTA", "2026-09-29T20:00:00.000Z", "CALL", 30],
+    [
+      "FRONT_PUT_DELTA",
+      "2026-09-15T20:00:00.000Z",
+      "PUT",
+      20,
+      "SELL_TO_OPEN",
+    ],
+    [
+      "FRONT_CALL_DELTA",
+      "2026-09-15T20:00:00.000Z",
+      "CALL",
+      20,
+      "SELL_TO_OPEN",
+    ],
+    [
+      "BACK_PUT_DELTA",
+      "2026-09-29T20:00:00.000Z",
+      "PUT",
+      30,
+      "BUY_TO_OPEN",
+    ],
+    [
+      "BACK_CALL_DELTA",
+      "2026-09-29T20:00:00.000Z",
+      "CALL",
+      30,
+      "BUY_TO_OPEN",
+    ],
   ];
-  const missing = requirements
-    .filter(
-      ([, expiration, side]) =>
-        !universe.contracts.some(
+  const selections = requirements.map(
+    ([name, expiration, side, target, action]) => {
+      const selected = universe.contracts
+        .filter(
           (contract) =>
             contract.expiration === expiration &&
             contract.option_side === side &&
             contract.historical_delta !== null,
-        ),
-    )
-    .map(([name]) => name);
-  return missing.length === 0
-    ? { status: "CONSTRUCTED" }
-    : { status: "INSUFFICIENT_TIMESTAMP_SAFE_CONTRACTS", missing };
+        )
+        .map((contract) => ({
+          contract,
+          error: Math.abs(
+            Math.abs(Number(contract.historical_delta)) - target,
+          ),
+        }))
+        .sort(
+          (left, right) =>
+            left.error - right.error ||
+            left.contract.observation_age_ms -
+              right.contract.observation_age_ms ||
+            Number(left.contract.strike) - Number(right.contract.strike),
+        )[0]?.contract;
+      return { name, action, selected };
+    },
+  );
+  const missing = selections
+    .filter(({ selected }) => !selected)
+    .map(({ name }) => name);
+  if (missing.length > 0) {
+    return { status: "INSUFFICIENT_TIMESTAMP_SAFE_CONTRACTS", missing };
+  }
+  return {
+    status: "CONSTRUCTED",
+    family: "DOUBLE_DIAGONAL",
+    phase: "REPLAY_DECISION",
+    frozen_at: universe.as_of,
+    checkpoint_id: universe.references.checkpoint_id,
+    legs: selections.map(({ action, selected }) => ({
+      ...selected,
+      action,
+    })),
+  };
 }
 
 function createReplayOutcome(decision, simulation) {
@@ -196,6 +248,11 @@ describe("2026-08-25 07:30 PT SPX universe acceptance", () => {
       missing_contract_count: 170,
       provider_errors: [],
     });
+    expect(universe.field_coverage.historical_delta).toEqual({
+      available: 15,
+      missing: 1,
+    });
+    expect(universe.capabilities.historical_delta).toBe(false);
     for (const expiration of [
       "2026-09-15T20:00:00.000Z",
       "2026-09-22T20:00:00.000Z",
@@ -268,29 +325,65 @@ describe("2026-08-25 07:30 PT SPX universe acceptance", () => {
     ).toBe(false);
   });
 
-  test("fails Double Diagonal construction closed when front/back delta is unavailable", async () => {
+  test("constructs a Double Diagonal from reconstructed front/back deltas", async () => {
     const universe = await acceptanceUniverse();
     const decision = evaluateDoubleDiagonal(universe);
 
     expect(
       universe.contracts.filter(
-        (contract) => contract.dte_at_as_of === 21,
+        (contract) =>
+          contract.dte_at_as_of === 21 &&
+          contract.historical_delta !== null,
       ).length,
-    ).toBeGreaterThanOrEqual(4);
+    ).toBe(4);
     expect(
       universe.contracts.filter(
-        (contract) => contract.dte_at_as_of === 35,
+        (contract) =>
+          contract.dte_at_as_of === 35 &&
+          contract.historical_delta !== null,
       ).length,
-    ).toBeGreaterThanOrEqual(4);
-    expect(decision).toEqual({
-      status: "INSUFFICIENT_TIMESTAMP_SAFE_CONTRACTS",
-      missing: [
-        "FRONT_PUT_DELTA",
-        "FRONT_CALL_DELTA",
-        "BACK_PUT_DELTA",
-        "BACK_CALL_DELTA",
+    ).toBe(3);
+    expect(
+      universe.contracts.find(
+        (contract) =>
+          contract.provider_symbol === "SPXW  260929P07450000",
+      ),
+    ).toMatchObject({
+      historical_delta: null,
+      historical_iv: null,
+    });
+    expect(decision).toMatchObject({
+      status: "CONSTRUCTED",
+      family: "DOUBLE_DIAGONAL",
+      phase: "REPLAY_DECISION",
+      frozen_at: CHECKPOINT,
+      checkpoint_id: REQUEST.references.checkpoint_id,
+      legs: [
+        {
+          provider_symbol: "SPXW  260915P07400000",
+          action: "SELL_TO_OPEN",
+        },
+        {
+          provider_symbol: "SPXW  260915C07850000",
+          action: "SELL_TO_OPEN",
+        },
+        {
+          provider_symbol: "SPXW  260929P07500000",
+          action: "BUY_TO_OPEN",
+        },
+        {
+          provider_symbol: "SPXW  260929C07825000",
+          action: "BUY_TO_OPEN",
+        },
       ],
     });
+    expect(
+      decision.legs.every((leg) =>
+        leg.warnings.includes(
+          "DELTA_DERIVED_FROM_CANDLE_IV_AND_SPOT_FORWARD_APPROXIMATION",
+        ),
+      ),
+    ).toBe(true);
   });
 
   test("preserves the frozen exact legs through forward simulation output", async () => {
