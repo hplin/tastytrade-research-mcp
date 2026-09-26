@@ -27,9 +27,17 @@ import {
   type HistoricalSpxCandidateUniverseInput,
 } from "./historical-spx-reconstruction.js";
 import {
+  verifyHistoricalFill,
   verifyHistoricalFillWithBacktester,
+  type HistoricalFillInput,
   type HistoricalFillBacktesterInput,
 } from "./historical-fill.js";
+import {
+  getHistoricalOptionPackageAtCheckpoint,
+  getHistoricalOptionPackagePath,
+  type HistoricalOptionPackageCheckpointInput,
+  type HistoricalOptionPackagePathInput,
+} from "./historical-option-package.js";
 import {
   priceOptionPackage,
   type PackagePricingInput,
@@ -408,6 +416,24 @@ const HISTORICAL_FILL_SCHEMA = {
           type: "string",
           enum: ["FILLED", "NOT_FILLED", "PENDING"],
         },
+        path: {
+          type: "array",
+          items: {
+            type: "object",
+            properties: {
+              as_of: RFC3339_SCHEMA,
+              price: DECIMAL_SCHEMA,
+              price_effect: {
+                type: "string",
+                enum: ["DEBIT", "CREDIT"],
+              },
+              source: { type: "string", minLength: 1 },
+            },
+            required: ["as_of", "price", "price_effect"],
+            additionalProperties: false,
+          },
+        },
+        evidence_source: { type: "string", minLength: 1 },
         references: {
           ...REFERENCES_SCHEMA,
           anyOf: [
@@ -417,9 +443,6 @@ const HISTORICAL_FILL_SCHEMA = {
         },
       },
       required: [
-        "family",
-        "underlying",
-        "legs",
         "submitted_at",
         "valid_until",
         "working_limit",
@@ -427,6 +450,120 @@ const HISTORICAL_FILL_SCHEMA = {
         "verification_side",
         "fill_model",
         "references",
+      ],
+      oneOf: [
+        {
+          required: ["family", "underlying", "legs"],
+        },
+        {
+          required: ["path", "evidence_source"],
+        },
+      ],
+      additionalProperties: false,
+    },
+  },
+  required: ["request"],
+  additionalProperties: false,
+} as const;
+
+const HISTORICAL_OPTION_PACKAGE_LEG_SCHEMA = {
+  type: "object",
+  properties: {
+    provider_symbol: {
+      type: "string",
+      minLength: 21,
+      maxLength: 21,
+      description:
+        "Exact 21-character SPX/SPXW OCC option symbol, including root padding.",
+    },
+    action: {
+      type: "string",
+      enum: [
+        "BUY_TO_OPEN",
+        "SELL_TO_OPEN",
+        "BUY_TO_CLOSE",
+        "SELL_TO_CLOSE",
+      ],
+    },
+    quantity: { type: "integer", minimum: 1 },
+  },
+  required: ["provider_symbol", "action"],
+  additionalProperties: false,
+} as const;
+
+const HISTORICAL_OPTION_PACKAGE_COMMON_PROPERTIES = {
+  family: {
+    type: "string",
+    enum: [
+      "DEBIT_VERTICAL",
+      "CREDIT_VERTICAL",
+      "IRON_CONDOR",
+      "DOUBLE_DIAGONAL",
+    ],
+  },
+  underlying: { type: "string", enum: ["SPX"] },
+  legs: {
+    type: "array",
+    minItems: 2,
+    maxItems: 4,
+    items: HISTORICAL_OPTION_PACKAGE_LEG_SCHEMA,
+  },
+  phase: {
+    type: "string",
+    enum: ["REGRESSION_RESEARCH"],
+  },
+  references: REFERENCES_SCHEMA,
+} as const;
+
+const HISTORICAL_OPTION_PACKAGE_CHECKPOINT_SCHEMA = {
+  type: "object",
+  properties: {
+    request: {
+      type: "object",
+      properties: {
+        ...HISTORICAL_OPTION_PACKAGE_COMMON_PROPERTIES,
+        as_of: RFC3339_SCHEMA,
+        max_observation_age_minutes: {
+          type: "integer",
+          minimum: 0,
+          maximum: 1440,
+        },
+        max_temporal_skew_minutes: {
+          type: "integer",
+          minimum: 0,
+          maximum: 1440,
+        },
+      },
+      required: ["family", "underlying", "as_of", "legs", "phase"],
+      additionalProperties: false,
+    },
+  },
+  required: ["request"],
+  additionalProperties: false,
+} as const;
+
+const HISTORICAL_OPTION_PACKAGE_PATH_SCHEMA = {
+  type: "object",
+  properties: {
+    request: {
+      type: "object",
+      properties: {
+        ...HISTORICAL_OPTION_PACKAGE_COMMON_PROPERTIES,
+        start_time: RFC3339_SCHEMA,
+        end_time: RFC3339_SCHEMA,
+        resolution: {
+          type: "string",
+          enum: ["1m", "5m", "15m", "30m", "1h"],
+        },
+      },
+      required: [
+        "family",
+        "underlying",
+        "start_time",
+        "end_time",
+        "resolution",
+        "legs",
+        "phase",
       ],
       additionalProperties: false,
     },
@@ -627,6 +764,18 @@ export const TOOLS: Tool[] = [
     inputSchema: HISTORICAL_SPX_UNIVERSE_SCHEMA,
   },
   {
+    name: "tastytrade_get_historical_option_package_at_checkpoint",
+    description:
+      "Reconstruct an exact-leg SPX option package reference value from completed historical DXLink candles at or before a checkpoint. Enforces explicit age/skew limits and never presents candle closes as executable bid/ask.",
+    inputSchema: HISTORICAL_OPTION_PACKAGE_CHECKPOINT_SCHEMA,
+  },
+  {
+    name: "tastytrade_get_historical_option_package_path",
+    description:
+      "Reconstruct a short exact-leg SPX package reference path from aligned completed DXLink candles. Explicitly downgrades unavailable fine resolutions and reports gaps without interpolation or forward fill.",
+    inputSchema: HISTORICAL_OPTION_PACKAGE_PATH_SCHEMA,
+  },
+  {
     name: "tastytrade_prepare_spx_spread",
     description:
       "Normalize an SPX debit vertical, credit vertical, iron condor, or double diagonal into deterministic Backtester and exact-leg simulation requests without submitting it.",
@@ -647,7 +796,7 @@ export const TOOLS: Tool[] = [
   {
     name: "tastytrade_verify_historical_fill",
     description:
-      "Verify whether a frozen paper-order limit was touched during a forward historical interval. Returns separate post-session evidence and never rewrites the live paper event.",
+      "Verify whether a frozen paper-order limit was touched during a forward historical interval using either caller-supplied historical package points or Backtester exact-leg simulation. Returns separate post-session evidence and never rewrites the live paper event.",
     inputSchema: HISTORICAL_FILL_SCHEMA,
   },
   {
@@ -821,6 +970,30 @@ export function createResearchServer(
             requestArg<HistoricalSpxCandidateUniverseInput>(args),
           ),
         );
+      case "tastytrade_get_historical_option_package_at_checkpoint":
+        if (!reconstructionCandles) {
+          throw new Error(
+            "Historical option package reconstruction requires batched candle retrieval.",
+          );
+        }
+        return toolResult(
+          await getHistoricalOptionPackageAtCheckpoint(
+            reconstructionCandles,
+            requestArg<HistoricalOptionPackageCheckpointInput>(args),
+          ),
+        );
+      case "tastytrade_get_historical_option_package_path":
+        if (!reconstructionCandles) {
+          throw new Error(
+            "Historical option package paths require batched candle retrieval.",
+          );
+        }
+        return toolResult(
+          await getHistoricalOptionPackagePath(
+            reconstructionCandles,
+            requestArg<HistoricalOptionPackagePathInput>(args),
+          ),
+        );
       case "tastytrade_prepare_spx_spread":
         return toolResult(
           prepareSpreadResearch(requestArg<SpreadResearchInput>(args)),
@@ -840,6 +1013,11 @@ export function createResearchServer(
           ),
         );
       case "tastytrade_verify_historical_fill":
+        if (Array.isArray(objectArg(args.request, "request").path)) {
+          return toolResult(
+            verifyHistoricalFill(requestArg<HistoricalFillInput>(args)),
+          );
+        }
         return toolResult(
           await verifyHistoricalFillWithBacktester(
             backtester,

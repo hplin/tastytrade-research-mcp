@@ -41,10 +41,13 @@ describe("execution evidence contract", () => {
     );
   });
 
-  test("rejects historical evidence presented as a live checkpoint", () => {
+  test.each([
+    "HISTORICAL_OPTION_PACKAGE_REFERENCE",
+    "HISTORICAL_PATH",
+  ])("rejects %s evidence presented as a live checkpoint", (evidenceType) => {
     expect(() =>
       createExecutionEvidence({
-        evidence_type: "HISTORICAL_PATH",
+        evidence_type: evidenceType,
         evidence_phase: "LIVE_CHECKPOINT",
         source: "fixture",
         freshness_status: "UNKNOWN",
@@ -57,6 +60,24 @@ describe("execution evidence contract", () => {
         references: { checkpoint_id: "checkpoint-1" },
       }),
     ).toThrow("must be POST_SESSION_REGRESSION");
+  });
+
+  test("prevents historical package references from claiming fillability", () => {
+    expect(() =>
+      createExecutionEvidence({
+        evidence_type: "HISTORICAL_OPTION_PACKAGE_REFERENCE",
+        evidence_phase: "POST_SESSION_REGRESSION",
+        source: "fixture",
+        freshness_status: "FRESH",
+        temporal_alignment: "ALIGNED",
+        native_available: false,
+        working_limit: "1",
+        acceptable_bound: null,
+        fill_model: "LIMIT_TOUCH",
+        fill_confidence: "HIGH",
+        references: { checkpoint_id: "checkpoint-1" },
+      }),
+    ).toThrow("must not claim a fill model or fill confidence");
   });
 
   test("publishes a machine-readable schema matching generated evidence", async () => {

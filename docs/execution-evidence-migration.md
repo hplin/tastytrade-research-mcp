@@ -22,13 +22,15 @@ or rewriting existing paper-simulation events.
 | Combined/package quote from an exchange or broker | `evidence_type: NATIVE_PACKAGE` |
 | Adverse-side arithmetic across legs | `evidence_type: SYNTHETIC_NATURAL` |
 | Midpoint arithmetic | `evidence_type: SYNTHETIC_MID_REFERENCE` |
+| Exact-leg historical candle-close package reference | `evidence_type: HISTORICAL_OPTION_PACKAGE_REFERENCE`, `evidence_phase: POST_SESSION_REGRESSION` |
 | Accepted dry-run response | `evidence_type: BROKER_DRY_RUN` |
 | Later quote/candle path check | `evidence_type: HISTORICAL_PATH`, `evidence_phase: POST_SESSION_REGRESSION` |
 | tastytrade Backtester output | `evidence_type: BACKTESTER_SIMULATION`, `evidence_phase: POST_SESSION_REGRESSION` |
 
 `BROKER_DRY_RUN` confirms request validity only. It must use
 `fill_model: NOT_APPLICABLE` and must not be interpreted as fillability.
-Likewise, `SYNTHETIC_MID_REFERENCE` is valuation-only.
+Likewise, `SYNTHETIC_MID_REFERENCE` and
+`HISTORICAL_OPTION_PACKAGE_REFERENCE` are valuation-only.
 
 Consumers should reject unknown major versions and tolerate additive fields
 within the same major version.

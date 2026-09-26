@@ -31,6 +31,7 @@
         "NATIVE_PACKAGE",
         "SYNTHETIC_NATURAL",
         "SYNTHETIC_MID_REFERENCE",
+        "HISTORICAL_OPTION_PACKAGE_REFERENCE",
         "HISTORICAL_PATH",
         "BACKTESTER_SIMULATION",
         "BROKER_DRY_RUN"
@@ -141,6 +142,7 @@
         "properties": {
           "evidence_type": {
             "enum": [
+              "HISTORICAL_OPTION_PACKAGE_REFERENCE",
               "HISTORICAL_PATH",
               "BACKTESTER_SIMULATION"
             ]
@@ -161,7 +163,8 @@
           "evidence_type": {
             "enum": [
               "BROKER_DRY_RUN",
-              "SYNTHETIC_MID_REFERENCE"
+              "SYNTHETIC_MID_REFERENCE",
+              "HISTORICAL_OPTION_PACKAGE_REFERENCE"
             ]
           }
         }

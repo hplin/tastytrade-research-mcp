@@ -7,6 +7,7 @@ export type EvidenceType =
   | "NATIVE_PACKAGE"
   | "SYNTHETIC_NATURAL"
   | "SYNTHETIC_MID_REFERENCE"
+  | "HISTORICAL_OPTION_PACKAGE_REFERENCE"
   | "HISTORICAL_PATH"
   | "BACKTESTER_SIMULATION"
   | "BROKER_DRY_RUN";
@@ -71,6 +72,7 @@ export type ExecutionEvidenceInput = Omit<
 };
 
 const HISTORICAL_EVIDENCE_TYPES = new Set<EvidenceType>([
+  "HISTORICAL_OPTION_PACKAGE_REFERENCE",
   "HISTORICAL_PATH",
   "BACKTESTER_SIMULATION",
 ]);
@@ -120,7 +122,8 @@ export function createExecutionEvidence(
 
   if (
     (input.evidence_type === "BROKER_DRY_RUN" ||
-      input.evidence_type === "SYNTHETIC_MID_REFERENCE") &&
+      input.evidence_type === "SYNTHETIC_MID_REFERENCE" ||
+      input.evidence_type === "HISTORICAL_OPTION_PACKAGE_REFERENCE") &&
     (input.fill_model !== "NOT_APPLICABLE" ||
       input.fill_confidence !== "NOT_APPLICABLE")
   ) {

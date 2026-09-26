@@ -112,6 +112,7 @@ describe("historical fill verification", () => {
     });
 
     expect(result.status).toBe("NOT_VERIFIABLE");
+    expect(result.assessment_status).toBe("NOT_ASSESSABLE");
     expect(result.quote_path_quality).toBe("PARTIAL");
   });
 

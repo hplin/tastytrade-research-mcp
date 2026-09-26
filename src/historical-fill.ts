@@ -26,6 +26,11 @@ export type HistoricalFillStatus =
   | "NOT_TOUCHED"
   | "NOT_VERIFIABLE";
 
+export type HistoricalAssessmentStatus =
+  | "TOUCHED"
+  | "NOT_TOUCHED"
+  | "NOT_ASSESSABLE";
+
 export type VerificationSide = "ENTRY" | "EXIT";
 
 export type LivePaperAssumption = "FILLED" | "NOT_FILLED" | "PENDING";
@@ -48,6 +53,7 @@ export type HistoricalFillInput = {
 export type HistoricalFillResult = {
   contract_version: "1.0.0";
   status: HistoricalFillStatus;
+  assessment_status: HistoricalAssessmentStatus;
   verification_side: VerificationSide;
   first_touch_at: string | null;
   first_touch_window: {
@@ -365,6 +371,8 @@ export function verifyHistoricalFill(
   return {
     contract_version: "1.0.0",
     status,
+    assessment_status:
+      status === "NOT_VERIFIABLE" ? "NOT_ASSESSABLE" : status,
     verification_side: input.verification_side,
     first_touch_at: firstTouchAt,
     first_touch_window: firstTouchWindow,
