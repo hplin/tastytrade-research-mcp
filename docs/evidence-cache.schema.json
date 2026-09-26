@@ -124,6 +124,14 @@
               },
               "instrument_type": {
                 "type": "string"
+              },
+              "lifecycle": {
+                "type": "string",
+                "enum": [
+                  "ACTIVE",
+                  "EXPIRED",
+                  "UNKNOWN"
+                ]
               }
             },
             "required": [

@@ -28,6 +28,8 @@ export type InstrumentType =
   | "FUTURE_OPTION"
   | "CRYPTO";
 
+export type InstrumentLifecycle = "ACTIVE" | "EXPIRED" | "UNKNOWN";
+
 export type CandleSession =
   | {
       kind: "ALL";
@@ -48,6 +50,7 @@ export type HistoricalCandlesInput = {
   symbol: string;
   streamer_symbol?: string;
   instrument_type: InstrumentType;
+  lifecycle?: InstrumentLifecycle;
   interval: string;
   start_time: string;
   end_time: string;
@@ -66,6 +69,7 @@ export type HistoricalCandleInstrument = {
   symbol: string;
   streamer_symbol?: string;
   instrument_type: InstrumentType;
+  lifecycle?: InstrumentLifecycle;
 };
 
 export type HistoricalCandlesBatchInput = {
@@ -100,6 +104,17 @@ export type HistoricalCandle = {
   ask_volume: string | null;
   implied_volatility: string | null;
   open_interest: string | null;
+  provider_evidence?: {
+    dataset_id: string;
+    revision: string;
+    method: string;
+    native_symbol: string;
+    native_fields: Record<string, string | number | boolean | null>;
+    bid_price: string | null;
+    ask_price: string | null;
+    delta: string | null;
+    warnings: string[];
+  };
 };
 
 export type HistoricalCandlesFailureReason =
@@ -109,7 +124,12 @@ export type HistoricalCandlesFailureReason =
   | "PROVIDER_SNAPSHOT_SNIPPED"
   | "REQUESTED_WINDOW_NOT_COVERED"
   | "SNAPSHOT_TIMEOUT"
-  | "MISSING_CONTRACT_EVIDENCE";
+  | "MISSING_CONTRACT_EVIDENCE"
+  | "PROVIDER_TIMEOUT"
+  | "PROVIDER_RATE_LIMIT"
+  | "PROVIDER_TEMPORARY_FAILURE"
+  | "PROVIDER_PARTIAL_RESPONSE"
+  | "PROVIDER_SCHEMA_MISMATCH";
 
 export type HistoricalCandlesResourceCounters = {
   received_events: number;
@@ -147,8 +167,8 @@ export type HistoricalCandlesResult = {
   session: CandleSession["kind"];
   retrieved_at: string;
   resolution_profile: ResolutionProfile;
-  source: "tastytrade-dxlink";
-  source_timestamp_unit: "epoch_milliseconds";
+  source: string;
+  source_timestamp_unit: "epoch_milliseconds" | "RFC3339";
   snapshot_complete: boolean;
   snapshot_truncated: boolean;
   provider_snapshot_complete: boolean;
@@ -190,6 +210,18 @@ export type HistoricalCandlesResult = {
   resampled: false;
   candles: HistoricalCandle[];
   warnings: string[];
+  bounded_history?: {
+    contract_version: "1.0.0";
+    provider_id: string;
+    dataset_id: string;
+    source_revision: string;
+    approval_reference: string;
+    shard_count: number;
+    completed_shards: number;
+    failed_shards: number;
+    page_count: number;
+    requested_fields: string[];
+  };
   evidence_cache?: EvidenceCacheRecord | null;
 };
 
@@ -983,7 +1015,7 @@ function gapWarnings(
   return warnings;
 }
 
-function edgeCoverageWarnings(
+export function edgeCoverageWarnings(
   candles: HistoricalCandle[],
   requestedStart: number,
   requestedEnd: number,
@@ -1072,6 +1104,7 @@ export class TastytradeHistoricalCandlesClient {
           symbol: input.symbol,
           streamer_symbol: input.streamer_symbol,
           instrument_type: input.instrument_type,
+          lifecycle: input.lifecycle,
         },
       ],
       interval: input.interval,

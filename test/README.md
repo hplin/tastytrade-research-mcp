@@ -35,6 +35,10 @@ The suite builds the TypeScript project before running Jest and covers:
 - deterministic regeneration of the grading/regression handoff fixture
   without embedding downstream bucket or routing policy;
 - immutable content-addressed evidence objects and revision manifests;
+- approval-gated provider-neutral bounded history, including exact-symbol
+  entitlement checks, seven-day-style sharding, pagination, DST, partial and
+  null-field behavior, schema rejection, retry/deadline limits, cache-license
+  enforcement, and exact offline replay;
 - exact DD/DV cache-only replay with zero provider calls and stable hashes;
 - cache identity separation by provider, source revision, profile, and
   aggregation, with reference-only object reuse;

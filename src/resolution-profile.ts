@@ -59,6 +59,7 @@ export type ResolutionProfile = {
 
 export type ResolutionProfileDefaults = {
   default_requested_aggregation: string;
+  default_provider_id?: string;
   default_max_observation_age_minutes: number;
   default_max_temporal_skew_minutes: number;
   default_fallback_aggregations: string[];
@@ -268,7 +269,9 @@ export function normalizeResolutionProfile(
     contract_version: RESOLUTION_PROFILE_VERSION,
     profile_id: profileId,
     profile_version: RESOLUTION_PROFILE_VERSION,
-    provider_id: normalizeProviderId(input?.provider_id),
+    provider_id: normalizeProviderId(
+      input?.provider_id ?? defaults.default_provider_id,
+    ),
     requested_aggregation: requestedAggregation,
     native_aggregation: nativeAggregation(requestedAggregation),
     session,

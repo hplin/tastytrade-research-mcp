@@ -1,5 +1,11 @@
 # Historical DXLink candle transport
 
+DXLink remains the only configured runtime transport. A dormant,
+provider-neutral bounded-history contract exists for a future source, but it
+requires explicit provider/dataset/license approval and is not wired to an
+MCP tool or environment configuration. See
+[`historical-provider-decision.md`](historical-provider-decision.md).
+
 ## CandleSymbol identity
 
 The public request keeps human-readable intervals such as `1m` and `1h`.

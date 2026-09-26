@@ -52,6 +52,9 @@ migration, and reproducible grading/regression handoff are documented in
 Private immutable source-cache configuration, exact offline replay, and
 migration guidance are documented in
 [`docs/evidence-cache.md`](docs/evidence-cache.md).
+The external historical-source capability review, explicit no-spend decision,
+and approval gates are documented in
+[`docs/historical-provider-decision.md`](docs/historical-provider-decision.md).
 
 ## Private historical evidence cache
 
@@ -73,7 +76,17 @@ normalization/model/source revisions. Retrieval time is frozen in each
 immutable manifest and never replaces bar availability time.
 Run `npm run report:evidence-cache` for a deterministic synthetic cache
 hit/miss, byte-count, normalized-hash, and provider-call-reduction report.
-hit/miss, byte-count, normalized-hash, and provider-call-reduction report.
+
+## Approval-gated bounded history
+
+The repository contains a provider-neutral bounded-history contract for a
+future approved source. It is intentionally dormant: no vendor transport,
+credential, paid fallback, environment configuration, or MCP tool is enabled.
+Construction requires an exact approval scope, confirmed field and
+expired-symbol entitlements, a provider-specific native-field allowlist, a
+fixed HTTPS host, separate credentials, and explicit cache storage/reuse
+permission. Synthetic tests validate the contract but do not establish
+external SPX/SPXW coverage.
 
 ## Execution evidence contract
 
