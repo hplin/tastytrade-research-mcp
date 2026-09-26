@@ -22,13 +22,13 @@ tastytrade OAuth credentials in Azure Key Vault-backed Container App secrets.
 - Health URL:
   `https://tastytrade-research-mcp.victoriousfield-047d2c99.westus2.azurecontainerapps.io/healthz`
 - Production revision:
-  `tastytrade-research-mcp--main-8c9db34`
+  `tastytrade-research-mcp--main-faa26ef`
 - ACR image:
-  `hplintradingmcp.azurecr.io/tastytrade-research-mcp:main-8c9db34`
+  `hplintradingmcp.azurecr.io/tastytrade-research-mcp:main-faa26ef`
 - Image digest:
-  `sha256:db9242e0a68035dcc8c5c649e1279fc6ba5b772a6a223e7bab4cc3e9dd2c1f03`
+  `sha256:80416c62cd0a8b49ccd1a4aeb31267ac4eac8360c9240d5f791ca01beb18725f`
 - Source commit:
-  `8c9db34d3bd69d3e777a36a3b3508aeea3bf7b04`
+  `faa26ef50aedeb61e8724c5fca685fd221d6b8b2`
 - Managed identity: `mi-tastytrade-research-mcp`
 
 Production OAuth uses Entra resource application
@@ -138,10 +138,10 @@ OAUTH_RESOURCE_NAME=Tastytrade Research MCP
 ```
 
 For emergency rollback, reactivate revision
-`tastytrade-research-mcp--issue20-pathb-4462026` and move 100% traffic to it.
-That revision contains deterministic Path B candidate reconstruction but
-predates the bounded candidate-universe tool. It retains the same Entra OAuth
-and Key Vault-backed tastytrade configuration.
+`tastytrade-research-mcp--main-8c9db34` and move 100% traffic to it. That
+revision contains the bounded candidate-universe tool and acceptance fixture,
+but predates the expanded 21/35-DTE delta reconstruction. It retains the same
+Entra OAuth and Key Vault-backed tastytrade configuration.
 
 After deployment, verify:
 
@@ -160,7 +160,32 @@ After deployment, verify:
    CALL/PUT Delta-20 and 1%-OTM contracts. Every provenance timestamp must be
    `<= as_of`.
 
-## Current main deployment verification
+## Current expanded-delta deployment verification
+
+Revision `tastytrade-research-mcp--main-faa26ef` was verified on 2026-09-26
+with:
+
+- ACR build run `ccj` producing digest
+  `sha256:80416c62cd0a8b49ccd1a4aeb31267ac4eac8360c9240d5f791ca01beb18725f`;
+- source commit `faa26ef50aedeb61e8724c5fca685fd221d6b8b2`;
+- one healthy replica in `RunningAtMaxScale`;
+- 100% production traffic and the superseded revision deactivated;
+- HTTP 200 from `/healthz`;
+- HTTP 200 from RFC 9728 protected-resource metadata;
+- HTTP 401 plus the correct resource metadata and scope from unauthenticated
+  `/mcp`;
+- an Entra delegated `mcp.read` token listing all 15 MCP tools; and
+- an authenticated 21-35 DTE, 7300-8050, 25-point candidate-universe request
+  returning 110 of 186 requested contracts, delta on 103 contracts, no
+  provider errors, all four Double Diagonal target inputs, and zero
+  provenance timestamps after the checkpoint.
+
+The live delta coverage was 39/39 at 21 DTE, 34/36 at 28 DTE, and 30/35 at
+35 DTE. 34 contracts used aligned parity and 69 used the explicit
+spot-forward zero-carry approximation; the seven contracts without historical
+IV remained null.
+
+## Initial candidate-universe deployment verification
 
 Revision `tastytrade-research-mcp--main-8c9db34` was verified on 2026-09-26
 with:
