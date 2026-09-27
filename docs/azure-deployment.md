@@ -22,16 +22,16 @@ tastytrade OAuth credentials in Azure Key Vault-backed Container App secrets.
 - Health URL:
   `https://tastytrade-research-mcp.victoriousfield-047d2c99.westus2.azurecontainerapps.io/healthz`
 - Production revision:
-  `tastytrade-research-mcp--main-6c5521e`
+  `tastytrade-research-mcp--main-851f08c`
 - ACR image:
-  `hplintradingmcp.azurecr.io/tastytrade-research-mcp:main-6c5521e`
+  `hplintradingmcp.azurecr.io/tastytrade-research-mcp:main-851f08c`
 - Image digest:
-  `sha256:a467850284d16a6d2e2233c85a76756180173c8195cc30ada89ecc7acfeb9511`
+  `sha256:632fcfc61c1c0dfade6654151c650e4fc56dacde498b6f9d815c515c1595149d`
 - Source commit:
-  `6c5521effeb7daded18dcbd51d990df6c4260426`
+  `851f08ca1a8b7ce77b534edb0bf6237d35a6c6e4`
 - Managed identity: `mi-tastytrade-research-mcp`
 - Rollback revision:
-  `tastytrade-research-mcp--main-85b194f`
+  `tastytrade-research-mcp--main-0992cc7`
 
 Production OAuth uses Entra resource application
 `f6c77904-5bf9-46cf-96f9-be5f2e841054` and delegated scope
@@ -160,10 +160,12 @@ OAUTH_RESOURCE_NAME=Tastytrade Research MCP
 ```
 
 For emergency rollback, move 100% traffic to the still-active revision
-`tastytrade-research-mcp--main-6c5521e`. That revision contains the persistent
-Azure Files cache, exact fixed-horizon package workflow, and research-only
-model valuation fallback, but predates date-range candidate discovery. It
-retains the same Entra OAuth and Key Vault-backed tastytrade configuration.
+`tastytrade-research-mcp--main-0992cc7`. That revision contains the persistent
+Azure Files cache, exact fixed-horizon package workflow, research-only model
+valuation fallback, and resumable date-range candidate discovery, but
+predates the 100-symbol candidate batches and stage-level timeout
+diagnostics. It retains the same Entra OAuth and Key Vault-backed tastytrade
+configuration.
 
 After deployment, verify:
 
@@ -194,7 +196,45 @@ After deployment, verify:
    trading calendar and verify exact ENTRY/+3/+5 symbols plus aggregate
    coverage diagnostics.
 
-## Current range-discovery deployment verification
+## Current pre-selector-timeout deployment verification
+
+Revision `tastytrade-research-mcp--main-851f08c` was verified on 2026-09-27
+with:
+
+- ACR build run `ccu` producing digest
+  `sha256:632fcfc61c1c0dfade6654151c650e4fc56dacde498b6f9d815c515c1595149d`;
+- source commit `851f08ca1a8b7ce77b534edb0bf6237d35a6c6e4`;
+- one healthy replica in `RunningAtMaxScale`;
+- 100% production traffic, with `main-0992cc7`, `main-6c5521e`, and
+  `main-85b194f` healthy and active at 0%; `main-0992cc7` is the immediate
+  rollback revision;
+- unchanged managed identity, ACR pull configuration, Key Vault secret refs,
+  ingress, resource limits, one-replica scale, and Azure Files cache mount;
+- HTTP 200 from `/healthz`, valid RFC 9728 protected-resource metadata, and
+  HTTP 401 with the required resource metadata and `mcp.read` scope from
+  unauthenticated `/mcp`;
+- an Entra delegated `mcp.read` token listing all 22 MCP tools and an
+  authenticated local package-pricing call returning a `1` synthetic natural
+  credit;
+- a production `BYPASS` request for the exact #70 2026-08-24 grid completing
+  in 6,739 ms, starting all 12 selectors, returning eight candidates, and
+  reporting no timeout;
+- the same warmed `READ_WRITE` request completing in 1,925 ms with six
+  immutable manifests and no provider bootstrap, followed by exact
+  `CACHE_ONLY` replay in 956 ms with all 12 selectors, eight candidates, and
+  zero provider access; and
+- stage diagnostics reporting the fixed cache, provider, universe,
+  reconstruction, and selector stages with `timeout_stage: null` for the
+  successful provider and cache probes.
+
+A fresh `READ_WRITE` namespace on the accumulated Azure Files share exposed a
+separate storage bottleneck: the 15-second checkpoint ended in
+`CACHE_LOOKUP` after only two cache operations, while provider bootstrap used
+1,494 ms. Repeated requests safely populated the immutable manifests, but
+cold Azure Files quota/write latency remains tracked in #72. The optimized
+uncached provider path itself completed within the #70 deadline.
+
+## Previous range-discovery deployment verification
 
 Revision `tastytrade-research-mcp--main-0992cc7` was verified on 2026-09-27
 with:
