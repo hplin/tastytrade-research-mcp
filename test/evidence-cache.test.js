@@ -1313,6 +1313,119 @@ describe("private immutable research evidence cache", () => {
     });
   });
 
+  test("publishes immutable files concurrently before the mutable index", async () => {
+    await withCache(async (cache) => {
+      const originalWriteImmutable = cache.writeImmutable.bind(cache);
+      const originalWriteMutable = cache.writeMutable.bind(cache);
+      let activeImmutableWrites = 0;
+      let maxActiveImmutableWrites = 0;
+      jest
+        .spyOn(cache, "writeImmutable")
+        .mockImplementation(async (...arguments_) => {
+          activeImmutableWrites += 1;
+          maxActiveImmutableWrites = Math.max(
+            maxActiveImmutableWrites,
+            activeImmutableWrites,
+          );
+          await new Promise((resolve) => setTimeout(resolve, 10));
+          try {
+            return await originalWriteImmutable(...arguments_);
+          } finally {
+            activeImmutableWrites -= 1;
+          }
+        });
+      jest
+        .spyOn(cache, "writeMutable")
+        .mockImplementation(async (...arguments_) => {
+          expect(activeImmutableWrites).toBe(0);
+          return originalWriteMutable(...arguments_);
+        });
+      const service = new CachedHistoricalCandlesService(
+        provider(),
+        cache,
+      );
+
+      await service.getHistoricalCandlesBatch(
+        requestFor(["SPX"], "2026-08-27T14:30:00.000Z", {
+          mode: "READ_WRITE",
+          source_revision: "parallel-publication/1",
+        }),
+      );
+
+      expect(maxActiveImmutableWrites).toBe(3);
+      expect(cache.accountedBytes).toBe(await cacheUsage(cache));
+    });
+  });
+
+  test("waits for in-flight immutable writes before recovering from a failure", async () => {
+    await withCache(async (cache) => {
+      const usageScan = jest.spyOn(cache, "diskUsage");
+      const originalWriteImmutable = cache.writeImmutable.bind(cache);
+      let injectFailure = true;
+      let slowWriteFinished = false;
+      let recoveryStartedEarly = false;
+      jest
+        .spyOn(cache, "writeImmutable")
+        .mockImplementation(
+          async (path, bytes, description, existing) => {
+            if (
+              description === "Sanitized provider evidence object" &&
+              injectFailure
+            ) {
+              injectFailure = false;
+              await new Promise((resolve) => setTimeout(resolve, 5));
+              throw new Error("injected immutable publication failure");
+            }
+            if (description === "Normalized evidence object") {
+              await new Promise((resolve) => setTimeout(resolve, 30));
+              const written = await originalWriteImmutable(
+                path,
+                bytes,
+                description,
+                existing,
+              );
+              slowWriteFinished = true;
+              return written;
+            }
+            if (description === "Immutable provider-failure manifest") {
+              recoveryStartedEarly = !slowWriteFinished;
+            }
+            return originalWriteImmutable(
+              path,
+              bytes,
+              description,
+              existing,
+            );
+          },
+        );
+      const service = new CachedHistoricalCandlesService(
+        provider(),
+        cache,
+      );
+
+      await expect(
+        service.getHistoricalCandlesBatch(
+          requestFor(["SPX"], "2026-08-27T14:30:00.000Z", {
+            mode: "READ_WRITE",
+            source_revision: "parallel-failure/1",
+          }),
+        ),
+      ).rejects.toMatchObject({
+        code: "EVIDENCE_CACHE_PROVIDER_ERROR",
+      });
+
+      expect(slowWriteFinished).toBe(true);
+      expect(recoveryStartedEarly).toBe(false);
+      expect(usageScan).toHaveBeenCalledTimes(2);
+      expect(cache.accountedBytes).toBe(await cacheUsage(cache));
+      expect(
+        (await cache.listFiles()).filter((path) =>
+          path.endsWith(".tmp"),
+        ),
+      ).toEqual([]);
+    });
+  });
+
   test("invalidates cached quota usage after a failed partial commit", async () => {
     await withCache(async (cache, directory) => {
       const usageScan = jest.spyOn(cache, "diskUsage");

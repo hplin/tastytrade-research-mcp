@@ -481,13 +481,18 @@ async function mapWithConcurrency<T, R>(
   operation: (value: T, index: number) => Promise<R>,
 ): Promise<R[]> {
   const results = new Array<R>(values.length);
+  const failures: unknown[] = [];
   let nextIndex = 0;
 
   async function worker(): Promise<void> {
-    while (nextIndex < values.length) {
+    while (nextIndex < values.length && failures.length === 0) {
       const index = nextIndex;
       nextIndex += 1;
-      results[index] = await operation(values[index], index);
+      try {
+        results[index] = await operation(values[index], index);
+      } catch (error) {
+        failures.push(error);
+      }
     }
   }
 
@@ -497,6 +502,7 @@ async function mapWithConcurrency<T, R>(
       () => worker(),
     ),
   );
+  if (failures.length > 0) throw failures[0];
   return results;
 }
 
@@ -1076,6 +1082,7 @@ export class FileEvidenceCache {
   private storageTail: Promise<void> = Promise.resolve();
   private readonly requestTails = new Map<string, Promise<void>>();
   private readonly inFlight = new Map<string, Promise<StoredEvidence>>();
+  private readonly ensuredDirectories = new Set<string>();
   private accountedBytes: number | null = null;
   private readonly metrics: EvidenceCacheMetrics = {
     cache_hits: 0,
@@ -1177,6 +1184,7 @@ export class FileEvidenceCache {
     if (this.initialized) return;
     await mkdir(this.directory, { recursive: true, mode: 0o700 });
     await this.applyPrivateMode(this.directory, 0o700);
+    this.ensuredDirectories.add(this.directory);
     for (const path of [
       join(this.directory, "objects", "sha256"),
       join(this.directory, "manifests", "sha256"),
@@ -1185,6 +1193,7 @@ export class FileEvidenceCache {
     ]) {
       await mkdir(path, { recursive: true, mode: 0o700 });
       await this.applyPrivateMode(path, 0o700);
+      this.ensuredDirectories.add(path);
     }
     this.initialized = true;
   }
@@ -1301,11 +1310,9 @@ export class FileEvidenceCache {
     path: string,
     bytes: Buffer,
     description: string,
+    existing: boolean,
   ): Promise<number> {
-    await mkdir(dirname(path), { recursive: true, mode: 0o700 });
-    const existing = await this.pathStat(path);
     if (existing) {
-      await this.verifyExactFile(path, bytes, description);
       return 0;
     }
     const temporary = `${path}.${process.pid}.${randomUUID()}.tmp`;
@@ -1334,7 +1341,12 @@ export class FileEvidenceCache {
       return published ? bytes.byteLength : 0;
     } finally {
       if (handle) await handle.close();
-      await rm(temporary, { force: true });
+      if (
+        !published ||
+        this.filesystemMode !== "AZURE_FILES_SMB"
+      ) {
+        await rm(temporary, { force: true });
+      }
     }
   }
 
@@ -1342,11 +1354,11 @@ export class FileEvidenceCache {
     path: string,
     bytes: Buffer,
     description: string,
+    previousSize: number,
   ): Promise<number> {
-    await mkdir(dirname(path), { recursive: true, mode: 0o700 });
-    const previous = await this.pathStat(path);
     const temporary = `${path}.${process.pid}.${randomUUID()}.tmp`;
     let handle: Awaited<ReturnType<typeof open>> | null = null;
+    let published = false;
     try {
       handle = await open(temporary, "wx", 0o600);
       await handle.writeFile(bytes);
@@ -1355,13 +1367,21 @@ export class FileEvidenceCache {
       handle = null;
       await this.verifyExactFile(temporary, bytes, `${description} temp file`);
       await rename(temporary, path);
+      published = true;
       await this.applyPrivateMode(path, 0o600);
       await this.verifyExactFile(path, bytes, description);
-      return bytes.byteLength - (previous?.size ?? 0);
+      return bytes.byteLength - previousSize;
     } finally {
       if (handle) await handle.close();
-      await rm(temporary, { force: true });
+      if (!published) await rm(temporary, { force: true });
     }
+  }
+
+  private async ensureDirectory(path: string): Promise<void> {
+    if (this.ensuredDirectories.has(path)) return;
+    await mkdir(path, { recursive: true, mode: 0o700 });
+    await this.applyPrivateMode(path, 0o700);
+    this.ensuredDirectories.add(path);
   }
 
   private async withStorageLock<T>(operation: () => Promise<T>): Promise<T> {
@@ -1408,6 +1428,7 @@ export class FileEvidenceCache {
 
     let total = 0;
     let directories = [path];
+    this.ensuredDirectories.add(path);
     while (directories.length > 0) {
       const listings = await mapWithConcurrency(
         directories,
@@ -1424,6 +1445,7 @@ export class FileEvidenceCache {
           const entryPath = join(listing.directory, entry.name);
           if (entry.isDirectory()) {
             nextDirectories.push(entryPath);
+            this.ensuredDirectories.add(entryPath);
           } else {
             files.push(entryPath);
           }
@@ -1440,6 +1462,7 @@ export class FileEvidenceCache {
           total += entry.size;
         } else if (entry.isDirectory()) {
           nextDirectories.push(files[index]);
+          this.ensuredDirectories.add(files[index]);
         }
       }
       directories = nextDirectories;
@@ -1457,6 +1480,7 @@ export class FileEvidenceCache {
   private async removeTrackedFile(path: string): Promise<void> {
     await this.withStorageLock(async () => {
       const existing = await this.pathStat(path);
+      if (!existing) return;
       try {
         await rm(path, { force: true });
       } catch (error) {
@@ -1484,22 +1508,34 @@ export class FileEvidenceCache {
     return this.withStorageLock(async () => {
       await this.initialize();
       const usage = await this.accountedDiskUsage();
-      let delta = 0;
-      for (const file of immutableFiles) {
-        const existing = await this.pathStat(file.path);
-        if (existing) {
-          await this.verifyExactFile(
-            file.path,
-            file.bytes,
-            file.description,
-          );
-        } else {
-          delta += file.bytes.byteLength;
-        }
-      }
-      for (const file of mutableFiles) {
-        const existing = await this.pathStat(file.path);
-        delta += file.bytes.byteLength - (existing?.size ?? 0);
+      const immutableExisting = await mapWithConcurrency(
+        immutableFiles,
+        DEFAULT_USAGE_SCAN_CONCURRENCY,
+        async (file) => {
+          const existing = await this.pathStat(file.path);
+          if (existing) {
+            await this.verifyExactFile(
+              file.path,
+              file.bytes,
+              file.description,
+            );
+          }
+          return existing !== null;
+        },
+      );
+      const mutablePreviousSizes = await mapWithConcurrency(
+        mutableFiles,
+        DEFAULT_USAGE_SCAN_CONCURRENCY,
+        async (file) => (await this.pathStat(file.path))?.size ?? 0,
+      );
+      let delta = immutableFiles.reduce(
+        (total, file, index) =>
+          total +
+          (immutableExisting[index] ? 0 : file.bytes.byteLength),
+        0,
+      );
+      for (const [index, file] of mutableFiles.entries()) {
+        delta += file.bytes.byteLength - mutablePreviousSizes[index];
       }
       if (usage + delta > this.maxBytes) {
         throw new EvidenceCacheError(
@@ -1507,20 +1543,40 @@ export class FileEvidenceCache {
           `Evidence cache write requires ${Math.max(0, delta)} bytes with ${usage}/${this.maxBytes} bytes already used.`,
         );
       }
+      await mapWithConcurrency(
+        [
+          ...new Set(
+            [...immutableFiles, ...mutableFiles].map((file) =>
+              dirname(file.path),
+            ),
+          ),
+        ],
+        DEFAULT_USAGE_SCAN_CONCURRENCY,
+        (directory) => this.ensureDirectory(directory),
+      );
       let written = 0;
       try {
-        for (const file of immutableFiles) {
-          written += await this.writeImmutable(
-            file.path,
-            file.bytes,
-            file.description,
-          );
-        }
-        for (const file of mutableFiles) {
+        const immutableWrites = await mapWithConcurrency(
+          immutableFiles,
+          DEFAULT_USAGE_SCAN_CONCURRENCY,
+          (file, index) =>
+            this.writeImmutable(
+              file.path,
+              file.bytes,
+              file.description,
+              immutableExisting[index],
+            ),
+        );
+        written += immutableWrites.reduce(
+          (total, bytes) => total + bytes,
+          0,
+        );
+        for (const [index, file] of mutableFiles.entries()) {
           written += await this.writeMutable(
             file.path,
             file.bytes,
             file.description,
+            mutablePreviousSizes[index],
           );
         }
       } catch (error) {
