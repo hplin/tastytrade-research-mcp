@@ -1172,6 +1172,46 @@ describe("private immutable research evidence cache", () => {
     );
   });
 
+  test("supports Azure Files SMB publication without POSIX chmod or hard links", async () => {
+    await withCache(
+      async (cache) => {
+        const source = provider();
+        const service = new CachedHistoricalCandlesService(source, cache);
+        const request = requestFor(
+          ["SPX"],
+          "2026-08-27T14:30:00.000Z",
+          { mode: "READ_WRITE" },
+        );
+        const first = await service.getHistoricalCandlesBatch(request);
+        const manifestId = first[0].evidence_cache.manifest_id;
+        const replay = await service.getHistoricalCandlesBatch({
+          ...request,
+          evidence_cache: {
+            ...request.evidence_cache,
+            mode: "CACHE_ONLY",
+            manifest_ids: [manifestId],
+          },
+        });
+
+        expect(first[0].evidence_cache.cache_status).toBe("MISS");
+        expect(replay[0].evidence_cache).toMatchObject({
+          cache_status: "CACHE_ONLY_HIT",
+          manifest_id: manifestId,
+          normalized_content_id:
+            first[0].evidence_cache.normalized_content_id,
+          provider_calls_avoided: 1,
+        });
+        expect(source.getHistoricalCandlesBatch).toHaveBeenCalledTimes(1);
+        expect(
+          (await cache.listFiles()).filter((path) =>
+            path.endsWith(".tmp"),
+          ),
+        ).toEqual([]);
+      },
+      { filesystemMode: "AZURE_FILES_SMB" },
+    );
+  });
+
   test("bundles cross-month entry, +3, and +5 trading-day evidence while keeping outcomes out of entry selection", async () => {
     await withCache(async (cache) => {
       const source = provider();

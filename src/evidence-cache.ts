@@ -33,6 +33,10 @@ export type EvidenceCacheMode =
   | "REFRESH"
   | "CACHE_ONLY";
 
+export type EvidenceCacheFilesystemMode =
+  | "POSIX"
+  | "AZURE_FILES_SMB";
+
 export type EvidenceRole =
   | "ENTRY"
   | "REFERENCE"
@@ -96,6 +100,7 @@ export type FileEvidenceCacheConfig = {
   maxConcurrency?: number;
   retryableFailureTtlMs?: number;
   defaultMode?: Exclude<EvidenceCacheMode, "CACHE_ONLY">;
+  filesystemMode?: EvidenceCacheFilesystemMode;
   datasetId?: string;
   licenseScopeId?: string;
   normalizationVersion?: string;
@@ -1028,6 +1033,7 @@ export class FileEvidenceCache {
   readonly maxConcurrency: number;
   readonly retryableFailureTtlMs: number;
   readonly defaultMode: Exclude<EvidenceCacheMode, "CACHE_ONLY">;
+  readonly filesystemMode: EvidenceCacheFilesystemMode;
 
   private readonly clock: () => number;
   private readonly defaults: {
@@ -1088,6 +1094,15 @@ export class FileEvidenceCache {
         "Evidence cache defaultMode must be BYPASS, READ_WRITE, or REFRESH.",
       );
     }
+    this.filesystemMode = config.filesystemMode ?? "POSIX";
+    if (
+      this.filesystemMode !== "POSIX" &&
+      this.filesystemMode !== "AZURE_FILES_SMB"
+    ) {
+      throw new Error(
+        "Evidence cache filesystemMode must be POSIX or AZURE_FILES_SMB.",
+      );
+    }
     this.clock = config.clock ?? (() => Date.now());
     this.defaults = {
       datasetId: identifier(
@@ -1122,10 +1137,18 @@ export class FileEvidenceCache {
     return new Date(this.clock()).toISOString();
   }
 
+  private async applyPrivateMode(
+    path: string,
+    mode: number,
+  ): Promise<void> {
+    if (this.filesystemMode === "AZURE_FILES_SMB") return;
+    await chmod(path, mode);
+  }
+
   private async initialize(): Promise<void> {
     if (this.initialized) return;
     await mkdir(this.directory, { recursive: true, mode: 0o700 });
-    await chmod(this.directory, 0o700);
+    await this.applyPrivateMode(this.directory, 0o700);
     for (const path of [
       join(this.directory, "objects", "sha256"),
       join(this.directory, "manifests", "sha256"),
@@ -1133,7 +1156,7 @@ export class FileEvidenceCache {
       join(this.directory, "failures", "requests"),
     ]) {
       await mkdir(path, { recursive: true, mode: 0o700 });
-      await chmod(path, 0o700);
+      await this.applyPrivateMode(path, 0o700);
     }
     this.initialized = true;
   }
@@ -1267,12 +1290,17 @@ export class FileEvidenceCache {
       await handle.close();
       handle = null;
       await this.verifyExactFile(temporary, bytes, `${description} temp file`);
-      try {
-        await link(temporary, path);
-        await chmod(path, 0o600);
+      if (this.filesystemMode === "AZURE_FILES_SMB") {
+        await rename(temporary, path);
         published = true;
-      } catch (error) {
-        if (errorCode(error) !== "EEXIST") throw error;
+      } else {
+        try {
+          await link(temporary, path);
+          await this.applyPrivateMode(path, 0o600);
+          published = true;
+        } catch (error) {
+          if (errorCode(error) !== "EEXIST") throw error;
+        }
       }
       await this.verifyExactFile(path, bytes, description);
       return published ? bytes.byteLength : 0;
@@ -1299,7 +1327,7 @@ export class FileEvidenceCache {
       handle = null;
       await this.verifyExactFile(temporary, bytes, `${description} temp file`);
       await rename(temporary, path);
-      await chmod(path, 0o600);
+      await this.applyPrivateMode(path, 0o600);
       await this.verifyExactFile(path, bytes, description);
       return bytes.byteLength - (previous?.size ?? 0);
     } finally {
@@ -2784,6 +2812,9 @@ export function evidenceCacheFromEnv(): FileEvidenceCache | null {
   const defaultModeValue =
     process.env.TASTYTRADE_EVIDENCE_CACHE_DEFAULT_MODE?.trim() ||
     "BYPASS";
+  const filesystemModeValue =
+    process.env.TASTYTRADE_EVIDENCE_CACHE_FILESYSTEM_MODE?.trim() ||
+    "POSIX";
   if (
     defaultModeValue !== "BYPASS" &&
     defaultModeValue !== "READ_WRITE" &&
@@ -2791,6 +2822,14 @@ export function evidenceCacheFromEnv(): FileEvidenceCache | null {
   ) {
     throw new Error(
       "TASTYTRADE_EVIDENCE_CACHE_DEFAULT_MODE must be BYPASS, READ_WRITE, or REFRESH.",
+    );
+  }
+  if (
+    filesystemModeValue !== "POSIX" &&
+    filesystemModeValue !== "AZURE_FILES_SMB"
+  ) {
+    throw new Error(
+      "TASTYTRADE_EVIDENCE_CACHE_FILESYSTEM_MODE must be POSIX or AZURE_FILES_SMB.",
     );
   }
   return new FileEvidenceCache({
@@ -2808,6 +2847,7 @@ export function evidenceCacheFromEnv(): FileEvidenceCache | null {
       DEFAULT_RETRYABLE_FAILURE_TTL_MS,
     ),
     defaultMode: defaultModeValue,
+    filesystemMode: filesystemModeValue,
     datasetId: process.env.TASTYTRADE_EVIDENCE_CACHE_DATASET_ID,
     licenseScopeId:
       process.env.TASTYTRADE_EVIDENCE_CACHE_LICENSE_SCOPE_ID,
