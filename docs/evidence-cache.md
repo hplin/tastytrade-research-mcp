@@ -45,6 +45,11 @@ performs a new full scan, and any failed partial commit invalidates the
 in-memory total so the next write rescans all surviving files. This keeps
 orphaned partial files and all surviving evidence inside the quota without
 repeating a recursive Azure Files scan for every commit or request.
+Within each commit, independent immutable objects and manifests are staged,
+verified, and atomically published in parallel. Mutable request or failure
+indexes are published only after every immutable write has settled
+successfully, so readers never observe an index pointing at an incomplete
+evidence set.
 
 ## Identity and revision contract
 
