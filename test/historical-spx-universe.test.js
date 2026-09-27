@@ -695,6 +695,49 @@ describe("historical SPX candidate universe", () => {
     ).toBe(true);
   });
 
+  test("uses session-aligned SPX with provider-clock hourly option evidence", async () => {
+    const source = structuredClone(fixture);
+    source.underlying.candle.source_time = "2026-08-25T13:30:00.000Z";
+    for (const option of source.options) {
+      option.candle.source_time = "2026-08-25T13:00:00.000Z";
+    }
+    const candles = fixtureCandles(source);
+    const result = await getHistoricalSpxCandidateUniverse(candles, {
+      ...REQUEST,
+      max_observation_age_minutes: 120,
+      resolution_profile: {
+        profile_id: "HOURLY_PROVIDER_ALIGNED_RESEARCH",
+        profile_version: "1.0.0",
+        max_observation_age_minutes: 120,
+        max_temporal_skew_minutes: 0,
+      },
+    });
+
+    expect(result.status).toBe("PARTIAL");
+    expect(result.contracts.length).toBeGreaterThan(0);
+    expect(
+      result.contracts.every(
+        (contract) =>
+          contract.bar_start === "2026-08-25T13:00:00.000Z" &&
+          contract.bar_end === "2026-08-25T14:00:00.000Z",
+      ),
+    ).toBe(true);
+    expect(result.warnings).toContain(
+      "SPX_UNDERLYING_USES_SESSION_ALIGNED_HOURLY_COHORT",
+    );
+    expect(
+      candles.getHistoricalCandles.mock.calls[0][0].resolution_profile
+        .profile_id,
+    ).toBe("HOURLY_VALUATION_RESEARCH");
+    expect(
+      candles.getHistoricalCandlesBatch.mock.calls.every(
+        ([input]) =>
+          input.resolution_profile.profile_id ===
+          "HOURLY_PROVIDER_ALIGNED_RESEARCH",
+      ),
+    ).toBe(true);
+  });
+
   test("returns partial coverage when one provider batch fails", async () => {
     const candles = fixtureCandles();
     const retrieve = candles.getHistoricalCandlesBatch;
