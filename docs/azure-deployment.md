@@ -22,16 +22,16 @@ tastytrade OAuth credentials in Azure Key Vault-backed Container App secrets.
 - Health URL:
   `https://tastytrade-research-mcp.victoriousfield-047d2c99.westus2.azurecontainerapps.io/healthz`
 - Production revision:
-  `tastytrade-research-mcp--main-b52f7e7`
+  `tastytrade-research-mcp--main-3c85fc1`
 - ACR image:
-  `hplintradingmcp.azurecr.io/tastytrade-research-mcp:main-b52f7e7`
+  `hplintradingmcp.azurecr.io/tastytrade-research-mcp:main-3c85fc1`
 - Image digest:
-  `sha256:06f302ade77afeb4672f430bd58abb0f78cafc5aae0afbe451bbe983813f58fa`
+  `sha256:da8e5814f2d48c1a4621cb6255e50465a298eeba0be83b6558a8723c69e248ab`
 - Source commit:
-  `b52f7e7dbcf33f5e1ea919207b224032cfe158a4`
+  `3c85fc1918fab732c5881782ba8b590913b5e907`
 - Managed identity: `mi-tastytrade-research-mcp`
 - Rollback revision:
-  `tastytrade-research-mcp--main-851f08c`
+  `tastytrade-research-mcp--main-b52f7e7`
 
 Production OAuth uses Entra resource application
 `f6c77904-5bf9-46cf-96f9-be5f2e841054` and delegated scope
@@ -160,11 +160,12 @@ OAUTH_RESOURCE_NAME=Tastytrade Research MCP
 ```
 
 For emergency rollback, move 100% traffic to the still-active revision
-`tastytrade-research-mcp--main-851f08c`. That revision contains the
-100-symbol SPX candidate batches, stage-level timeout diagnostics, and
-resumable range discovery, but predates the Azure Files quota-accounting and
-startup-warmup optimizations. It retains the same Entra OAuth, Key
-Vault-backed tastytrade configuration, and persistent Azure Files mount.
+`tastytrade-research-mcp--main-b52f7e7`. That revision contains the
+100-symbol SPX candidate batches, stage-level timeout diagnostics, resumable
+range discovery, and Azure Files startup warmup, but predates fair
+continuation scheduling for retryable partial checkpoints. It retains the
+same Entra OAuth, Key Vault-backed tastytrade configuration, and persistent
+Azure Files mount.
 
 After deployment, verify:
 
@@ -195,7 +196,40 @@ After deployment, verify:
    trading calendar and verify exact ENTRY/+3/+5 symbols plus aggregate
    coverage diagnostics.
 
-## Current cache-startup deployment verification
+## Current continuation-fairness deployment verification
+
+Revision `tastytrade-research-mcp--main-3c85fc1` was verified on 2026-09-27
+with:
+
+- ACR build run `ccy` producing digest
+  `sha256:da8e5814f2d48c1a4621cb6255e50465a298eeba0be83b6558a8723c69e248ab`;
+- source commit `3c85fc1918fab732c5881782ba8b590913b5e907`;
+- one healthy replica in `RunningAtMaxScale`;
+- 100% production traffic, with `main-b52f7e7` healthy and active at 0% as
+  the immediate rollback revision;
+- unchanged managed identity, ACR pull configuration, Key Vault secret refs,
+  ingress, resource limits, one-replica scale, and Azure Files cache mount;
+- HTTP 200 from `/healthz`, valid RFC 9728 protected-resource metadata, HTTP
+  401 with the required resource metadata and `mcp.read` scope from
+  unauthenticated `/mcp`, 22 authenticated tools, and a local package-pricing
+  smoke returning a `1` synthetic natural credit;
+- a revision-specific 21-session August replay migrating a valid v1 cursor
+  to v2 on the first response and visiting all 21 sessions exactly once in
+  five first-pass calls of 5, 5, 5, 5, and 1 checkpoints;
+- live provider 429 responses leaving seven checkpoints deferred without
+  blocking later sessions: the first pass reached 2026-08-31, then selected
+  deferred dates 2026-08-20, 2026-08-24, 2026-08-25, 2026-08-26, and
+  2026-08-27 for the next retry;
+- deterministic retry rotation moving those still-unresolved dates behind
+  2026-08-28 and 2026-08-31, with 30 cache hits, zero cache misses, and 30
+  provider calls avoided during that retry; and
+- a second acceptance through the production FQDN visiting all 21 sessions
+  exactly once despite 17 retryable deferred checkpoints, then retrying the
+  deferred queue head and moving the five unresolved selections to its tail.
+  Every five-checkpoint production batch and retry reported 30 cache hits,
+  zero cache misses, and 30 provider calls avoided.
+
+## Previous cache-startup deployment verification
 
 Revision `tastytrade-research-mcp--main-b52f7e7` was verified on 2026-09-27
 with:
