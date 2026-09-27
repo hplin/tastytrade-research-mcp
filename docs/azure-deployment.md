@@ -22,16 +22,16 @@ tastytrade OAuth credentials in Azure Key Vault-backed Container App secrets.
 - Health URL:
   `https://tastytrade-research-mcp.victoriousfield-047d2c99.westus2.azurecontainerapps.io/healthz`
 - Production revision:
-  `tastytrade-research-mcp--main-85b194f`
+  `tastytrade-research-mcp--main-6c5521e`
 - ACR image:
-  `hplintradingmcp.azurecr.io/tastytrade-research-mcp:main-85b194f`
+  `hplintradingmcp.azurecr.io/tastytrade-research-mcp:main-6c5521e`
 - Image digest:
-  `sha256:7f2d2e16530c8b72f9e046623c64e92300644f28a17de117308572128e085508`
+  `sha256:a467850284d16a6d2e2233c85a76756180173c8195cc30ada89ecc7acfeb9511`
 - Source commit:
-  `85b194f82e0ed65549359a1fcd9f671e07de8fa5`
+  `6c5521effeb7daded18dcbd51d990df6c4260426`
 - Managed identity: `mi-tastytrade-research-mcp`
 - Rollback revision:
-  `tastytrade-research-mcp--main-8a93c25`
+  `tastytrade-research-mcp--main-85b194f`
 
 Production OAuth uses Entra resource application
 `f6c77904-5bf9-46cf-96f9-be5f2e841054` and delegated scope
@@ -160,10 +160,10 @@ OAUTH_RESOURCE_NAME=Tastytrade Research MCP
 ```
 
 For emergency rollback, move 100% traffic to the still-active revision
-`tastytrade-research-mcp--main-8a93c25`. That revision contains the persistent
-Azure Files cache and mixed session/provider-clock hourly reconstruction, but
-predates the fixed-horizon exact-package workflow. It retains the same Entra
-OAuth and Key Vault-backed tastytrade configuration.
+`tastytrade-research-mcp--main-85b194f`. That revision contains the persistent
+Azure Files cache and exact fixed-horizon package workflow, but predates the
+research-only model valuation fallback. It retains the same Entra OAuth and
+Key Vault-backed tastytrade configuration.
 
 After deployment, verify:
 
@@ -188,6 +188,35 @@ After deployment, verify:
    `tastytrade_get_historical_option_package_horizons` with an authoritative
    trading calendar and verify exact ENTRY/+3/+5 symbols plus aggregate
    coverage diagnostics.
+
+## Current model-valuation deployment verification
+
+Revision `tastytrade-research-mcp--main-6c5521e` was verified on 2026-09-27
+with:
+
+- ACR build run `ccs` producing digest
+  `sha256:a467850284d16a6d2e2233c85a76756180173c8195cc30ada89ecc7acfeb9511`;
+- source commit `6c5521effeb7daded18dcbd51d990df6c4260426`;
+- one healthy replica in `RunningAtMaxScale`;
+- 100% production traffic, with `main-85b194f` active at 0% as the immediate
+  rollback revision and the older `main-8a93c25` revision deactivated;
+- unchanged managed identity, ACR pull configuration, Key Vault secret refs,
+  ingress, resource limits, one-replica scale, and Azure Files cache mount;
+- HTTP 200 from `/healthz` and RFC 9728 protected-resource metadata;
+- HTTP 401 plus the correct resource metadata and scope from unauthenticated
+  `/mcp`;
+- an Entra delegated `mcp.read` token listing all 21 MCP tools and exposing
+  the opt-in `valuation_fallback` schema;
+- an authenticated local package-pricing call returning a `1` synthetic
+  natural credit;
+- the frozen 2026-08-25 IC/DD inventory retaining two exact packages while
+  increasing usable valuation coverage from two of six to four of six:
+  two `EXACT_PACKAGE_REFERENCE`, one `MIXED_OBSERVED_MODELED`, and one
+  `MODEL_SURFACE`;
+- the modeled IC +3 value of `-13.988598` and mixed DD ENTRY value of
+  `68.344389`, both normalizing as complete `MODEL_REFERENCE` inputs; and
+- all six horizon manifests replaying through `CACHE_ONLY` with identical
+  strict and modeled results and six provider calls avoided.
 
 ## Current exact-package horizon deployment verification
 
