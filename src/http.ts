@@ -1,6 +1,9 @@
 import { requireEnv } from "./config.js";
 import { createEntraTokenVerifier } from "./entra-oauth.js";
-import { createResearchHttpServer } from "./http-server.js";
+import {
+  createResearchHttpServer,
+  defaultResearchServices,
+} from "./http-server.js";
 
 function httpPort(): number {
   const raw = process.env.MCP_HTTP_PORT?.trim() || "8000";
@@ -61,8 +64,11 @@ const auth =
             "MCP_AUTH_MODE must be either api-key or oauth.",
           );
         })();
+const services = defaultResearchServices();
+await services.evidenceCache?.warmup();
 const httpServer = createResearchHttpServer({
   auth,
+  services,
 });
 
 await new Promise<void>((resolve, reject) => {

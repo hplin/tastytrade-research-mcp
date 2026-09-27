@@ -54,7 +54,7 @@ class HttpRequestError extends Error {
   }
 }
 
-function defaultServices(): ResearchServices {
+export function defaultResearchServices(): ResearchServices {
   const oauth = new TastytradeOAuthClient();
   return {
     backtester: new TastytradeBacktesterClient(oauth),
@@ -230,7 +230,7 @@ export function createResearchHttpServer(
     throw new Error("MCP_API_KEY must contain at least 32 characters.");
   }
 
-  const services = options.services ?? defaultServices();
+  const services = options.services ?? defaultResearchServices();
   const maxBodyBytes = options.maxBodyBytes ?? DEFAULT_MAX_BODY_BYTES;
   if (!Number.isSafeInteger(maxBodyBytes) || maxBodyBytes < 1) {
     throw new Error("maxBodyBytes must be a positive integer.");

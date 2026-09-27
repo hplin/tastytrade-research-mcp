@@ -1477,6 +1477,13 @@ export class FileEvidenceCache {
     return this.accountedBytes;
   }
 
+  async warmup(): Promise<void> {
+    await this.withStorageLock(async () => {
+      await this.initialize();
+      await this.accountedDiskUsage();
+    });
+  }
+
   private async removeTrackedFile(path: string): Promise<void> {
     await this.withStorageLock(async () => {
       const existing = await this.pathStat(path);

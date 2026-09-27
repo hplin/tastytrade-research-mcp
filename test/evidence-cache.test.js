@@ -1221,7 +1221,7 @@ describe("private immutable research evidence cache", () => {
     );
   });
 
-  test("scans quota with bounded concurrency, caches exact usage, and rescans on restart", async () => {
+  test("warms quota with bounded concurrency, caches exact usage, and rescans on restart", async () => {
     await withCache(async (cache, directory) => {
       const seedDirectory = join(directory, "seed");
       await mkdir(seedDirectory, { recursive: true });
@@ -1258,6 +1258,7 @@ describe("private immutable research evidence cache", () => {
       const service = new CachedHistoricalCandlesService(source, cache);
 
       await Promise.all([
+        cache.warmup(),
         service.getHistoricalCandlesBatch(
           requestFor(["SPX"], "2026-08-27T14:30:00.000Z", {
             mode: "READ_WRITE",
@@ -1288,6 +1289,7 @@ describe("private immutable research evidence cache", () => {
         provider(),
         restarted,
       );
+      await restarted.warmup();
       await expect(
         restartedService.getHistoricalCandlesBatch(
           requestFor(["SPX"], "2026-09-01T14:30:00.000Z", {
@@ -1310,6 +1312,23 @@ describe("private immutable research evidence cache", () => {
       });
       expect(restartedScan).toHaveBeenCalledTimes(1);
       expect(restarted.accountedBytes).toBe(usage);
+    });
+  });
+
+  test("surfaces quota warmup failures and permits an exact retry", async () => {
+    await withCache(async (cache) => {
+      const usageScan = jest
+        .spyOn(cache, "diskUsage")
+        .mockRejectedValueOnce(new Error("quota scan unavailable"));
+
+      await expect(cache.warmup()).rejects.toThrow(
+        "quota scan unavailable",
+      );
+      expect(cache.accountedBytes).toBeNull();
+
+      await expect(cache.warmup()).resolves.toBeUndefined();
+      expect(usageScan).toHaveBeenCalledTimes(2);
+      expect(cache.accountedBytes).toBe(await cacheUsage(cache));
     });
   });
 
