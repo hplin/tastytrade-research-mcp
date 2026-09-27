@@ -67,7 +67,7 @@ describe("MCP research server", () => {
     await client.connect(clientTransport);
     try {
       const tools = await client.listTools();
-      expect(tools.tools).toHaveLength(20);
+      expect(tools.tools).toHaveLength(21);
       expect(tools.tools.map((tool) => tool.name)).toEqual(
         expect.arrayContaining([
           "tastytrade_price_option_package",
@@ -75,6 +75,7 @@ describe("MCP research server", () => {
           "tastytrade_get_historical_spx_candidate_universe",
           "tastytrade_get_historical_option_package_at_checkpoint",
           "tastytrade_get_historical_option_package_path",
+          "tastytrade_get_historical_option_package_horizons",
           "tastytrade_normalize_historical_execution_evidence",
           "tastytrade_simulate_historical_execution",
           "tastytrade_build_historical_replay_report",
@@ -142,6 +143,7 @@ describe("MCP research server", () => {
               "tastytrade_get_historical_spx_candidate_universe",
               "tastytrade_get_historical_option_package_at_checkpoint",
               "tastytrade_get_historical_option_package_path",
+              "tastytrade_get_historical_option_package_horizons",
             ].includes(tool.name),
           )
           .every(
@@ -150,6 +152,28 @@ describe("MCP research server", () => {
                 .evidence_cache,
           ),
       ).toBe(true);
+      const packageHorizonsTool = tools.tools.find(
+        (tool) =>
+          tool.name ===
+          "tastytrade_get_historical_option_package_horizons",
+      );
+      expect(
+        packageHorizonsTool.inputSchema.properties.request.properties,
+      ).toMatchObject({
+        trading_calendar: expect.any(Object),
+        horizons: expect.any(Object),
+        candidates: expect.any(Object),
+        resolution_profile: expect.any(Object),
+        evidence_cache: expect.any(Object),
+      });
+      expect(
+        packageHorizonsTool.inputSchema.properties.request.properties
+          .evidence_cache.properties,
+      ).not.toHaveProperty("as_of");
+      expect(
+        packageHorizonsTool.inputSchema.properties.request.properties
+          .evidence_cache.properties,
+      ).not.toHaveProperty("evidence_role");
       const executionModelTool = tools.tools.find(
         (tool) =>
           tool.name === "tastytrade_simulate_historical_execution",
@@ -628,6 +652,64 @@ describe("MCP research server", () => {
         expected_point_count: 4,
         observed_point_count: 0,
         fill_verification_compatible: true,
+      });
+
+      const packageHorizons = textResult(
+        await client.callTool({
+          name: "tastytrade_get_historical_option_package_horizons",
+          arguments: {
+            request: {
+              underlying: "SPX",
+              trading_calendar: {
+                timezone: "America/Los_Angeles",
+                local_time: "07:30",
+                session_dates: ["2026-08-27"],
+              },
+              horizons: ["ENTRY"],
+              candidates: [
+                {
+                  candidate_id: "checkpoint-35",
+                  family: "DEBIT_VERTICAL",
+                  entry_date: "2026-08-27",
+                  legs: [
+                    {
+                      role: "LONG_CALL",
+                      provider_symbol: "SPXW  260924C07750000",
+                      action: "BUY_TO_OPEN",
+                    },
+                    {
+                      role: "SHORT_CALL",
+                      provider_symbol: "SPXW  260924C07800000",
+                      action: "SELL_TO_OPEN",
+                    },
+                  ],
+                },
+              ],
+              phase: "REGRESSION_RESEARCH",
+            },
+          },
+        }),
+      );
+      expect(packageHorizons).toMatchObject({
+        status: "NOT_AVAILABLE",
+        evidence_class: "VALUATION_ONLY",
+        reference_type: "CANDLE_REFERENCE",
+        coverage: {
+          requested_candidates: 1,
+          requested_package_checkpoints: 1,
+          complete_entry_packages: 0,
+          complete_packages: 0,
+          missing_leg_count_by_role: [
+            { role: "LONG_CALL", count: 1 },
+            { role: "SHORT_CALL", count: 1 },
+          ],
+          missing_reason_counts: [
+            {
+              reason: "HISTORICAL_CANDLE_UNAVAILABLE",
+              count: 2,
+            },
+          ],
+        },
       });
 
       const directFill = textResult(

@@ -110,12 +110,16 @@ A Skills or regression runner should execute the chain in this order:
 1. obtain both frozen policy outputs from the authoritative grader;
 2. preserve every accepted candidate in their union, plus missing/rejected
    candidates used for the missing-data denominator;
-3. normalize exact-leg quote or reference evidence with
+3. retrieve frozen exact packages with
+   `tastytrade_get_historical_option_package_horizons` using an authoritative
+   caller-supplied trading-session calendar, then inspect its aggregate
+   coverage diagnostics;
+4. normalize exact-leg quote or reference evidence with
    `tastytrade_normalize_historical_execution_evidence`;
-4. run each caller-frozen execution profile with
+5. run each caller-frozen execution profile with
    `tastytrade_simulate_historical_execution`;
-5. assemble the complete candidate × scenario × horizon matrix; and
-6. call the replay report builder, then validate the result against the JSON
+6. assemble the complete candidate × scenario × horizon matrix; and
+7. call the replay report builder, then validate the result against the JSON
    schema before handing it to regression reporting.
 
 The runner must not write `SPX-Paper-Sim` monthly files or

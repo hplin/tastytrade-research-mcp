@@ -170,7 +170,7 @@ After deployment, verify:
 1. `/healthz` returns HTTP 200.
 2. The protected-resource metadata names Entra and the `mcp.read` scope.
 3. `/mcp` without a bearer token returns HTTP 401 with `resource_metadata`.
-4. A real Entra token connects, lists all 20 tools, and can call a local-only
+4. A real Entra token connects, lists all 21 tools, and can call a local-only
    tool such as `tastytrade_price_option_package`.
 5. A live provider smoke test can call
    `tastytrade_get_historical_spx_candidate_universe` and verify bounded
@@ -184,6 +184,10 @@ After deployment, verify:
 7. A live exact-leg package smoke test can reconstruct checkpoint evidence,
    return a gap-preserving short path at the finest retrievable resolution,
    and feed that path directly to `tastytrade_verify_historical_fill`.
+8. A frozen-inventory smoke test can call
+   `tastytrade_get_historical_option_package_horizons` with an authoritative
+   trading calendar and verify exact ENTRY/+3/+5 symbols plus aggregate
+   coverage diagnostics.
 
 ## Current persistent-cache deployment verification
 

@@ -44,6 +44,10 @@ import {
   type HistoricalOptionPackagePathInput,
 } from "./historical-option-package.js";
 import {
+  getHistoricalOptionPackageHorizons,
+  type HistoricalOptionPackageHorizonsInput,
+} from "./historical-option-package-horizons.js";
+import {
   HISTORICAL_EXECUTION_EVIDENCE_INPUT_SCHEMA,
   normalizeHistoricalExecutionEvidence,
   type HistoricalExecutionEvidenceInput,
@@ -435,6 +439,21 @@ const EVIDENCE_CACHE_SCHEMA = {
   },
   required: ["mode"],
   additionalProperties: false,
+} as const;
+
+const HORIZON_EVIDENCE_CACHE_SCHEMA = {
+  ...EVIDENCE_CACHE_SCHEMA,
+  properties: {
+    mode: EVIDENCE_CACHE_SCHEMA.properties.mode,
+    manifest_ids: EVIDENCE_CACHE_SCHEMA.properties.manifest_ids,
+    dataset_id: EVIDENCE_CACHE_SCHEMA.properties.dataset_id,
+    license_scope_id: EVIDENCE_CACHE_SCHEMA.properties.license_scope_id,
+    normalization_version:
+      EVIDENCE_CACHE_SCHEMA.properties.normalization_version,
+    model_version: EVIDENCE_CACHE_SCHEMA.properties.model_version,
+    source_revision: EVIDENCE_CACHE_SCHEMA.properties.source_revision,
+    references: EVIDENCE_CACHE_SCHEMA.properties.references,
+  },
 } as const;
 
 const PACKAGE_LEG_SCHEMA = {
@@ -856,6 +875,10 @@ const HISTORICAL_OPTION_PACKAGE_LEG_SCHEMA = {
       ],
     },
     quantity: { type: "integer", minimum: 1 },
+    lifecycle: {
+      type: "string",
+      enum: ["ACTIVE", "EXPIRED", "UNKNOWN"],
+    },
   },
   required: ["provider_symbol", "action"],
   additionalProperties: false,
@@ -942,6 +965,123 @@ const HISTORICAL_OPTION_PACKAGE_PATH_SCHEMA = {
         "end_time",
         "resolution",
         "legs",
+        "phase",
+      ],
+      additionalProperties: false,
+    },
+  },
+  required: ["request"],
+  additionalProperties: false,
+} as const;
+
+const HISTORICAL_OPTION_PACKAGE_HORIZONS_SCHEMA = {
+  type: "object",
+  properties: {
+    request: {
+      type: "object",
+      properties: {
+        underlying: { type: "string", enum: ["SPX"] },
+        trading_calendar: {
+          type: "object",
+          properties: {
+            timezone: {
+              type: "string",
+              minLength: 1,
+              maxLength: 100,
+            },
+            local_time: LOCAL_CHECKPOINT_SCHEMA.properties.local_time,
+            session_dates: {
+              type: "array",
+              minItems: 1,
+              maxItems: 400,
+              uniqueItems: true,
+              items: DATE_SCHEMA,
+            },
+          },
+          required: ["timezone", "local_time", "session_dates"],
+          additionalProperties: false,
+        },
+        horizons: {
+          type: "array",
+          minItems: 1,
+          maxItems: 3,
+          uniqueItems: true,
+          items: {
+            type: "string",
+            enum: [
+              "ENTRY",
+              "OUTCOME_3_TRADING_DAYS",
+              "OUTCOME_5_TRADING_DAYS",
+            ],
+          },
+        },
+        candidates: {
+          type: "array",
+          minItems: 1,
+          maxItems: 50,
+          items: {
+            type: "object",
+            properties: {
+              candidate_id: {
+                type: "string",
+                minLength: 1,
+                maxLength: 200,
+              },
+              family:
+                HISTORICAL_OPTION_PACKAGE_COMMON_PROPERTIES.family,
+              entry_date: DATE_SCHEMA,
+              legs: {
+                type: "array",
+                minItems: 2,
+                maxItems: 4,
+                items: {
+                  type: "object",
+                  properties: {
+                    ...HISTORICAL_OPTION_PACKAGE_LEG_SCHEMA.properties,
+                    role: {
+                      type: "string",
+                      minLength: 1,
+                      maxLength: 200,
+                    },
+                  },
+                  required: ["provider_symbol", "action", "role"],
+                  additionalProperties: false,
+                },
+              },
+              references: REFERENCES_SCHEMA,
+            },
+            required: [
+              "candidate_id",
+              "family",
+              "entry_date",
+              "legs",
+            ],
+            additionalProperties: false,
+          },
+        },
+        max_observation_age_minutes: {
+          type: "integer",
+          minimum: 0,
+          maximum: 1440,
+        },
+        max_temporal_skew_minutes: {
+          type: "integer",
+          minimum: 0,
+          maximum: 1440,
+        },
+        resolution_profile: RESOLUTION_PROFILE_SCHEMA,
+        candidate_construction_profile:
+          CANDIDATE_CONSTRUCTION_PROFILE_SCHEMA,
+        phase: {
+          type: "string",
+          enum: ["REGRESSION_RESEARCH"],
+        },
+        evidence_cache: HORIZON_EVIDENCE_CACHE_SCHEMA,
+      },
+      required: [
+        "underlying",
+        "trading_calendar",
+        "candidates",
         "phase",
       ],
       additionalProperties: false,
@@ -1197,6 +1337,12 @@ export const TOOLS: Tool[] = [
     inputSchema: HISTORICAL_OPTION_PACKAGE_PATH_SCHEMA,
   },
   {
+    name: "tastytrade_get_historical_option_package_horizons",
+    description:
+      "Reconstruct a bounded frozen exact-leg candidate inventory at caller-supplied ENTRY, +3, and +5 trading-session checkpoints. Never infers weekdays, substitutes legs, or upgrades candle references beyond valuation-only evidence; returns structured per-leg failures and aggregate coverage diagnostics.",
+    inputSchema: HISTORICAL_OPTION_PACKAGE_HORIZONS_SCHEMA,
+  },
+  {
     name: "tastytrade_normalize_historical_execution_evidence",
     description:
       "Normalize caller-supplied exact-leg historical quote snapshots or windows into a deterministic, immutable-cache-linked handoff. Preserves signed package cash flows and keeps valuation references, simulated-execution inputs, and broker execution strictly separate; it does not fetch data, select a model, or verify a broker fill.",
@@ -1440,6 +1586,18 @@ export function createResearchServer(
           await getHistoricalOptionPackagePath(
             reconstructionCandles,
             requestArg<HistoricalOptionPackagePathInput>(args),
+          ),
+        );
+      case "tastytrade_get_historical_option_package_horizons":
+        if (!reconstructionCandles) {
+          throw new Error(
+            "Historical option package horizons require batched candle retrieval.",
+          );
+        }
+        return toolResult(
+          await getHistoricalOptionPackageHorizons(
+            reconstructionCandles,
+            requestArg<HistoricalOptionPackageHorizonsInput>(args),
           ),
         );
       case "tastytrade_normalize_historical_execution_evidence":

@@ -4,6 +4,7 @@ import {
   EvidenceCacheError,
   evidenceCacheWithContext,
   summarizeEvidenceCacheRecords,
+  type EvidenceCacheRecord,
   type EvidenceCacheRequest,
   type EvidenceCacheSummary,
 } from "./evidence-cache.js";
@@ -17,7 +18,9 @@ import {
 import type {
   HistoricalCandle,
   HistoricalCandlesBatchInput,
+  HistoricalCandlesFailureReason,
   HistoricalCandlesResult,
+  InstrumentLifecycle,
 } from "./historical-candles.js";
 import type {
   LegAction,
@@ -50,6 +53,7 @@ export type HistoricalOptionPackageLegInput = {
   provider_symbol: string;
   action: LegAction;
   quantity?: number;
+  lifecycle?: InstrumentLifecycle;
 };
 
 export type HistoricalOptionPackageCheckpointInput = {
@@ -92,17 +96,30 @@ export type HistoricalPackageReferenceValue = {
   value: string;
   price_effect: PriceEffect;
   evidence_type: "HISTORICAL_OPTION_PACKAGE_REFERENCE";
+  reference_type: "CANDLE_REFERENCE";
+  evidence_class: "VALUATION_ONLY";
   guaranteed_executable: false;
 };
+
+export type HistoricalOptionPackageLegFailureReason =
+  | "CONTRACT_ABSENT_FROM_RECONSTRUCTED_UNIVERSE"
+  | "HISTORICAL_CANDLE_UNAVAILABLE"
+  | "STALE_OBSERVATION"
+  | "ALIGNMENT_MISMATCH"
+  | "CACHE_ERROR"
+  | "PROVIDER_ERROR";
 
 export type HistoricalOptionPackageLegObservation = {
   provider_symbol: string;
   streamer_symbol: string;
   action: LegAction;
   quantity: number;
+  lifecycle: InstrumentLifecycle;
   option_side: "CALL" | "PUT";
   strike: string;
   expiration: string;
+  reconstruction_status: "AVAILABLE" | "NOT_AVAILABLE";
+  failure_reason: HistoricalOptionPackageLegFailureReason | null;
   reference_value: string | null;
   bid: null;
   ask: null;
@@ -159,6 +176,8 @@ export type HistoricalOptionPackageCheckpointResult = {
   valuation_quality: "COMPLETE" | "NOT_AVAILABLE";
   execution_quality: "VALUATION_ONLY" | "NOT_AVAILABLE";
   usable_for_execution: false;
+  missing_provider_symbols: string[];
+  failure_reasons: HistoricalOptionPackageLegFailureReason[];
   legs: HistoricalOptionPackageLegObservation[];
   source: string;
   warnings: string[];
@@ -243,16 +262,21 @@ type ParsedLeg = HistoricalOptionPackageLegInput & {
   expiration: string;
 };
 
-type HistoricalLegProvenance = {
+export type HistoricalLegProvenance = {
   provider_symbol: string;
   streamer_symbol: string;
+  lifecycle: InstrumentLifecycle;
   source: string;
+  source_revision: string | null;
   interval: HistoricalPackageResolution;
+  resolution_profile: ResolutionProfile;
   reference_field: "close";
   source_timestamp_semantics: "BAR_START";
   availability_rule: "source_timestamp + interval <= evaluation_time";
   snapshot_complete: boolean;
   snapshot_truncated: boolean;
+  provider_failure_reasons: HistoricalCandlesFailureReason[];
+  evidence_cache: EvidenceCacheRecord | null;
   provider_warnings: string[];
 };
 
@@ -261,6 +285,8 @@ type SelectedCandleBatch = {
   results: HistoricalCandlesResult[];
   attempts: HistoricalPackageResolutionAttempt[];
   cache_results: HistoricalCandlesResult[];
+  diagnostic_resolution: HistoricalPackageResolution | null;
+  diagnostic_results: HistoricalCandlesResult[];
 };
 
 const CHECKPOINT_RESOLUTIONS: HistoricalPackageResolution[] = [
@@ -417,11 +443,24 @@ function normalizeLegs(
     if (!Number.isSafeInteger(quantity) || quantity <= 0) {
       throw new Error(`legs[${index}].quantity must be a positive integer.`);
     }
+    if (
+      leg.lifecycle !== undefined &&
+      leg.lifecycle !== "ACTIVE" &&
+      leg.lifecycle !== "EXPIRED" &&
+      leg.lifecycle !== "UNKNOWN"
+    ) {
+      throw new Error(
+        `legs[${index}].lifecycle must be ACTIVE, EXPIRED, or UNKNOWN.`,
+      );
+    }
     isBuy(leg.action);
     return {
       provider_symbol: providerSymbol,
       action: leg.action,
       quantity,
+      ...(leg.lifecycle === undefined
+        ? {}
+        : { lifecycle: leg.lifecycle }),
       ...parseHistoricalOptionSymbol(providerSymbol),
     };
   });
@@ -454,6 +493,13 @@ function normalizeLegs(
   return normalized;
 }
 
+export function validateHistoricalOptionPackageLegs(
+  family: SpreadFamily,
+  legs: HistoricalOptionPackageLegInput[],
+): void {
+  normalizeLegs(family, legs);
+}
+
 function packageReferenceValue(
   family: SpreadFamily,
   legs: Array<Pick<ParsedLeg, "action" | "quantity">>,
@@ -482,6 +528,8 @@ function packageReferenceValue(
     value: signedDebit.abs().toString(),
     price_effect: priceEffect,
     evidence_type: "HISTORICAL_OPTION_PACKAGE_REFERENCE",
+    reference_type: "CANDLE_REFERENCE",
+    evidence_class: "VALUATION_ONLY",
     guaranteed_executable: false,
   };
 }
@@ -509,6 +557,8 @@ async function retrieveWithFallback(
 ): Promise<SelectedCandleBatch> {
   const attempts: HistoricalPackageResolutionAttempt[] = [];
   const cacheResults: HistoricalCandlesResult[] = [];
+  let diagnosticResolution: HistoricalPackageResolution | null = null;
+  let diagnosticResults: HistoricalCandlesResult[] = [];
   const resolutions = resolutionCandidates(profile).map(packageResolution);
   const session = candleSessionForResolutionProfile(profile);
   for (const resolution of resolutions) {
@@ -519,6 +569,9 @@ async function retrieveWithFallback(
           symbol: leg.provider_symbol,
           streamer_symbol: leg.streamer_symbol,
           instrument_type: "OPTION",
+          ...(leg.lifecycle === undefined
+            ? {}
+            : { lifecycle: leg.lifecycle }),
         })),
         interval: resolution,
         start_time: requestedRange.start,
@@ -536,6 +589,10 @@ async function retrieveWithFallback(
         );
       }
       cacheResults.push(...results);
+      if (diagnosticResolution === null) {
+        diagnosticResolution = resolution;
+        diagnosticResults = results;
+      }
       const snapshotFailure = results.some(
         (result) => !result.snapshot_complete || result.snapshot_truncated,
       );
@@ -566,6 +623,8 @@ async function retrieveWithFallback(
         results,
         attempts,
         cache_results: cacheResults,
+        diagnostic_resolution: diagnosticResolution,
+        diagnostic_results: diagnosticResults,
       };
     } catch (error) {
       if (error instanceof EvidenceCacheError) throw error;
@@ -582,6 +641,8 @@ async function retrieveWithFallback(
     results: [],
     attempts,
     cache_results: cacheResults,
+    diagnostic_resolution: diagnosticResolution,
+    diagnostic_results: diagnosticResults,
   };
 }
 
@@ -605,17 +666,24 @@ function legProvenance(
   resolution: HistoricalPackageResolution,
   result: HistoricalCandlesResult | undefined,
   profile: ResolutionProfile,
+  sourceRevision: string | null = null,
 ): HistoricalLegProvenance {
   return {
     provider_symbol: leg.provider_symbol,
     streamer_symbol: leg.streamer_symbol,
+    lifecycle: leg.lifecycle ?? "UNKNOWN",
     source: profile.provider_id,
+    source_revision:
+      result?.bounded_history?.source_revision ?? sourceRevision,
     interval: resolution,
+    resolution_profile: withEffectiveAggregation(profile, resolution),
     reference_field: "close",
     source_timestamp_semantics: "BAR_START",
     availability_rule: "source_timestamp + interval <= evaluation_time",
     snapshot_complete: result?.snapshot_complete ?? false,
     snapshot_truncated: result?.snapshot_truncated ?? false,
+    provider_failure_reasons: [...(result?.failure_reasons ?? [])],
+    evidence_cache: result?.evidence_cache ?? null,
     provider_warnings: [...(result?.warnings ?? [])],
   };
 }
@@ -639,6 +707,53 @@ function normalizeOptionalDecimal(
   return ExactDecimal.parse(value, field).toString();
 }
 
+function legFailureReason(
+  result: HistoricalCandlesResult | undefined,
+  candle: HistoricalCandle | null,
+  freshnessStatus: HistoricalOptionPackageLegObservation["freshness_status"],
+  warnings: string[],
+): HistoricalOptionPackageLegFailureReason | null {
+  const providerFailureReasons = result?.failure_reasons ?? [];
+  if (
+    !result ||
+    providerFailureReasons.some(
+      (reason) =>
+        reason !== "REQUESTED_WINDOW_NOT_COVERED" &&
+        reason !== "MISSING_CONTRACT_EVIDENCE",
+    ) ||
+    result.snapshot_truncated
+  ) {
+    return "PROVIDER_ERROR";
+  }
+  if (
+    candle === null &&
+    warnings.some((warning) =>
+      warning.startsWith("PROVIDER_BAR_ALIGNMENT_MISMATCH"),
+    )
+  ) {
+    return "ALIGNMENT_MISMATCH";
+  }
+  if (freshnessStatus === "STALE") return "STALE_OBSERVATION";
+  if (candle === null || freshnessStatus === "MISSING") {
+    if (
+      result.snapshot_complete &&
+      providerFailureReasons.includes("MISSING_CONTRACT_EVIDENCE") &&
+      !providerFailureReasons.includes("REQUESTED_WINDOW_NOT_COVERED")
+    ) {
+      return "CONTRACT_ABSENT_FROM_RECONSTRUCTED_UNIVERSE";
+    }
+    if (
+      !result.snapshot_complete &&
+      !providerFailureReasons.includes("REQUESTED_WINDOW_NOT_COVERED")
+    ) {
+      return "PROVIDER_ERROR";
+    }
+    return "HISTORICAL_CANDLE_UNAVAILABLE";
+  }
+  if (!result.snapshot_complete) return "PROVIDER_ERROR";
+  return null;
+}
+
 function observedLeg(
   leg: ParsedLeg,
   resolution: HistoricalPackageResolution,
@@ -648,12 +763,14 @@ function observedLeg(
   maxObservationAgeMs: number,
   profile: ResolutionProfile,
   extraWarnings: string[] = [],
+  sourceRevision: string | null = null,
 ): HistoricalOptionPackageLegObservation {
   const provenance = legProvenance(
     leg,
     resolution,
     result,
     profile,
+    sourceRevision,
   );
   const warnings = [...extraWarnings];
   if (!result) warnings.push("PROVIDER_RESULT_MISSING");
@@ -693,15 +810,25 @@ function observedLeg(
   ) {
     freshnessStatus = "MISSING";
   }
+  const failureReason = legFailureReason(
+    result,
+    candle,
+    freshnessStatus,
+    warnings,
+  );
 
   return {
     provider_symbol: leg.provider_symbol,
     streamer_symbol: leg.streamer_symbol,
     action: leg.action,
     quantity: leg.quantity,
+    lifecycle: leg.lifecycle ?? "UNKNOWN",
     option_side: leg.option_side,
     strike: leg.strike,
     expiration: leg.expiration,
+    reconstruction_status:
+      failureReason === null ? "AVAILABLE" : "NOT_AVAILABLE",
+    failure_reason: failureReason,
     reference_value:
       candle === null
         ? null
@@ -755,29 +882,35 @@ function emptyCheckpointLegs(
   legs: ParsedLeg[],
   resolution: HistoricalPackageResolution,
   profile: ResolutionProfile,
+  results: HistoricalCandlesResult[] = [],
+  sourceRevision: string | null = null,
 ): HistoricalOptionPackageLegObservation[] {
+  const byStreamer = new Map(
+    results.map((result) => [result.streamer_symbol, result]),
+  );
   return legs.map((leg) =>
-    observedLeg(leg, resolution, undefined, null, 0, 0, profile),
+    observedLeg(
+      leg,
+      resolution,
+      byStreamer.get(leg.streamer_symbol),
+      null,
+      0,
+      0,
+      profile,
+      [],
+      sourceRevision,
+    ),
   );
 }
 
-export async function getHistoricalOptionPackageAtCheckpoint(
-  service: HistoricalOptionPackageCandlesService,
-  input: HistoricalOptionPackageCheckpointInput,
-): Promise<HistoricalOptionPackageCheckpointResult> {
-  if (input.underlying !== "SPX") {
-    throw new Error("Historical option package reconstruction supports SPX only.");
-  }
-  if (input.phase !== "REGRESSION_RESEARCH") {
-    throw new Error("phase must be REGRESSION_RESEARCH.");
-  }
-  const checkpoint = resolveCheckpoint(
-    input.as_of,
-    input.local_checkpoint,
-    "historical_option_package_checkpoint",
-  );
-  const asOf = checkpoint.instant;
-  const asOfMs = Date.parse(asOf);
+export function normalizeHistoricalOptionPackageCheckpointProfile(
+  input: Pick<
+    HistoricalOptionPackageCheckpointInput,
+    | "max_observation_age_minutes"
+    | "max_temporal_skew_minutes"
+    | "resolution_profile"
+  >,
+): ResolutionProfile {
   const legacyMaxObservationAgeMinutes = normalizeMinuteLimit(
     input.max_observation_age_minutes,
     DEFAULT_MAX_OBSERVATION_AGE_MINUTES,
@@ -808,17 +941,37 @@ export async function getHistoricalOptionPackageAtCheckpoint(
       "max_temporal_skew_minutes must match resolution_profile.max_temporal_skew_minutes when both are provided.",
     );
   }
-  const resolutionProfile = normalizeResolutionProfile(
-    input.resolution_profile,
-    {
-      default_requested_aggregation: "5m",
-      default_max_observation_age_minutes:
-        legacyMaxObservationAgeMinutes,
-      default_max_temporal_skew_minutes:
-        legacyMaxTemporalSkewMinutes,
-      default_fallback_aggregations: CHECKPOINT_RESOLUTIONS.slice(1),
-    },
+  return normalizeResolutionProfile(input.resolution_profile, {
+    default_requested_aggregation: "5m",
+    default_max_observation_age_minutes:
+      legacyMaxObservationAgeMinutes,
+    default_max_temporal_skew_minutes:
+      legacyMaxTemporalSkewMinutes,
+    default_fallback_aggregations: CHECKPOINT_RESOLUTIONS.slice(1),
+  });
+}
+
+export async function getHistoricalOptionPackageAtCheckpoint(
+  service: HistoricalOptionPackageCandlesService,
+  input: HistoricalOptionPackageCheckpointInput,
+): Promise<HistoricalOptionPackageCheckpointResult> {
+  if (input.underlying !== "SPX") {
+    throw new Error("Historical option package reconstruction supports SPX only.");
+  }
+  if (input.phase !== "REGRESSION_RESEARCH") {
+    throw new Error("phase must be REGRESSION_RESEARCH.");
+  }
+  const checkpoint = resolveCheckpoint(
+    input.as_of,
+    input.local_checkpoint,
+    "historical_option_package_checkpoint",
   );
+  const asOf = checkpoint.instant;
+  const asOfMs = Date.parse(asOf);
+  const resolutionProfile =
+    normalizeHistoricalOptionPackageCheckpointProfile(
+      input,
+    );
   const requestedResolution = packageResolution(
     resolutionProfile.requested_aggregation,
   );
@@ -880,9 +1033,29 @@ export async function getHistoricalOptionPackageAtCheckpoint(
     const source = resultSource(resolutionProfile, null);
     const observations = emptyCheckpointLegs(
       legs,
-      requestedResolution,
+      selected.diagnostic_resolution ?? requestedResolution,
       resolutionProfile,
+      selected.diagnostic_results,
+      input.evidence_cache?.source_revision ?? null,
     );
+    const missingProviderSymbols = observations
+      .filter(
+        (observation) =>
+          observation.reconstruction_status === "NOT_AVAILABLE",
+      )
+      .map((observation) => observation.provider_symbol);
+    const failureReasons = [
+      ...new Set(
+        observations
+          .map((observation) => observation.failure_reason)
+          .filter(
+            (
+              reason,
+            ): reason is HistoricalOptionPackageLegFailureReason =>
+              reason !== null,
+          ),
+      ),
+    ];
     warnings.push(
       ...observations.flatMap((leg) =>
         leg.warnings.map(
@@ -937,6 +1110,8 @@ export async function getHistoricalOptionPackageAtCheckpoint(
       valuation_quality: "NOT_AVAILABLE",
       execution_quality: "NOT_AVAILABLE",
       usable_for_execution: false,
+      missing_provider_symbols: missingProviderSymbols,
+      failure_reasons: failureReasons,
       legs: observations,
       source,
       warnings: evidence.warnings,
@@ -1016,6 +1191,7 @@ export async function getHistoricalOptionPackageAtCheckpoint(
       maxObservationAgeMs,
       resolutionProfile,
       extraWarnings,
+      input.evidence_cache?.source_revision ?? null,
     );
   });
 
@@ -1083,7 +1259,9 @@ export async function getHistoricalOptionPackageAtCheckpoint(
     !hasStale &&
     temporalAlignment === "ALIGNED" &&
     observations.every(
-      (observation) => observation.freshness_status === "FRESH",
+      (observation) =>
+        observation.freshness_status === "FRESH" &&
+        observation.reconstruction_status === "AVAILABLE",
     );
   const referenceValue = available
     ? packageReferenceValue(
@@ -1137,6 +1315,27 @@ export async function getHistoricalOptionPackageAtCheckpoint(
     references: input.references ?? {},
     warnings,
   });
+  const missingProviderSymbols = observations
+    .filter(
+      (observation) =>
+        observation.reconstruction_status === "NOT_AVAILABLE",
+    )
+    .map((observation) => observation.provider_symbol);
+  const failureReasons = [
+    ...new Set([
+      ...observations
+        .map((observation) => observation.failure_reason)
+        .filter(
+          (
+            reason,
+          ): reason is HistoricalOptionPackageLegFailureReason =>
+            reason !== null,
+        ),
+      ...(temporalAlignment === "MISALIGNED"
+        ? (["ALIGNMENT_MISMATCH"] as const)
+        : []),
+    ]),
+  ];
 
   return {
     contract_version: "1.0.0",
@@ -1172,6 +1371,8 @@ export async function getHistoricalOptionPackageAtCheckpoint(
     valuation_quality: available ? "COMPLETE" : "NOT_AVAILABLE",
     execution_quality: available ? "VALUATION_ONLY" : "NOT_AVAILABLE",
     usable_for_execution: false,
+    missing_provider_symbols: missingProviderSymbols,
+    failure_reasons: failureReasons,
     legs: observations,
     source,
     warnings: evidence.warnings,
@@ -1321,6 +1522,7 @@ export async function getHistoricalOptionPackagePath(
           requestedResolution,
           undefined,
           resolutionProfile,
+          input.evidence_cache?.source_revision ?? null,
         ),
       ),
       warnings: evidence.warnings,
@@ -1411,6 +1613,8 @@ export async function getHistoricalOptionPackagePath(
         availableAt,
         0,
         effectiveProfile,
+        [],
+        input.evidence_cache?.source_revision ?? null,
       );
     });
     const observationAvailableTimes = observations
@@ -1577,6 +1781,7 @@ export async function getHistoricalOptionPackagePath(
         selected.resolution!,
         byStreamer.get(leg.streamer_symbol),
         effectiveProfile,
+        input.evidence_cache?.source_revision ?? null,
       ),
     ),
     warnings: evidence.warnings,

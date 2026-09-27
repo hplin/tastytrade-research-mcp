@@ -4,6 +4,8 @@ import {
   getHistoricalOptionPackageAtCheckpoint,
   getHistoricalOptionPackagePath,
 } from "../dist/historical-option-package.js";
+import { getHistoricalOptionPackageHorizons } from "../dist/historical-option-package-horizons.js";
+import { EvidenceCacheError } from "../dist/evidence-cache.js";
 import { verifyHistoricalFill } from "../dist/historical-fill.js";
 
 const fixture = JSON.parse(
@@ -145,6 +147,8 @@ describe("historical exact-leg option packages", () => {
       reference_value: {
         value: "21.06",
         price_effect: "DEBIT",
+        reference_type: "CANDLE_REFERENCE",
+        evidence_class: "VALUATION_ONLY",
         guaranteed_executable: false,
       },
       synthetic_mid: null,
@@ -168,6 +172,8 @@ describe("historical exact-leg option packages", () => {
         available_at: "2026-08-27T13:40:00.000Z",
         retrieved_at: "2026-08-27T16:00:00.000Z",
         observation_age_minutes: 50,
+        reconstruction_status: "AVAILABLE",
+        failure_reason: null,
         reference_value: "81.31",
         bid: null,
         ask: null,
@@ -219,6 +225,10 @@ describe("historical exact-leg option packages", () => {
       reference_value: null,
       freshness_status: "STALE",
       temporal_alignment: "MISALIGNED",
+      failure_reasons: [
+        "STALE_OBSERVATION",
+        "ALIGNMENT_MISMATCH",
+      ],
       execution_quality: "NOT_AVAILABLE",
     });
     expect(result.warnings).toEqual(
@@ -230,6 +240,8 @@ describe("historical exact-leg option packages", () => {
     expect(result.legs[0]).toMatchObject({
       freshness_status: "STALE",
       observation_age_minutes: 50,
+      reconstruction_status: "NOT_AVAILABLE",
+      failure_reason: "STALE_OBSERVATION",
     });
   });
 
@@ -368,6 +380,10 @@ describe("historical exact-leg option packages", () => {
                 ...structuredClone(selected),
                 source_time: "2026-08-27T13:00:00.000Z",
               },
+              {
+                ...structuredClone(selected),
+                source_time: "2026-08-27T13:30:00.000Z",
+              },
             ]),
             timezone: "America/New_York",
             session: "REGULAR",
@@ -409,6 +425,12 @@ describe("historical exact-leg option packages", () => {
         }),
       ]),
     );
+    expect(result.warnings).toEqual(
+      expect.arrayContaining([
+        "PROVIDER_BAR_ALIGNMENT_MISMATCH_IGNORED:SPXW  260924C07750000:1",
+        "PROVIDER_BAR_ALIGNMENT_MISMATCH_IGNORED:SPXW  260924C07800000:1",
+      ]),
+    );
   });
 
   test("does not silently downgrade an hourly research cohort", async () => {
@@ -419,7 +441,10 @@ describe("historical exact-leg option packages", () => {
           status: "NOT_AVAILABLE",
           snapshot_complete: false,
           provider_snapshot_complete: false,
-          failure_reasons: ["REQUESTED_WINDOW_NOT_COVERED"],
+          failure_reasons: [
+            "REQUESTED_WINDOW_NOT_COVERED",
+            "MISSING_CONTRACT_EVIDENCE",
+          ],
         })),
       ),
     };
@@ -451,7 +476,52 @@ describe("historical exact-leg option packages", () => {
         fallback_policy: { allowed: false, aggregations: [] },
       },
     });
+    expect(result.failure_reasons).toEqual([
+      "HISTORICAL_CANDLE_UNAVAILABLE",
+    ]);
+    expect(
+      result.legs.every(
+        (leg) =>
+          leg.reconstruction_status === "NOT_AVAILABLE" &&
+          leg.failure_reason === "HISTORICAL_CANDLE_UNAVAILABLE",
+      ),
+    ).toBe(true);
     expect(service.getHistoricalCandlesBatch).toHaveBeenCalledTimes(1);
+  });
+
+  test("does not mask provider failures as missing contracts", async () => {
+    const service = {
+      getHistoricalCandlesBatch: jest.fn(async (request) =>
+        request.instruments.map((instrument) => ({
+          ...candleResult(instrument, request.interval, []),
+          status: "NOT_AVAILABLE",
+          snapshot_complete: false,
+          provider_snapshot_complete: false,
+          failure_reasons: [
+            "PROVIDER_TIMEOUT",
+            "MISSING_CONTRACT_EVIDENCE",
+          ],
+        })),
+      ),
+    };
+    const result = await getHistoricalOptionPackageAtCheckpoint(
+      service,
+      checkpointRequest({
+        resolution_profile: {
+          profile_id: "HOURLY_VALUATION_RESEARCH",
+          profile_version: "1.0.0",
+        },
+      }),
+    );
+
+    expect(result.failure_reasons).toEqual(["PROVIDER_ERROR"]);
+    expect(
+      result.legs.every(
+        (leg) =>
+          leg.reconstruction_status === "NOT_AVAILABLE" &&
+          leg.failure_reason === "PROVIDER_ERROR",
+      ),
+    ).toBe(true);
   });
 
   test("fails closed on provider hourly bars outside the declared session grid", async () => {
@@ -489,6 +559,14 @@ describe("historical exact-leg option packages", () => {
 
     expect(result.status).toBe("NOT_AVAILABLE");
     expect(result.reference_value).toBeNull();
+    expect(result.failure_reasons).toEqual(["ALIGNMENT_MISMATCH"]);
+    expect(
+      result.legs.every(
+        (leg) =>
+          leg.reconstruction_status === "NOT_AVAILABLE" &&
+          leg.failure_reason === "ALIGNMENT_MISMATCH",
+      ),
+    ).toBe(true);
     expect(result.warnings).toEqual(
       expect.arrayContaining([
         "PROVIDER_BAR_ALIGNMENT_MISMATCH_IGNORED:SPXW  260924C07750000:1",
@@ -502,7 +580,11 @@ describe("historical exact-leg option packages", () => {
     const original = service.getHistoricalCandlesBatch;
     service.getHistoricalCandlesBatch = jest.fn(async (request) => {
       const results = await original(request);
-      results[0] = candleResult(request.instruments[0], request.interval, []);
+      results[0] = {
+        ...candleResult(request.instruments[0], request.interval, []),
+        status: "NOT_AVAILABLE",
+        failure_reasons: ["MISSING_CONTRACT_EVIDENCE"],
+      };
       return results;
     });
 
@@ -514,6 +596,16 @@ describe("historical exact-leg option packages", () => {
     expect(result.status).toBe("NOT_AVAILABLE");
     expect(result.reference_value).toBeNull();
     expect(result.temporal_alignment).toBe("UNKNOWN");
+    expect(result.missing_provider_symbols).toEqual([
+      "SPXW  260924C07750000",
+    ]);
+    expect(result.legs[0]).toMatchObject({
+      reconstruction_status: "NOT_AVAILABLE",
+      failure_reason: "CONTRACT_ABSENT_FROM_RECONSTRUCTED_UNIVERSE",
+    });
+    expect(result.failure_reasons).toContain(
+      "CONTRACT_ABSENT_FROM_RECONSTRUCTED_UNIVERSE",
+    );
     expect(result.warnings).toContain(
       "MISSING_LEG_EVIDENCE:SPXW  260924C07750000",
     );
@@ -742,5 +834,425 @@ describe("historical exact-leg option packages", () => {
     await expect(
       getHistoricalOptionPackagePath(service, pathRequest()),
     ).rejects.toThrow("provider authentication failed");
+  });
+});
+
+const DD_LEGS = [
+  {
+    role: "FRONT_PUT",
+    provider_symbol: "SPXW  260915P07400000",
+    action: "SELL_TO_OPEN",
+    lifecycle: "EXPIRED",
+  },
+  {
+    role: "FRONT_CALL",
+    provider_symbol: "SPXW  260915C07850000",
+    action: "SELL_TO_OPEN",
+    lifecycle: "EXPIRED",
+  },
+  {
+    role: "BACK_PUT",
+    provider_symbol: "SPXW  260929P07500000",
+    action: "BUY_TO_OPEN",
+    lifecycle: "ACTIVE",
+  },
+  {
+    role: "BACK_CALL",
+    provider_symbol: "SPXW  260929C07825000",
+    action: "BUY_TO_OPEN",
+    lifecycle: "ACTIVE",
+  },
+];
+
+const HORIZON_CALENDAR = {
+  timezone: "America/Los_Angeles",
+  local_time: "07:30",
+  session_dates: [
+    "2026-08-25",
+    "2026-08-26",
+    "2026-08-28",
+    "2026-08-31",
+    "2026-09-01",
+    "2026-09-02",
+  ],
+};
+
+function horizonRequest(overrides = {}) {
+  return {
+    underlying: "SPX",
+    trading_calendar: HORIZON_CALENDAR,
+    horizons: [
+      "ENTRY",
+      "OUTCOME_3_TRADING_DAYS",
+      "OUTCOME_5_TRADING_DAYS",
+    ],
+    candidates: [
+      {
+        candidate_id: "dd-2026-08-25",
+        family: "DOUBLE_DIAGONAL",
+        entry_date: "2026-08-25",
+        legs: DD_LEGS,
+        references: {
+          checkpoint_id: "candidate-dd-2026-08-25",
+        },
+      },
+    ],
+    max_observation_age_minutes: 120,
+    max_temporal_skew_minutes: 0,
+    resolution_profile: {
+      profile_id: "HOURLY_PROVIDER_ALIGNED_RESEARCH",
+      profile_version: "1.0.0",
+      max_observation_age_minutes: 120,
+      max_temporal_skew_minutes: 0,
+    },
+    candidate_construction_profile: {
+      version: "SPX-CANDIDATE-RESEARCH-V1",
+    },
+    phase: "REGRESSION_RESEARCH",
+    evidence_cache: {
+      mode: "READ_WRITE",
+      dataset_id: "fixture-dataset",
+      license_scope_id: "fixture-license",
+      normalization_version: "fixture-normalization/1",
+      model_version: "fixture-model/1",
+      source_revision: "fixture-source/1",
+    },
+    ...overrides,
+  };
+}
+
+function contentId(character) {
+  return `sha256:${character.repeat(64)}`;
+}
+
+function horizonService() {
+  const priceBySymbol = new Map([
+    [DD_LEGS[0].provider_symbol, "10"],
+    [DD_LEGS[1].provider_symbol, "8"],
+    [DD_LEGS[2].provider_symbol, "14"],
+    [DD_LEGS[3].provider_symbol, "12"],
+  ]);
+  return {
+    getHistoricalCandlesBatch: jest.fn(async (request) => {
+      const date = request.end_time.slice(0, 10);
+      return request.instruments.map((instrument, index) => ({
+        ...candleResult(instrument, request.interval, [
+          {
+            source_time: `${date}T13:00:00.000Z`,
+            open: priceBySymbol.get(instrument.symbol),
+            high: priceBySymbol.get(instrument.symbol),
+            low: priceBySymbol.get(instrument.symbol),
+            close: priceBySymbol.get(instrument.symbol),
+            volume: "1",
+            vwap: priceBySymbol.get(instrument.symbol),
+            bid_volume: null,
+            ask_volume: "1",
+            implied_volatility: "0.2",
+            open_interest: "10",
+          },
+        ]),
+        requested_range: {
+          start: request.start_time,
+          end: request.end_time,
+        },
+        retrieved_at: `${date}T16:00:00.000Z`,
+        status: "AVAILABLE",
+        failure_reasons: [],
+        evidence_cache: {
+          contract_version: "1.0.0",
+          cache_status: "HIT",
+          manifest_id: contentId(String(index + 1)),
+          manifest_set_id: null,
+          request_fingerprint: contentId("a"),
+          revision: 1,
+          evidence_role: request.evidence_cache.evidence_role,
+          provider_payload_content_id: contentId("b"),
+          normalized_content_id: contentId("c"),
+          bytes_read: 100,
+          bytes_written: 0,
+          provider_calls_avoided: 1,
+        },
+      }));
+    }),
+  };
+}
+
+describe("historical exact-leg package horizons", () => {
+  test("reconstructs frozen 21/35-DTE Double Diagonal legs on caller-supplied trading sessions", async () => {
+    const service = horizonService();
+    const result = await getHistoricalOptionPackageHorizons(
+      service,
+      horizonRequest(),
+    );
+
+    expect(result).toMatchObject({
+      status: "COMPLETE",
+      evidence_type: "HISTORICAL_OPTION_PACKAGE_HORIZONS",
+      evidence_class: "VALUATION_ONLY",
+      reference_type: "CANDLE_REFERENCE",
+      coverage: {
+        requested_candidates: 1,
+        requested_package_checkpoints: 3,
+        complete_entry_packages: 1,
+        complete_outcome_3_trading_days_packages: 1,
+        complete_outcome_5_trading_days_packages: 1,
+        complete_packages: 3,
+        missing_leg_count_by_role: [],
+        missing_reason_counts: [],
+      },
+    });
+    expect(
+      result.candidates[0].horizons.map((horizon) => ({
+        horizon_id: horizon.horizon_id,
+        session_date: horizon.session_date,
+        scheduled_checkpoint: horizon.scheduled_checkpoint,
+        status: horizon.status,
+        value: horizon.package.reference_value.value,
+      })),
+    ).toEqual([
+      {
+        horizon_id: "ENTRY",
+        session_date: "2026-08-25",
+        scheduled_checkpoint: "2026-08-25T14:30:00.000Z",
+        status: "AVAILABLE",
+        value: "8",
+      },
+      {
+        horizon_id: "OUTCOME_3_TRADING_DAYS",
+        session_date: "2026-08-31",
+        scheduled_checkpoint: "2026-08-31T14:30:00.000Z",
+        status: "AVAILABLE",
+        value: "8",
+      },
+      {
+        horizon_id: "OUTCOME_5_TRADING_DAYS",
+        session_date: "2026-09-02",
+        scheduled_checkpoint: "2026-09-02T14:30:00.000Z",
+        status: "AVAILABLE",
+        value: "8",
+      },
+    ]);
+    expect(
+      service.getHistoricalCandlesBatch.mock.calls.map(([request]) =>
+        request.instruments.map((instrument) => ({
+          symbol: instrument.symbol,
+          lifecycle: instrument.lifecycle,
+        })),
+      ),
+    ).toEqual([
+      DD_LEGS.map(({ provider_symbol: symbol, lifecycle }) => ({
+        symbol,
+        lifecycle,
+      })),
+      DD_LEGS.map(({ provider_symbol: symbol, lifecycle }) => ({
+        symbol,
+        lifecycle,
+      })),
+      DD_LEGS.map(({ provider_symbol: symbol, lifecycle }) => ({
+        symbol,
+        lifecycle,
+      })),
+    ]);
+    expect(
+      result.candidates[0].horizons.every((horizon) =>
+        horizon.legs.every(
+          (leg) =>
+            leg.reconstruction_status === "AVAILABLE" &&
+            leg.failure_reason === null &&
+            Date.parse(leg.observation.bar_end) <=
+              Date.parse(leg.observation.available_at) &&
+            Date.parse(leg.observation.available_at) <=
+              Date.parse(horizon.scheduled_checkpoint) &&
+            leg.observation.provenance.source_revision ===
+              "fixture-source/1" &&
+            leg.observation.provenance.evidence_cache.manifest_id.startsWith(
+              "sha256:",
+            ) &&
+            leg.observation.provenance.resolution_profile.profile_id ===
+              "HOURLY_PROVIDER_ALIGNED_RESEARCH",
+        ),
+      ),
+    ).toBe(true);
+    expect(result.coverage.by_strategy).toEqual([
+      {
+        strategy: "DOUBLE_DIAGONAL",
+        requested_packages: 3,
+        complete_packages: 3,
+        unavailable_packages: 0,
+      },
+    ]);
+    expect(result.coverage.by_expiration).toEqual([
+      {
+        expiration: "2026-09-15",
+        requested_leg_observations: 6,
+        available_leg_observations: 6,
+        missing_leg_observations: 0,
+      },
+      {
+        expiration: "2026-09-29",
+        requested_leg_observations: 6,
+        available_leg_observations: 6,
+        missing_leg_observations: 0,
+      },
+    ]);
+    expect(result.coverage.by_dte_at_entry).toEqual([
+      {
+        dte_at_entry: 21,
+        requested_leg_observations: 6,
+        available_leg_observations: 6,
+        missing_leg_observations: 0,
+      },
+      {
+        dte_at_entry: 35,
+        requested_leg_observations: 6,
+        available_leg_observations: 6,
+        missing_leg_observations: 0,
+      },
+    ]);
+    expect(result.coverage.by_resolution_profile).toEqual([
+      {
+        profile_id: "HOURLY_PROVIDER_ALIGNED_RESEARCH",
+        profile_version: "1.0.0",
+        requested_aggregation: "1h",
+        effective_aggregation: "1h",
+        requested_packages: 3,
+        complete_packages: 3,
+        unavailable_packages: 0,
+      },
+    ]);
+  });
+
+  test("reports cache and provider failures per exact leg without replacing the inventory", async () => {
+    const providerCandidate = {
+      candidate_id: "provider-error",
+      family: "CREDIT_VERTICAL",
+      entry_date: "2026-08-25",
+      legs: [
+        {
+          role: "SHORT_PUT",
+          provider_symbol: "SPXW  260922P07400000",
+          action: "SELL_TO_OPEN",
+        },
+        {
+          role: "LONG_PUT",
+          provider_symbol: "SPXW  260922P07350000",
+          action: "BUY_TO_OPEN",
+        },
+      ],
+    };
+    const cacheCandidate = {
+      candidate_id: "cache-error",
+      family: "DEBIT_VERTICAL",
+      entry_date: "2026-08-25",
+      legs: [
+        {
+          role: "LONG_CALL",
+          provider_symbol: "SPXW  260924C07750000",
+          action: "BUY_TO_OPEN",
+        },
+        {
+          role: "SHORT_CALL",
+          provider_symbol: "SPXW  260924C07800000",
+          action: "SELL_TO_OPEN",
+        },
+      ],
+    };
+    const service = {
+      getHistoricalCandlesBatch: jest.fn(async (request) => {
+        if (
+          request.instruments[0].symbol ===
+          cacheCandidate.legs[0].provider_symbol
+        ) {
+          throw new EvidenceCacheError(
+            "EVIDENCE_CACHE_OBJECT_MISSING",
+            "fixture cache miss",
+          );
+        }
+        throw new EvidenceCacheError(
+          "EVIDENCE_CACHE_PROVIDER_ERROR",
+          "fixture provider failure",
+        );
+      }),
+    };
+
+    const result = await getHistoricalOptionPackageHorizons(
+      service,
+      horizonRequest({
+        horizons: ["ENTRY"],
+        candidates: [cacheCandidate, providerCandidate],
+        evidence_cache: undefined,
+      }),
+    );
+
+    expect(result.status).toBe("NOT_AVAILABLE");
+    expect(
+      result.candidates.map((candidate) => ({
+        candidate_id: candidate.candidate_id,
+        status: candidate.horizons[0].status,
+        failure_reasons: candidate.horizons[0].failure_reasons,
+        exact_symbols: candidate.horizons[0].legs.map(
+          (leg) => leg.provider_symbol,
+        ),
+      })),
+    ).toEqual([
+      {
+        candidate_id: "cache-error",
+        status: "ERROR",
+        failure_reasons: ["CACHE_ERROR"],
+        exact_symbols: cacheCandidate.legs.map(
+          (leg) => leg.provider_symbol,
+        ),
+      },
+      {
+        candidate_id: "provider-error",
+        status: "ERROR",
+        failure_reasons: ["PROVIDER_ERROR"],
+        exact_symbols: providerCandidate.legs.map(
+          (leg) => leg.provider_symbol,
+        ),
+      },
+    ]);
+    expect(result.coverage).toMatchObject({
+      requested_candidates: 2,
+      requested_package_checkpoints: 2,
+      complete_entry_packages: 0,
+      complete_packages: 0,
+      missing_leg_count_by_role: [
+        { role: "LONG_CALL", count: 1 },
+        { role: "LONG_PUT", count: 1 },
+        { role: "SHORT_CALL", count: 1 },
+        { role: "SHORT_PUT", count: 1 },
+      ],
+      missing_reason_counts: [
+        { reason: "CACHE_ERROR", count: 2 },
+        { reason: "PROVIDER_ERROR", count: 2 },
+      ],
+    });
+  });
+
+  test("fails closed when CACHE_ONLY cannot resolve an exact manifest", async () => {
+    const service = {
+      getHistoricalCandlesBatch: jest.fn(async () => {
+        throw new EvidenceCacheError(
+          "EVIDENCE_CACHE_OBJECT_MISSING",
+          "fixture manifest mismatch",
+        );
+      }),
+    };
+
+    await expect(
+      getHistoricalOptionPackageHorizons(
+        service,
+        horizonRequest({
+          horizons: ["ENTRY"],
+          evidence_cache: {
+            mode: "CACHE_ONLY",
+            manifest_ids: [contentId("f")],
+          },
+        }),
+      ),
+    ).rejects.toMatchObject({
+      code: "EVIDENCE_CACHE_OBJECT_MISSING",
+    });
   });
 });
