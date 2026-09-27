@@ -22,14 +22,16 @@ tastytrade OAuth credentials in Azure Key Vault-backed Container App secrets.
 - Health URL:
   `https://tastytrade-research-mcp.victoriousfield-047d2c99.westus2.azurecontainerapps.io/healthz`
 - Production revision:
-  `tastytrade-research-mcp--main-e5e0423`
+  `tastytrade-research-mcp--main-8a93c25`
 - ACR image:
-  `hplintradingmcp.azurecr.io/tastytrade-research-mcp:main-e5e0423`
+  `hplintradingmcp.azurecr.io/tastytrade-research-mcp:main-8a93c25`
 - Image digest:
-  `sha256:a7cf655c8d76f7df5318d5cf1279e622c4277b7e3cc3a5814b6d56273cee8d82`
+  `sha256:adebce601fea60ce2d2cab49866388cbe616a5f038e2d20267b86b9e7e33054c`
 - Source commit:
-  `e5e0423d850fdf3fd5f99a2a59ea819bd9c02ec9`
+  `8a93c255116a886658ffb1ef4c48b012a2f07c77`
 - Managed identity: `mi-tastytrade-research-mcp`
+- Rollback revision:
+  `tastytrade-research-mcp--main-fc7e5d9`
 
 Production OAuth uses Entra resource application
 `f6c77904-5bf9-46cf-96f9-be5f2e841054` and delegated scope
@@ -157,11 +159,11 @@ OAUTH_TOKEN_SCOPE=mcp.read
 OAUTH_RESOURCE_NAME=Tastytrade Research MCP
 ```
 
-For emergency rollback, reactivate revision
-`tastytrade-research-mcp--main-faa26ef` and move 100% traffic to it. That
-revision contains the expanded historical delta reconstruction, but predates
-checkpoint-time exact-leg package valuation and historical package paths. It
-retains the same Entra OAuth and Key Vault-backed tastytrade configuration.
+For emergency rollback, move 100% traffic to the still-active revision
+`tastytrade-research-mcp--main-fc7e5d9`. That revision contains the historical
+replay toolchain but predates the persistent Azure Files cache and the mixed
+session/provider-clock hourly reconstruction fix. It retains the same Entra
+OAuth and Key Vault-backed tastytrade configuration.
 
 After deployment, verify:
 
@@ -182,6 +184,41 @@ After deployment, verify:
 7. A live exact-leg package smoke test can reconstruct checkpoint evidence,
    return a gap-preserving short path at the finest retrievable resolution,
    and feed that path directly to `tastytrade_verify_historical_fill`.
+
+## Current persistent-cache deployment verification
+
+Revision `tastytrade-research-mcp--main-8a93c25` was verified on 2026-09-27
+with:
+
+- ACR build run `ccq` producing digest
+  `sha256:adebce601fea60ce2d2cab49866388cbe616a5f038e2d20267b86b9e7e33054c`;
+- source commit `8a93c255116a886658ffb1ef4c48b012a2f07c77`;
+- one healthy replica in `RunningAtMaxScale`;
+- 100% production traffic, with `main-fc7e5d9` active at 0% as the rollback
+  revision and obsolete cache-test revisions deactivated;
+- HTTP 200 from `/healthz` and RFC 9728 protected-resource metadata;
+- HTTP 401 plus the correct resource metadata from unauthenticated `/mcp`;
+- an Entra delegated `mcp.read` token listing all 20 MCP tools;
+- an authenticated local package-pricing call returning a `1` synthetic
+  natural credit;
+- the Azure Files cache mounted at
+  `/var/lib/tastytrade-evidence-cache` in explicit `AZURE_FILES_SMB` mode;
+- a `READ_WRITE` request reusing a persistent manifest across revisions,
+  followed by an exact `CACHE_ONLY_HIT` with the same normalized content,
+  identical candles, and `provider_calls_avoided: 1`;
+- default 5-minute Path B returning four
+  `RECONSTRUCTED_CANDIDATE_FOUND` contracts with zero future provenance:
+  `SPXW  260922C07900000`, `SPXW  260922C07740000`,
+  `SPXW  260922P07425000`, and `SPXW  260922P07590000`; and
+- the seven-date hourly gate retaining strict-session results at one partial
+  date and five verified contracts, while the separate provider-clock cohort
+  improved from zero coverage to seven partial dates and 125 verified
+  contracts, with zero provider errors and zero future provenance.
+
+The provider-clock cohort remains partial rather than complete because the
+available hourly option grid does not provide timestamp-safe price/delta
+coverage for every requested contract. This deployment does not relabel those
+bars, enable a paid historical provider, or weaken timestamp checks.
 
 ## Current historical-package deployment verification
 
