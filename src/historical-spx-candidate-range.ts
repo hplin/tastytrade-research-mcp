@@ -153,6 +153,8 @@ export type HistoricalSpxCandidatesRangePlan = {
     backoff_ms: number;
   };
   pending_session_dates: string[];
+  unattempted_session_dates: string[];
+  deferred_session_dates: string[];
   previously_completed: Array<{
     session_date: string;
     status: RangeCompletionStatus;
@@ -172,13 +174,23 @@ type PreparedRange = {
   checkpoints: PlannedCheckpoint[];
 };
 
-type ContinuationPayload = {
+type ContinuationCompletion = {
+  session_date: string;
+  status: RangeCompletionStatus;
+};
+
+type ContinuationState = {
   contract_version: typeof HISTORICAL_SPX_CANDIDATE_RANGE_CONTRACT_VERSION;
   request_id: string;
-  completed: Array<{
-    session_date: string;
-    status: RangeCompletionStatus;
-  }>;
+  completed: ContinuationCompletion[];
+  unattempted_session_dates: string[];
+  deferred_session_dates: string[];
+};
+
+type ContinuationPayloadV1 = {
+  contract_version: typeof HISTORICAL_SPX_CANDIDATE_RANGE_CONTRACT_VERSION;
+  request_id: string;
+  completed: ContinuationCompletion[];
   pending_session_dates: string[];
 };
 
@@ -207,6 +219,8 @@ export type HistoricalSpxCandidatesRangeResult = {
     checkpoints_completed_this_run: number;
     checkpoints_deferred: number;
     checkpoints_remaining: number;
+    checkpoints_unattempted: number;
+    checkpoints_awaiting_retry: number;
   };
   coverage: {
     selector_attempts_requested: number;
@@ -251,6 +265,8 @@ export type HistoricalSpxCandidatesRangeResult = {
     cursor: string | null;
     completed_session_dates: string[];
     unresolved_session_dates: string[];
+    unattempted_session_dates: string[];
+    deferred_session_dates: string[];
   } | null;
   warnings: string[];
 };
@@ -396,21 +412,107 @@ function batchIdentity(
   });
 }
 
-function encodeContinuation(payload: ContinuationPayload): string {
+function encodeContinuation(payload: ContinuationState): string {
   const serialized = canonicalJson(payload);
   const encoded = Buffer.from(serialized, "utf8").toString("base64url");
-  return `v1.${encoded}.${createHash("sha256")
+  return `v2.${encoded}.${createHash("sha256")
     .update(serialized)
     .digest("hex")}`;
+}
+
+function decodeCompletions(value: unknown): ContinuationCompletion[] {
+  if (!Array.isArray(value)) {
+    throw new Error(
+      "continuation_cursor does not match this logical range request.",
+    );
+  }
+  const statusValues = new Set<RangeCompletionStatus>([
+    "AVAILABLE",
+    "PARTIAL",
+    "NOT_AVAILABLE",
+  ]);
+  return value.map((entry) => {
+    if (
+      !entry ||
+      typeof entry !== "object" ||
+      typeof entry.session_date !== "string" ||
+      !statusValues.has(entry.status as RangeCompletionStatus)
+    ) {
+      throw new Error("continuation_cursor contains an invalid completion.");
+    }
+    return {
+      session_date: entry.session_date,
+      status: entry.status as RangeCompletionStatus,
+    };
+  });
+}
+
+function decodeSessionDateQueue(value: unknown): string[] {
+  if (!Array.isArray(value)) {
+    throw new Error(
+      "continuation_cursor does not match this logical range request.",
+    );
+  }
+  if (
+    value.some((date) => typeof date !== "string") ||
+    new Set(value).size !== value.length
+  ) {
+    throw new Error("continuation_cursor contains duplicate or invalid dates.");
+  }
+  return value as string[];
+}
+
+function validateContinuationState(
+  state: ContinuationState,
+  sessionDates: string[],
+): ContinuationState {
+  const completedDates = new Set(
+    state.completed.map((entry) => entry.session_date),
+  );
+  const unattemptedDates = new Set(state.unattempted_session_dates);
+  const deferredDates = new Set(state.deferred_session_dates);
+  const expected = new Set(sessionDates);
+  if (
+    completedDates.size !== state.completed.length ||
+    [...completedDates].some(
+      (date) =>
+        !expected.has(date) ||
+        unattemptedDates.has(date) ||
+        deferredDates.has(date),
+    ) ||
+    [...unattemptedDates].some(
+      (date) => !expected.has(date) || deferredDates.has(date),
+    ) ||
+    [...deferredDates].some((date) => !expected.has(date)) ||
+    sessionDates.some(
+      (date) =>
+        !completedDates.has(date) &&
+        !unattemptedDates.has(date) &&
+        !deferredDates.has(date),
+    ) ||
+    state.unattempted_session_dates.some(
+      (date, index) =>
+        date !==
+        sessionDates.filter((item) => unattemptedDates.has(item))[index],
+    )
+  ) {
+    throw new Error(
+      "continuation_cursor progress does not match this range request.",
+    );
+  }
+  return state;
 }
 
 function decodeContinuation(
   cursor: string,
   requestId: string,
   sessionDates: string[],
-): ContinuationPayload {
+): ContinuationState {
   const parts = cursor.split(".");
-  if (parts.length !== 3 || parts[0] !== "v1") {
+  if (
+    parts.length !== 3 ||
+    (parts[0] !== "v1" && parts[0] !== "v2")
+  ) {
     throw new Error("continuation_cursor has an unsupported format.");
   }
 
@@ -434,75 +536,48 @@ function decodeContinuation(
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
     throw new Error("continuation_cursor payload must be an object.");
   }
-  const payload = parsed as Partial<ContinuationPayload>;
+  const payload = parsed as Record<string, unknown>;
   if (
     payload.contract_version !==
       HISTORICAL_SPX_CANDIDATE_RANGE_CONTRACT_VERSION ||
-    payload.request_id !== requestId ||
-    !Array.isArray(payload.completed) ||
-    !Array.isArray(payload.pending_session_dates)
+    payload.request_id !== requestId
   ) {
     throw new Error(
       "continuation_cursor does not match this logical range request.",
     );
   }
 
-  const statusValues = new Set<RangeCompletionStatus>([
-    "AVAILABLE",
-    "PARTIAL",
-    "NOT_AVAILABLE",
-  ]);
-  const completed = payload.completed.map((entry) => {
-    if (
-      !entry ||
-      typeof entry !== "object" ||
-      typeof entry.session_date !== "string" ||
-      !statusValues.has(entry.status as RangeCompletionStatus)
-    ) {
-      throw new Error("continuation_cursor contains an invalid completion.");
-    }
-    return {
-      session_date: entry.session_date,
-      status: entry.status as RangeCompletionStatus,
-    };
-  });
-  const pendingSessionDates = payload.pending_session_dates;
-  if (
-    pendingSessionDates.some((date) => typeof date !== "string") ||
-    new Set(pendingSessionDates).size !== pendingSessionDates.length ||
-    new Set(completed.map((entry) => entry.session_date)).size !==
-      completed.length
-  ) {
-    throw new Error("continuation_cursor contains duplicate or invalid dates.");
-  }
-
-  const completedDates = new Set(completed.map((entry) => entry.session_date));
-  const pendingDates = new Set(pendingSessionDates);
-  const expected = new Set(sessionDates);
-  if (
-    [...completedDates].some(
-      (date) => !expected.has(date) || pendingDates.has(date),
-    ) ||
-    [...pendingDates].some((date) => !expected.has(date)) ||
-    sessionDates.some(
-      (date) => !completedDates.has(date) && !pendingDates.has(date),
-    ) ||
-    pendingSessionDates.some(
-      (date, index) =>
-        date !== sessionDates.filter((item) => pendingDates.has(item))[index],
-    )
-  ) {
-    throw new Error(
-      "continuation_cursor progress does not match this range request.",
+  const completed = decodeCompletions(payload.completed);
+  if (parts[0] === "v1") {
+    const legacy = payload as Partial<ContinuationPayloadV1>;
+    return validateContinuationState(
+      {
+        contract_version: HISTORICAL_SPX_CANDIDATE_RANGE_CONTRACT_VERSION,
+        request_id: requestId,
+        completed,
+        unattempted_session_dates: decodeSessionDateQueue(
+          legacy.pending_session_dates,
+        ),
+        deferred_session_dates: [],
+      },
+      sessionDates,
     );
   }
 
-  return {
-    contract_version: HISTORICAL_SPX_CANDIDATE_RANGE_CONTRACT_VERSION,
-    request_id: requestId,
-    completed,
-    pending_session_dates: pendingSessionDates,
-  };
+  return validateContinuationState(
+    {
+      contract_version: HISTORICAL_SPX_CANDIDATE_RANGE_CONTRACT_VERSION,
+      request_id: requestId,
+      completed,
+      unattempted_session_dates: decodeSessionDateQueue(
+        payload.unattempted_session_dates,
+      ),
+      deferred_session_dates: decodeSessionDateQueue(
+        payload.deferred_session_dates,
+      ),
+    },
+    sessionDates,
+  );
 }
 
 function prepareRange(
@@ -577,8 +652,13 @@ function prepareRange(
           HISTORICAL_SPX_CANDIDATE_RANGE_CONTRACT_VERSION,
         request_id: requestId,
         completed: [],
-        pending_session_dates: sessionDates,
+        unattempted_session_dates: sessionDates,
+        deferred_session_dates: [],
       };
+  const pendingSessionDates = [
+    ...continuation.unattempted_session_dates,
+    ...continuation.deferred_session_dates,
+  ];
 
   return {
     public_plan: {
@@ -629,7 +709,10 @@ function prepareRange(
           MAX_RETRY_BACKOFF_MS,
         ),
       },
-      pending_session_dates: continuation.pending_session_dates,
+      pending_session_dates: pendingSessionDates,
+      unattempted_session_dates:
+        continuation.unattempted_session_dates,
+      deferred_session_dates: continuation.deferred_session_dates,
       previously_completed: continuation.completed,
     },
     checkpoints,
@@ -1199,10 +1282,27 @@ export async function discoverHistoricalSpxCandidatesRange(
       ((milliseconds) =>
         new Promise((resolve) => setTimeout(resolve, milliseconds))),
   };
-  const pendingAtStart = new Set(plan.pending_session_dates);
-  const toRun = prepared.checkpoints
-    .filter((checkpoint) => pendingAtStart.has(checkpoint.session_date))
-    .slice(0, plan.max_checkpoints_per_run);
+  const runningFirstPass = plan.unattempted_session_dates.length > 0;
+  const scheduledSessionDates = (
+    runningFirstPass
+      ? plan.unattempted_session_dates
+      : plan.deferred_session_dates
+  ).slice(0, plan.max_checkpoints_per_run);
+  const checkpointsBySessionDate = new Map(
+    prepared.checkpoints.map((checkpoint) => [
+      checkpoint.session_date,
+      checkpoint,
+    ]),
+  );
+  const toRun = scheduledSessionDates.map((sessionDate) => {
+    const checkpoint = checkpointsBySessionDate.get(sessionDate);
+    if (!checkpoint) {
+      throw new Error(
+        `Continuation scheduled unknown session date ${sessionDate}.`,
+      );
+    }
+    return checkpoint;
+  });
   const checkpoints = await runBounded(
     toRun,
     plan.max_concurrency,
@@ -1232,23 +1332,40 @@ export async function discoverHistoricalSpxCandidatesRange(
       completed.set(checkpoint.session_date, checkpoint.status);
     }
   }
+  const unresolvedAttemptedSessionDates = checkpoints
+    .filter((checkpoint) => checkpoint.error !== null)
+    .map((checkpoint) => checkpoint.session_date);
+  const unattemptedSessionDates = runningFirstPass
+    ? plan.unattempted_session_dates.slice(toRun.length)
+    : [];
+  const deferredSessionDates = runningFirstPass
+    ? [
+        ...plan.deferred_session_dates,
+        ...unresolvedAttemptedSessionDates,
+      ]
+    : [
+        ...plan.deferred_session_dates.slice(toRun.length),
+        ...unresolvedAttemptedSessionDates,
+      ];
+  const pendingSessionDates = [
+    ...unattemptedSessionDates,
+    ...deferredSessionDates,
+  ];
   const allSessionDates = prepared.checkpoints.map(
     (checkpoint) => checkpoint.session_date,
-  );
-  const pendingSessionDates = allSessionDates.filter(
-    (sessionDate) => !completed.has(sessionDate),
   );
   const completedSessionDates = allSessionDates.filter((sessionDate) =>
     completed.has(sessionDate),
   );
-  const continuationPayload: ContinuationPayload = {
+  const continuationPayload: ContinuationState = {
     contract_version: HISTORICAL_SPX_CANDIDATE_RANGE_CONTRACT_VERSION,
     request_id: plan.request_id,
     completed: completedSessionDates.map((sessionDate) => ({
       session_date: sessionDate,
       status: completed.get(sessionDate) as RangeCompletionStatus,
     })),
-    pending_session_dates: pendingSessionDates,
+    unattempted_session_dates: unattemptedSessionDates,
+    deferred_session_dates: deferredSessionDates,
   };
 
   const requestedByDte = new Map<string, number>();
@@ -1353,6 +1470,8 @@ export async function discoverHistoricalSpxCandidatesRange(
         plan.pending_session_dates.length - toRun.length,
       ),
       checkpoints_remaining: pendingSessionDates.length,
+      checkpoints_unattempted: unattemptedSessionDates.length,
+      checkpoints_awaiting_retry: deferredSessionDates.length,
     },
     coverage: {
       selector_attempts_requested: [...requestedByDte.values()].reduce(
@@ -1431,12 +1550,15 @@ export async function discoverHistoricalSpxCandidatesRange(
             cursor: encodeContinuation(continuationPayload),
             completed_session_dates: completedSessionDates,
             unresolved_session_dates: pendingSessionDates,
+            unattempted_session_dates: unattemptedSessionDates,
+            deferred_session_dates: deferredSessionDates,
           }
         : null,
     warnings: [
       "TRADING_SESSIONS_ARE_CALLER_SUPPLIED",
       "RANGE_RESULTS_PRESERVE_SINGLE_CHECKPOINT_DISCOVERY_SEMANTICS",
       "CONTINUATION_RESULTS_ARE_INCREMENTAL",
+      "CONTINUATION_PRIORITIZES_FIRST_PASS_BEFORE_DEFERRED_RETRIES",
     ],
   };
 }

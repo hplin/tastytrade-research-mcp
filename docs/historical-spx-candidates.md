@@ -225,6 +225,9 @@ The range coordinator:
 - retries only timeout or rate-limit failures, up to three attempts;
 - emits checkpoint results in calendar order even when workers complete out
   of order;
+- schedules every never-attempted session before deferred retries, then
+  rotates unresolved retries to the queue tail for deterministic round-robin
+  fairness across continuation calls;
 - preserves the complete single-checkpoint result unchanged under each
   checkpoint;
 - reports `AVAILABLE`, `PARTIAL`, `NOT_AVAILABLE`, `PROVIDER_TIMEOUT`,
@@ -260,12 +263,27 @@ worker count, deadline, retry tuning, invocation limit, and continuation
 state.
 
 When work remains, `continuation` contains an opaque integrity-checked cursor,
-the completed session dates, and the unresolved session dates. Supply the
-cursor unchanged as `continuation_cursor` with the same logical request.
-Completed checkpoints are not called again. Results from a resumed invocation
-are incremental: retain the completed checkpoint payloads from earlier
-responses and append the newly completed payloads. Changing a logical input
-causes cursor validation to fail.
+the completed session dates, the complete scheduling-order list of unresolved
+dates, and separate `unattempted_session_dates` and
+`deferred_session_dates` queues. Supply the cursor unchanged as
+`continuation_cursor` with the same logical request. Completed checkpoints are
+not called again. A retryable checkpoint remains unresolved and moves to the
+tail of the deferred queue; deferred work begins only after the first-pass
+queue is empty and then rotates round-robin.
+
+New cursors use the v2 opaque format. Existing v1 cursors remain accepted and
+their pending dates are treated as unattempted once, allowing a formerly
+head-blocked cursor to classify failures into the deferred queue and advance.
+Cursor integrity, logical-request binding, date partition validation, and
+first-pass calendar ordering remain fail-closed. The logical request ID and
+immutable candle fingerprints do not include cursor version or queue state.
+
+Results from a resumed invocation are incremental: retain the completed
+checkpoint payloads from earlier responses and append the newly completed
+payloads. `progress.checkpoints_unattempted` and
+`progress.checkpoints_awaiting_retry` expose the post-invocation queue counts;
+the existing completed, deferred-this-run, and remaining counts retain their
+prior meanings. Changing a logical input causes cursor validation to fail.
 
 `evidence_cache.as_of` and `evidence_cache.evidence_role` are assigned per
 checkpoint and therefore cannot be supplied at range level. `CACHE_ONLY`

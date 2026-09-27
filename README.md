@@ -176,6 +176,9 @@ single-checkpoint contract to an explicit caller-supplied trading calendar.
 It preserves chronological output order while using a bounded worker pool,
 isolates checkpoint failures, retries only transient provider failures, and
 returns an opaque continuation cursor for unresolved or deferred sessions.
+Continuation scheduling completes a first pass over never-attempted sessions
+before retrying failures, then rotates unresolved retries to the queue tail so
+rate-limited dates cannot block later checkpoints.
 Per-checkpoint stage timings identify cache lookup, provider bootstrap,
 contract-universe construction, candle reconstruction, selector evaluation,
 and the stage interrupted by a deadline. Operational settings and diagnostic
