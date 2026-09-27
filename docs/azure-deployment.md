@@ -160,10 +160,10 @@ OAUTH_RESOURCE_NAME=Tastytrade Research MCP
 ```
 
 For emergency rollback, move 100% traffic to the still-active revision
-`tastytrade-research-mcp--main-85b194f`. That revision contains the persistent
-Azure Files cache and exact fixed-horizon package workflow, but predates the
-research-only model valuation fallback. It retains the same Entra OAuth and
-Key Vault-backed tastytrade configuration.
+`tastytrade-research-mcp--main-6c5521e`. That revision contains the persistent
+Azure Files cache, exact fixed-horizon package workflow, and research-only
+model valuation fallback, but predates date-range candidate discovery. It
+retains the same Entra OAuth and Key Vault-backed tastytrade configuration.
 
 After deployment, verify:
 
@@ -193,6 +193,33 @@ After deployment, verify:
    `tastytrade_get_historical_option_package_horizons` with an authoritative
    trading calendar and verify exact ENTRY/+3/+5 symbols plus aggregate
    coverage diagnostics.
+
+## Current range-discovery deployment verification
+
+Revision `tastytrade-research-mcp--main-0992cc7` was verified on 2026-09-27
+with:
+
+- ACR build run `cct` producing digest
+  `sha256:874e60cc2ee0cc68740224727d5380ae8bd46d705242eeac350c7a2cc24e59dd`;
+- source commit `0992cc762fd4fe31a6dbf0cf0bb084b92a688cff`;
+- one healthy replica in `RunningAtMaxScale`;
+- 100% production traffic, with `main-6c5521e` and `main-85b194f` healthy and
+  active at 0%; `main-6c5521e` is the immediate rollback revision;
+- unchanged managed identity, ACR pull configuration, Key Vault secret refs,
+  ingress, resource limits, one-replica scale, and Azure Files cache mount;
+- HTTP 200 from `/healthz` and RFC 9728 protected-resource metadata;
+- HTTP 401 plus the correct resource metadata and scope from unauthenticated
+  `/mcp`;
+- an Entra delegated `mcp.read` token listing all 22 MCP tools and exposing
+  the range continuation schema;
+- an authenticated local package-pricing call returning a `1` synthetic
+  natural credit;
+- an authenticated 2026-08-25 07:30 PT range call resolving the exact
+  checkpoint, completing without a continuation, preserving the
+  single-checkpoint `NOT_AVAILABLE` result, and returning four immutable
+  candle manifests; and
+- a second production call reusing all four manifests as cache hits and
+  reporting four provider calls avoided.
 
 ## Current model-valuation deployment verification
 
