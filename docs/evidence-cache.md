@@ -38,6 +38,14 @@ configured quota fails with `EVIDENCE_CACHE_QUOTA_EXCEEDED`, leaving existing
 objects untouched. This ensures raw evidence is never removed as part of an
 unverified cleanup or replacement.
 
+The HTTP process creates one shared cache backend. Quota usage is scanned once
+per process with bounded parallel metadata reads, then maintained by exact
+write and deletion deltas under the serialized storage lock. A process restart
+performs a new full scan, and any failed partial commit invalidates the
+in-memory total so the next write rescans all surviving files. This keeps
+orphaned partial files and all surviving evidence inside the quota without
+repeating a recursive Azure Files scan for every commit or request.
+
 ## Identity and revision contract
 
 The mutable lookup fingerprint covers:

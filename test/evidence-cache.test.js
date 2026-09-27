@@ -1,4 +1,5 @@
 import {
+  mkdir,
   mkdtemp,
   readFile,
   rm,
@@ -311,6 +312,16 @@ function manifestIds(results) {
       results.map((result) => result.evidence_cache.manifest_id),
     ),
   ];
+}
+
+async function cacheUsage(cache) {
+  return (
+    await Promise.all(
+      (await cache.listFiles()).map(
+        async (path) => (await stat(path)).size,
+      ),
+    )
+  ).reduce((total, size) => total + size, 0);
 }
 
 function checkpointPackageRequest(
@@ -873,6 +884,7 @@ describe("private immutable research evidence cache", () => {
           2,
         );
         expect(recovered[0].status).toBe("AVAILABLE");
+        expect(cache.accountedBytes).toBe(await cacheUsage(cache));
       },
       { clock: () => now },
     );
@@ -1207,6 +1219,132 @@ describe("private immutable research evidence cache", () => {
       },
       { maxBytes: 512 },
     );
+  });
+
+  test("scans quota with bounded concurrency, caches exact usage, and rescans on restart", async () => {
+    await withCache(async (cache, directory) => {
+      const seedDirectory = join(directory, "seed");
+      await mkdir(seedDirectory, { recursive: true });
+      await Promise.all(
+        Array.from({ length: 48 }, (_, index) =>
+          writeFile(
+            join(seedDirectory, `${String(index).padStart(2, "0")}.bin`),
+            Buffer.alloc(8, index),
+          ),
+        ),
+      );
+
+      const originalPathStat = cache.pathStat.bind(cache);
+      let activeSeedStats = 0;
+      let maxActiveSeedStats = 0;
+      jest.spyOn(cache, "pathStat").mockImplementation(async (path) => {
+        if (path.startsWith(`${seedDirectory}/`)) {
+          activeSeedStats += 1;
+          maxActiveSeedStats = Math.max(
+            maxActiveSeedStats,
+            activeSeedStats,
+          );
+          await new Promise((resolve) => setTimeout(resolve, 5));
+          try {
+            return await originalPathStat(path);
+          } finally {
+            activeSeedStats -= 1;
+          }
+        }
+        return originalPathStat(path);
+      });
+      const usageScan = jest.spyOn(cache, "diskUsage");
+      const source = provider();
+      const service = new CachedHistoricalCandlesService(source, cache);
+
+      await Promise.all([
+        service.getHistoricalCandlesBatch(
+          requestFor(["SPX"], "2026-08-27T14:30:00.000Z", {
+            mode: "READ_WRITE",
+            source_revision: "quota-cache/1",
+          }),
+        ),
+        service.getHistoricalCandlesBatch(
+          requestFor(["SPX"], "2026-08-28T14:30:00.000Z", {
+            mode: "READ_WRITE",
+            source_revision: "quota-cache/2",
+          }),
+        ),
+      ]);
+
+      expect(maxActiveSeedStats).toBeGreaterThan(1);
+      expect(usageScan).toHaveBeenCalledTimes(1);
+      const usage = await cacheUsage(cache);
+      expect(cache.accountedBytes).toBe(usage);
+
+      const restarted = new FileEvidenceCache({
+        directory,
+        maxBytes: usage,
+        maxConcurrency: 2,
+        retryableFailureTtlMs: 1_000,
+      });
+      const restartedScan = jest.spyOn(restarted, "diskUsage");
+      const restartedService = new CachedHistoricalCandlesService(
+        provider(),
+        restarted,
+      );
+      await expect(
+        restartedService.getHistoricalCandlesBatch(
+          requestFor(["SPX"], "2026-09-01T14:30:00.000Z", {
+            mode: "READ_WRITE",
+            source_revision: "quota-restart/1",
+          }),
+        ),
+      ).rejects.toMatchObject({
+        code: "EVIDENCE_CACHE_QUOTA_EXCEEDED",
+      });
+      await expect(
+        restartedService.getHistoricalCandlesBatch(
+          requestFor(["SPX"], "2026-09-02T14:30:00.000Z", {
+            mode: "READ_WRITE",
+            source_revision: "quota-restart/2",
+          }),
+        ),
+      ).rejects.toMatchObject({
+        code: "EVIDENCE_CACHE_QUOTA_EXCEEDED",
+      });
+      expect(restartedScan).toHaveBeenCalledTimes(1);
+      expect(restarted.accountedBytes).toBe(usage);
+    });
+  });
+
+  test("invalidates cached quota usage after a failed partial commit", async () => {
+    await withCache(async (cache, directory) => {
+      const usageScan = jest.spyOn(cache, "diskUsage");
+      jest
+        .spyOn(cache, "writeMutable")
+        .mockRejectedValueOnce(new Error("injected partial commit failure"));
+      const source = provider();
+      const service = new CachedHistoricalCandlesService(source, cache);
+
+      await expect(
+        service.getHistoricalCandlesBatch(
+          requestFor(["SPX"], "2026-08-27T14:30:00.000Z", {
+            mode: "READ_WRITE",
+            source_revision: "partial-commit/1",
+          }),
+        ),
+      ).rejects.toMatchObject({
+        code: "EVIDENCE_CACHE_PROVIDER_ERROR",
+      });
+      expect(usageScan).toHaveBeenCalledTimes(2);
+
+      await service.getHistoricalCandlesBatch(
+        requestFor(["SPX"], "2026-08-28T14:30:00.000Z", {
+          mode: "READ_WRITE",
+          source_revision: "partial-commit/2",
+        }),
+      );
+      expect(usageScan).toHaveBeenCalledTimes(2);
+      expect(cache.accountedBytes).toBe(await cacheUsage(cache));
+      const files = await cache.listFiles();
+      expect(files.filter((path) => path.endsWith(".tmp"))).toEqual([]);
+    });
   });
 
   test("supports Azure Files SMB publication without POSIX chmod or hard links", async () => {

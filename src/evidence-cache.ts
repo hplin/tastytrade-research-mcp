@@ -339,6 +339,7 @@ type StoredEvidence = {
 
 const DEFAULT_MAX_BYTES = 1024 * 1024 * 1024;
 const DEFAULT_MAX_CONCURRENCY = 4;
+const DEFAULT_USAGE_SCAN_CONCURRENCY = 32;
 const DEFAULT_RETRYABLE_FAILURE_TTL_MS = 30_000;
 const DEFAULT_DATASET_ID = "tastytrade-dxlink-candles";
 const DEFAULT_LICENSE_SCOPE_ID = "private-research";
@@ -472,6 +473,31 @@ function positiveInteger(
     throw new Error(`${field} must be a positive integer.`);
   }
   return normalized;
+}
+
+async function mapWithConcurrency<T, R>(
+  values: readonly T[],
+  concurrency: number,
+  operation: (value: T, index: number) => Promise<R>,
+): Promise<R[]> {
+  const results = new Array<R>(values.length);
+  let nextIndex = 0;
+
+  async function worker(): Promise<void> {
+    while (nextIndex < values.length) {
+      const index = nextIndex;
+      nextIndex += 1;
+      results[index] = await operation(values[index], index);
+    }
+  }
+
+  await Promise.all(
+    Array.from(
+      { length: Math.min(concurrency, values.length) },
+      () => worker(),
+    ),
+  );
+  return results;
 }
 
 function manifestHex(id: string, field = "manifest_id"): string {
@@ -1050,6 +1076,7 @@ export class FileEvidenceCache {
   private storageTail: Promise<void> = Promise.resolve();
   private readonly requestTails = new Map<string, Promise<void>>();
   private readonly inFlight = new Map<string, Promise<StoredEvidence>>();
+  private accountedBytes: number | null = null;
   private readonly metrics: EvidenceCacheMetrics = {
     cache_hits: 0,
     cache_misses: 0,
@@ -1378,12 +1405,68 @@ export class FileEvidenceCache {
     const current = await this.pathStat(path);
     if (!current) return 0;
     if (current.isFile()) return current.size;
-    const entries = await readdir(path, { withFileTypes: true });
+
     let total = 0;
-    for (const entry of entries) {
-      total += await this.diskUsage(join(path, entry.name));
+    let directories = [path];
+    while (directories.length > 0) {
+      const listings = await mapWithConcurrency(
+        directories,
+        DEFAULT_USAGE_SCAN_CONCURRENCY,
+        async (directory) => ({
+          directory,
+          entries: await readdir(directory, { withFileTypes: true }),
+        }),
+      );
+      const nextDirectories: string[] = [];
+      const files: string[] = [];
+      for (const listing of listings) {
+        for (const entry of listing.entries) {
+          const entryPath = join(listing.directory, entry.name);
+          if (entry.isDirectory()) {
+            nextDirectories.push(entryPath);
+          } else {
+            files.push(entryPath);
+          }
+        }
+      }
+      const stats = await mapWithConcurrency(
+        files,
+        DEFAULT_USAGE_SCAN_CONCURRENCY,
+        (file) => this.pathStat(file),
+      );
+      for (const [index, entry] of stats.entries()) {
+        if (!entry) continue;
+        if (entry.isFile()) {
+          total += entry.size;
+        } else if (entry.isDirectory()) {
+          nextDirectories.push(files[index]);
+        }
+      }
+      directories = nextDirectories;
     }
     return total;
+  }
+
+  private async accountedDiskUsage(): Promise<number> {
+    if (this.accountedBytes === null) {
+      this.accountedBytes = await this.diskUsage();
+    }
+    return this.accountedBytes;
+  }
+
+  private async removeTrackedFile(path: string): Promise<void> {
+    await this.withStorageLock(async () => {
+      const existing = await this.pathStat(path);
+      try {
+        await rm(path, { force: true });
+      } catch (error) {
+        this.accountedBytes = null;
+        throw error;
+      }
+      if (existing?.isFile() && this.accountedBytes !== null) {
+        this.accountedBytes -= existing.size;
+      }
+    });
   }
 
   private async commit(
@@ -1400,7 +1483,7 @@ export class FileEvidenceCache {
   ): Promise<number> {
     return this.withStorageLock(async () => {
       await this.initialize();
-      const usage = await this.diskUsage();
+      const usage = await this.accountedDiskUsage();
       let delta = 0;
       for (const file of immutableFiles) {
         const existing = await this.pathStat(file.path);
@@ -1425,20 +1508,26 @@ export class FileEvidenceCache {
         );
       }
       let written = 0;
-      for (const file of immutableFiles) {
-        written += await this.writeImmutable(
-          file.path,
-          file.bytes,
-          file.description,
-        );
+      try {
+        for (const file of immutableFiles) {
+          written += await this.writeImmutable(
+            file.path,
+            file.bytes,
+            file.description,
+          );
+        }
+        for (const file of mutableFiles) {
+          written += await this.writeMutable(
+            file.path,
+            file.bytes,
+            file.description,
+          );
+        }
+      } catch (error) {
+        this.accountedBytes = null;
+        throw error;
       }
-      for (const file of mutableFiles) {
-        written += await this.writeMutable(
-          file.path,
-          file.bytes,
-          file.description,
-        );
-      }
+      this.accountedBytes = usage + delta;
       this.metrics.bytes_written += Math.max(0, written);
       return Math.max(0, written);
     });
@@ -2084,9 +2173,9 @@ export class FileEvidenceCache {
         mutableFiles,
       );
       if (cacheEligibility === "VALID_EVIDENCE") {
-        await rm(this.failureIndexPath(plan.requestFingerprint), {
-          force: true,
-        });
+        await this.removeTrackedFile(
+          this.failureIndexPath(plan.requestFingerprint),
+        );
       }
       const verifiedManifest = await this.readManifest(
         manifest.manifest_id,
@@ -2153,9 +2242,9 @@ export class FileEvidenceCache {
     const index = await this.readFailureIndex(plan.requestFingerprint);
     if (!index) return null;
     if (Date.parse(index.value.expires_at) <= this.clock()) {
-      await rm(this.failureIndexPath(plan.requestFingerprint), {
-        force: true,
-      });
+      await this.removeTrackedFile(
+        this.failureIndexPath(plan.requestFingerprint),
+      );
       return null;
     }
     const manifest = await this.readManifest(index.value.manifest_id);
