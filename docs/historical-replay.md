@@ -65,6 +65,22 @@ Simulation content IDs, profile/fee hashes, source contracts, candidate
 identity, exact symbols, and horizon timestamps are revalidated before
 aggregation.
 
+The horizon workflow's optional research valuation keeps three source tiers
+separate before execution modeling:
+
+| Horizon `valuation_basis` | Reference type | Interpretation |
+| --- | --- | --- |
+| `EXACT_PACKAGE_REFERENCE` | `CANDLE_REFERENCE` | Every exact leg came from strict completed-candle evidence |
+| `MIXED_OBSERVED_MODELED` | `MODEL_REFERENCE` | Observed values are unchanged and only missing exact legs are theoretical |
+| `MODEL_SURFACE` | `MODEL_REFERENCE` | Every exact leg is theoretical from caller-frozen SPX and IV/surface inputs |
+
+`MIXED_OBSERVED_MODELED` and `MODEL_SURFACE` are analysis strata, not new
+execution-reference enums. Feed the emitted `execution_evidence_input` to
+`tastytrade_normalize_historical_execution_evidence`; use its
+`CANDLE_REFERENCE` or `MODEL_REFERENCE` only with a separately frozen
+`REFERENCE_COST` profile. Never merge these cohorts with quote-backed
+execution scenarios or describe them as historical fills.
+
 ## Metrics and denominators
 
 Only `SIMULATED_FILLED` records with a closed exit enter win rate,
@@ -113,9 +129,10 @@ A Skills or regression runner should execute the chain in this order:
 3. retrieve frozen exact packages with
    `tastytrade_get_historical_option_package_horizons` using an authoritative
    caller-supplied trading-session calendar, then inspect its aggregate
-   coverage diagnostics;
+   strict and valuation-tier coverage diagnostics;
 4. normalize exact-leg quote or reference evidence with
-   `tastytrade_normalize_historical_execution_evidence`;
+   `tastytrade_normalize_historical_execution_evidence` (the optional horizon
+   fallback supplies a complete `execution_evidence_input`);
 5. run each caller-frozen execution profile with
    `tastytrade_simulate_historical_execution`;
 6. assemble the complete candidate × scenario × horizon matrix; and

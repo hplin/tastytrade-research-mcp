@@ -12,6 +12,20 @@ function contentId(character) {
   return `sha256:${character.repeat(64)}`;
 }
 
+function modelSource(character) {
+  return {
+    observed_at: "2026-08-27T13:00:00.000Z",
+    available_at: "2026-08-27T14:00:00.000Z",
+    retrieved_at: "2026-08-27T16:00:00.000Z",
+    source: "fixture-model-surface",
+    dataset_id: "fixture-surface",
+    license_scope_id: "fixture-license",
+    source_revision: "fixture-surface/1",
+    manifest_ids: [contentId(character)],
+    normalized_content_ids: [contentId(character === "f" ? "e" : "f")],
+  };
+}
+
 describe("MCP research server", () => {
   test("lists and invokes the expanded research tool surface", async () => {
     const backtester = {
@@ -165,6 +179,7 @@ describe("MCP research server", () => {
         candidates: expect.any(Object),
         resolution_profile: expect.any(Object),
         evidence_cache: expect.any(Object),
+        valuation_fallback: expect.any(Object),
       });
       expect(
         packageHorizonsTool.inputSchema.properties.request.properties
@@ -174,6 +189,10 @@ describe("MCP research server", () => {
         packageHorizonsTool.inputSchema.properties.request.properties
           .evidence_cache.properties,
       ).not.toHaveProperty("evidence_role");
+      expect(
+        packageHorizonsTool.inputSchema.properties.request.properties
+          .valuation_fallback.required,
+      ).toEqual(expect.arrayContaining(["source_contract"]));
       const executionModelTool = tools.tools.find(
         (tool) =>
           tool.name === "tastytrade_simulate_historical_execution",
@@ -686,12 +705,67 @@ describe("MCP research server", () => {
                 },
               ],
               phase: "REGRESSION_RESEARCH",
+              valuation_fallback: {
+                mode: "MODEL_IF_LEG_MISSING",
+                pricing_model: "BLACK_SCHOLES_SPOT",
+                model_version: "1.0.0",
+                source_contract: {
+                  provider_id: "local-research-model",
+                  dataset_id: "fixture-option-model",
+                  license_scope_id: "fixture-license",
+                  resolution_profile: {
+                    profile_id:
+                      "HISTORICAL_OPTION_MODEL_VALUATION",
+                    profile_version: "1.0.0",
+                    native_resolution: "MODEL_INPUTS",
+                    effective_resolution: "MODEL_REFERENCE",
+                  },
+                  source_revision: "fixture-option-model/1",
+                },
+                annualized_risk_free_rate: "0.04",
+                annualized_dividend_yield: "0.01",
+                volatility_shift_fraction: "0.1",
+                checkpoints: [
+                  {
+                    session_date: "2026-08-27",
+                    underlying: {
+                      value: "7800",
+                      ...modelSource("a"),
+                    },
+                    leg_inputs: [
+                      {
+                        provider_symbol: "SPXW  260924C07750000",
+                        implied_volatility: "0.2",
+                        iv_origin: "INTERPOLATED_SURFACE",
+                        surface_id: "fixture-surface-2026-08-27",
+                        source_symbols: [
+                          "SPXW  260924C07725000",
+                          "SPXW  260924C07775000",
+                        ],
+                        ...modelSource("b"),
+                      },
+                      {
+                        provider_symbol: "SPXW  260924C07800000",
+                        implied_volatility: "0.21",
+                        iv_origin: "INTERPOLATED_SURFACE",
+                        surface_id: "fixture-surface-2026-08-27",
+                        source_symbols: [
+                          "SPXW  260924C07775000",
+                          "SPXW  260924C07825000",
+                        ],
+                        ...modelSource("c"),
+                      },
+                    ],
+                  },
+                ],
+              },
             },
           },
         }),
       );
       expect(packageHorizons).toMatchObject({
         status: "NOT_AVAILABLE",
+        valuation_status: "COMPLETE",
         evidence_class: "VALUATION_ONLY",
         reference_type: "CANDLE_REFERENCE",
         coverage: {
@@ -710,6 +784,21 @@ describe("MCP research server", () => {
             },
           ],
         },
+        candidates: [
+          {
+            horizons: [
+              {
+                status: "NOT_AVAILABLE",
+                valuation: {
+                  status: "AVAILABLE",
+                  valuation_basis: "MODEL_SURFACE",
+                  reference_type: "MODEL_REFERENCE",
+                  modeled_leg_count: 2,
+                },
+              },
+            ],
+          },
+        ],
       });
 
       const directFill = textResult(

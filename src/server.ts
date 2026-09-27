@@ -974,6 +974,54 @@ const HISTORICAL_OPTION_PACKAGE_PATH_SCHEMA = {
   additionalProperties: false,
 } as const;
 
+const HISTORICAL_MODEL_SOURCE_PROPERTIES = {
+  observed_at: RFC3339_SCHEMA,
+  available_at: RFC3339_SCHEMA,
+  retrieved_at: RFC3339_SCHEMA,
+  source: { type: "string", minLength: 1, maxLength: 200 },
+  dataset_id: { type: "string", minLength: 1, maxLength: 200 },
+  license_scope_id: {
+    type: "string",
+    minLength: 1,
+    maxLength: 200,
+  },
+  source_revision: {
+    type: "string",
+    minLength: 1,
+    maxLength: 200,
+  },
+  manifest_ids: {
+    type: "array",
+    minItems: 1,
+    maxItems: 200,
+    uniqueItems: true,
+    items: {
+      type: "string",
+      pattern: "^sha256:[a-f0-9]{64}$",
+    },
+  },
+  normalized_content_ids: {
+    type: "array",
+    minItems: 1,
+    maxItems: 200,
+    uniqueItems: true,
+    items: {
+      type: "string",
+      pattern: "^sha256:[a-f0-9]{64}$",
+    },
+  },
+} as const;
+
+const HISTORICAL_MODEL_SOURCE_REQUIRED = [
+  "observed_at",
+  "available_at",
+  "retrieved_at",
+  "source",
+  "dataset_id",
+  "license_scope_id",
+  "source_revision",
+] as const;
+
 const HISTORICAL_OPTION_PACKAGE_HORIZONS_SCHEMA = {
   type: "object",
   properties: {
@@ -1077,6 +1125,186 @@ const HISTORICAL_OPTION_PACKAGE_HORIZONS_SCHEMA = {
           enum: ["REGRESSION_RESEARCH"],
         },
         evidence_cache: HORIZON_EVIDENCE_CACHE_SCHEMA,
+        valuation_fallback: {
+          type: "object",
+          properties: {
+            mode: {
+              type: "string",
+              const: "MODEL_IF_LEG_MISSING",
+            },
+            pricing_model: {
+              type: "string",
+              const: "BLACK_SCHOLES_SPOT",
+            },
+            model_version: {
+              type: "string",
+              minLength: 1,
+              maxLength: 200,
+            },
+            source_contract: {
+              type: "object",
+              properties: {
+                provider_id: {
+                  type: "string",
+                  minLength: 1,
+                  maxLength: 200,
+                },
+                dataset_id: {
+                  type: "string",
+                  minLength: 1,
+                  maxLength: 200,
+                },
+                license_scope_id: {
+                  type: "string",
+                  minLength: 1,
+                  maxLength: 200,
+                },
+                resolution_profile: {
+                  type: "object",
+                  properties: {
+                    profile_id: {
+                      type: "string",
+                      minLength: 1,
+                      maxLength: 200,
+                    },
+                    profile_version: {
+                      type: "string",
+                      minLength: 1,
+                      maxLength: 200,
+                    },
+                    native_resolution: {
+                      type: "string",
+                      minLength: 1,
+                      maxLength: 200,
+                    },
+                    effective_resolution: {
+                      type: "string",
+                      minLength: 1,
+                      maxLength: 200,
+                    },
+                  },
+                  required: [
+                    "profile_id",
+                    "profile_version",
+                    "native_resolution",
+                    "effective_resolution",
+                  ],
+                  additionalProperties: false,
+                },
+                source_revision: {
+                  type: "string",
+                  minLength: 1,
+                  maxLength: 200,
+                },
+              },
+              required: [
+                "provider_id",
+                "dataset_id",
+                "license_scope_id",
+                "resolution_profile",
+                "source_revision",
+              ],
+              additionalProperties: false,
+            },
+            annualized_risk_free_rate: DECIMAL_SCHEMA,
+            annualized_dividend_yield: DECIMAL_SCHEMA,
+            volatility_shift_fraction: DECIMAL_SCHEMA,
+            max_input_age_minutes: {
+              type: "integer",
+              minimum: 0,
+              maximum: 1440,
+            },
+            checkpoints: {
+              type: "array",
+              maxItems: 400,
+              items: {
+                type: "object",
+                properties: {
+                  session_date: DATE_SCHEMA,
+                  underlying: {
+                    type: "object",
+                    properties: {
+                      value: DECIMAL_SCHEMA,
+                      ...HISTORICAL_MODEL_SOURCE_PROPERTIES,
+                    },
+                    required: [
+                      "value",
+                      ...HISTORICAL_MODEL_SOURCE_REQUIRED,
+                    ],
+                    additionalProperties: false,
+                  },
+                  leg_inputs: {
+                    type: "array",
+                    maxItems: 200,
+                    items: {
+                      type: "object",
+                      properties: {
+                        provider_symbol: {
+                          type: "string",
+                          minLength: 21,
+                          maxLength: 21,
+                        },
+                        implied_volatility: DECIMAL_SCHEMA,
+                        iv_origin: {
+                          type: "string",
+                          enum: [
+                            "DIRECT_OPTION_IV",
+                            "INTERPOLATED_SURFACE",
+                          ],
+                        },
+                        surface_id: {
+                          anyOf: [
+                            {
+                              type: "string",
+                              minLength: 1,
+                              maxLength: 200,
+                            },
+                            { type: "null" },
+                          ],
+                        },
+                        source_symbols: {
+                          type: "array",
+                          maxItems: 200,
+                          uniqueItems: true,
+                          items: {
+                            type: "string",
+                            minLength: 1,
+                            maxLength: 200,
+                          },
+                        },
+                        ...HISTORICAL_MODEL_SOURCE_PROPERTIES,
+                      },
+                      required: [
+                        "provider_symbol",
+                        "implied_volatility",
+                        "iv_origin",
+                        ...HISTORICAL_MODEL_SOURCE_REQUIRED,
+                      ],
+                      additionalProperties: false,
+                    },
+                  },
+                },
+                required: [
+                  "session_date",
+                  "underlying",
+                  "leg_inputs",
+                ],
+                additionalProperties: false,
+              },
+            },
+          },
+          required: [
+            "mode",
+            "pricing_model",
+            "model_version",
+            "source_contract",
+            "annualized_risk_free_rate",
+            "annualized_dividend_yield",
+            "volatility_shift_fraction",
+            "checkpoints",
+          ],
+          additionalProperties: false,
+        },
       },
       required: [
         "underlying",
@@ -1339,7 +1567,7 @@ export const TOOLS: Tool[] = [
   {
     name: "tastytrade_get_historical_option_package_horizons",
     description:
-      "Reconstruct a bounded frozen exact-leg candidate inventory at caller-supplied ENTRY, +3, and +5 trading-session checkpoints. Never infers weekdays, substitutes legs, or upgrades candle references beyond valuation-only evidence; returns structured per-leg failures and aggregate coverage diagnostics.",
+      "Reconstruct a bounded frozen exact-leg candidate inventory at caller-supplied ENTRY, +3, and +5 trading-session checkpoints. An opt-in caller-frozen Black-Scholes spot fallback can value only candle-missing legs as research-only MODEL_REFERENCE evidence with explicit provenance and uncertainty. Never infers weekdays, substitutes legs, models cache/provider/stale/alignment failures, or upgrades valuation evidence into a quote or fill.",
     inputSchema: HISTORICAL_OPTION_PACKAGE_HORIZONS_SCHEMA,
   },
   {

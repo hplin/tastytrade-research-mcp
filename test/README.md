@@ -18,6 +18,11 @@ The suite builds the TypeScript project before running Jest and covers:
 - completed-bar historical exact-leg package valuation;
 - frozen exact-leg ENTRY/+3/+5 trading-session reconstruction with no weekday
   inference or strike/expiration substitution;
+- opt-in Black-Scholes spot fallback for exact missing legs, including exact,
+  mixed observed/modeled, and fully modeled valuation cohorts;
+- preservation of observed leg values, model provenance, IV-shift uncertainty,
+  `MODEL_REFERENCE` normalization, and fail-closed stale/future inputs;
+- refusal to model cache, provider, stale-observation, or alignment failures;
 - per-leg contract/candle/stale/alignment/cache/provider failure taxonomy and
   aggregate coverage by role, strategy, expiration, DTE, and resolution
   profile;

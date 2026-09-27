@@ -6,6 +6,11 @@ import {
 } from "../dist/historical-option-package.js";
 import { getHistoricalOptionPackageHorizons } from "../dist/historical-option-package-horizons.js";
 import { EvidenceCacheError } from "../dist/evidence-cache.js";
+import { normalizeHistoricalExecutionEvidence } from "../dist/historical-execution-evidence.js";
+import {
+  historicalExecutionProfileHash,
+  simulateHistoricalExecution,
+} from "../dist/historical-execution-model.js";
 import { verifyHistoricalFill } from "../dist/historical-fill.js";
 
 const fixture = JSON.parse(
@@ -925,6 +930,76 @@ function contentId(character) {
   return `sha256:${character.repeat(64)}`;
 }
 
+function modelSource(date, character) {
+  return {
+    observed_at: `${date}T13:00:00.000Z`,
+    available_at: `${date}T14:00:00.000Z`,
+    retrieved_at: `${date}T16:00:00.000Z`,
+    source: "fixture-model-surface",
+    dataset_id: "fixture-surface",
+    license_scope_id: "fixture-license",
+    source_revision: "fixture-surface/1",
+    manifest_ids: [contentId(character)],
+    normalized_content_ids: [contentId(character === "f" ? "e" : "f")],
+  };
+}
+
+function modelCheckpoint(
+  sessionDate,
+  legs = DD_LEGS,
+  overrides = {},
+) {
+  return {
+    session_date: sessionDate,
+    underlying: {
+      value: "7800",
+      ...modelSource(sessionDate, "d"),
+    },
+    leg_inputs: legs.map((leg, index) => ({
+      provider_symbol: leg.provider_symbol,
+      implied_volatility: String(0.2 + index * 0.01),
+      iv_origin: "INTERPOLATED_SURFACE",
+      surface_id: `fixture-surface-${sessionDate}`,
+      source_symbols: [
+        `${leg.provider_symbol.slice(0, 13)}${String(
+          Number(leg.provider_symbol.slice(13)) - 25000,
+        ).padStart(8, "0")}`,
+        `${leg.provider_symbol.slice(0, 13)}${String(
+          Number(leg.provider_symbol.slice(13)) + 25000,
+        ).padStart(8, "0")}`,
+      ],
+      ...modelSource(sessionDate, String(index + 1)),
+    })),
+    ...overrides,
+  };
+}
+
+function modelFallback(checkpoints, overrides = {}) {
+  return {
+    mode: "MODEL_IF_LEG_MISSING",
+    pricing_model: "BLACK_SCHOLES_SPOT",
+    model_version: "1.0.0",
+    source_contract: {
+      provider_id: "local-research-model",
+      dataset_id: "fixture-option-model",
+      license_scope_id: "fixture-license",
+      resolution_profile: {
+        profile_id: "HISTORICAL_OPTION_MODEL_VALUATION",
+        profile_version: "1.0.0",
+        native_resolution: "MODEL_INPUTS",
+        effective_resolution: "MODEL_REFERENCE",
+      },
+      source_revision: "fixture-option-model/1",
+    },
+    annualized_risk_free_rate: "0.04",
+    annualized_dividend_yield: "0.01",
+    volatility_shift_fraction: "0.1",
+    max_input_age_minutes: 120,
+    checkpoints,
+    ...overrides,
+  };
+}
+
 function horizonService() {
   const priceBySymbol = new Map([
     [DD_LEGS[0].provider_symbol, "10"],
@@ -1001,6 +1076,12 @@ describe("historical exact-leg package horizons", () => {
         missing_reason_counts: [],
       },
     });
+    expect(result).not.toHaveProperty("valuation_status");
+    expect(
+      result.candidates[0].horizons.every(
+        (horizon) => horizon.valuation === undefined,
+      ),
+    ).toBe(true);
     expect(
       result.candidates[0].horizons.map((horizon) => ({
         horizon_id: horizon.horizon_id,
@@ -1181,6 +1262,12 @@ describe("historical exact-leg package horizons", () => {
         horizons: ["ENTRY"],
         candidates: [cacheCandidate, providerCandidate],
         evidence_cache: undefined,
+        valuation_fallback: modelFallback([
+          modelCheckpoint("2026-08-25", [
+            ...cacheCandidate.legs,
+            ...providerCandidate.legs,
+          ]),
+        ]),
       }),
     );
 
@@ -1227,7 +1314,647 @@ describe("historical exact-leg package horizons", () => {
         { reason: "CACHE_ERROR", count: 2 },
         { reason: "PROVIDER_ERROR", count: 2 },
       ],
+      valued_packages: 0,
     });
+    expect(result.valuation_status).toBe("NOT_AVAILABLE");
+    expect(
+      result.candidates.every((candidate) => {
+        const valuation = candidate.horizons[0].valuation;
+        return (
+          valuation.status === "NOT_AVAILABLE" &&
+          valuation.modeled_leg_count === 0 &&
+          valuation.failure_reasons.includes(
+            "STRICT_RECONSTRUCTION_NOT_MODELABLE",
+          )
+        );
+      }),
+    ).toBe(true);
+  });
+
+  test("stratifies an exact package without replacing its candle reference", async () => {
+    const result = await getHistoricalOptionPackageHorizons(
+      horizonService(),
+      horizonRequest({
+        horizons: ["ENTRY"],
+        valuation_fallback: modelFallback([
+          modelCheckpoint("2026-08-25"),
+        ]),
+      }),
+    );
+    const horizon = result.candidates[0].horizons[0];
+
+    expect(horizon).toMatchObject({
+      status: "AVAILABLE",
+      reference_type: "CANDLE_REFERENCE",
+      package: {
+        reference_value: {
+          value: "8",
+          reference_type: "CANDLE_REFERENCE",
+        },
+      },
+      valuation: {
+        status: "AVAILABLE",
+        valuation_basis: "EXACT_PACKAGE_REFERENCE",
+        quality: "HIGH",
+        reference_type: "CANDLE_REFERENCE",
+        observed_leg_count: 4,
+        modeled_leg_count: 0,
+        reference_value: {
+          value: "8",
+          reference_type: "CANDLE_REFERENCE",
+        },
+        regression_reference: {
+          evidence_type: "CANDLE_REFERENCE",
+          signed_value: "8",
+          model_version: null,
+        },
+      },
+    });
+    const normalizedEvidence = normalizeHistoricalExecutionEvidence(
+      horizon.valuation.execution_evidence_input,
+    );
+    expect(normalizedEvidence.coverage).toMatchObject({
+      candle_coverage: "COMPLETE",
+      model_coverage: "NONE",
+    });
+    expect(result.coverage).toMatchObject({
+      complete_packages: 1,
+      valued_packages: 1,
+      valuation_basis_counts: [
+        { valuation_basis: "EXACT_PACKAGE_REFERENCE", count: 1 },
+      ],
+    });
+  });
+
+  test("models only a missing exact leg and preserves observed values", async () => {
+    const original = horizonService();
+    const missingSymbol = DD_LEGS[3].provider_symbol;
+    const service = {
+      getHistoricalCandlesBatch: jest.fn(async (request) => {
+        const results = await original.getHistoricalCandlesBatch(request);
+        return results.map((result) =>
+          result.symbol === missingSymbol
+            ? {
+                ...result,
+                status: "NOT_AVAILABLE",
+                actual_range: null,
+                candles: [],
+                failure_reasons: ["MISSING_CONTRACT_EVIDENCE"],
+              }
+            : result,
+        );
+      }),
+    };
+
+    const result = await getHistoricalOptionPackageHorizons(
+      service,
+      horizonRequest({
+        horizons: ["ENTRY"],
+        valuation_fallback: modelFallback([
+          modelCheckpoint("2026-08-25"),
+        ]),
+      }),
+    );
+    const horizon = result.candidates[0].horizons[0];
+    const modeled = horizon.valuation.legs.find(
+      (leg) => leg.provider_symbol === missingSymbol,
+    );
+    const observed = horizon.valuation.legs.filter(
+      (leg) => leg.provider_symbol !== missingSymbol,
+    );
+
+    expect(horizon.status).toBe("NOT_AVAILABLE");
+    expect(horizon.valuation).toMatchObject({
+      status: "AVAILABLE",
+      valuation_basis: "MIXED_OBSERVED_MODELED",
+      quality: "MEDIUM",
+      observed_leg_count: 3,
+      modeled_leg_count: 1,
+      unavailable_leg_count: 0,
+      reference_value: {
+        evidence_type: "HISTORICAL_OPTION_PACKAGE_MODEL_VALUATION",
+        reference_type: "MODEL_REFERENCE",
+        evidence_class: "VALUATION_ONLY",
+        guaranteed_executable: false,
+      },
+      regression_reference: {
+        evidence_type: "MODEL_REFERENCE",
+        price_semantics: "SIGNED_CASH_FLOW_PER_UNIT",
+        model_version: "BLACK_SCHOLES_SPOT/1.0.0",
+      },
+    });
+    expect(
+      observed.map((leg) => ({
+        role: leg.role,
+        valuation_source: leg.valuation_source,
+        value: leg.value,
+      })),
+    ).toEqual([
+      { role: "FRONT_PUT", valuation_source: "OBSERVED", value: "10" },
+      { role: "FRONT_CALL", valuation_source: "OBSERVED", value: "8" },
+      { role: "BACK_PUT", valuation_source: "OBSERVED", value: "14" },
+    ]);
+    expect(modeled).toMatchObject({
+      role: "BACK_CALL",
+      provider_symbol: missingSymbol,
+      valuation_source: "MODELED",
+      valuation_basis: "MODEL_SURFACE",
+      model_provenance: {
+        pricing_model: "BLACK_SCHOLES_SPOT",
+        model_version: "1.0.0",
+        checkpoint: "2026-08-25T14:30:00.000Z",
+        underlying_value: "7800",
+        strike: "7825",
+        expiration: "2026-09-29",
+        option_side: "CALL",
+        implied_volatility: "0.23",
+        iv_origin: "INTERPOLATED_SURFACE",
+        annualized_risk_free_rate: "0.04",
+        annualized_dividend_yield: "0.01",
+        multiplier: "100",
+        settlement: "PM",
+        underlying_input: {
+          input_age_minutes: 90,
+        },
+        iv_input: {
+          input_age_minutes: 90,
+        },
+        manifest_ids: expect.arrayContaining([
+          contentId("4"),
+          contentId("d"),
+        ]),
+      },
+    });
+    expect(Number(modeled.uncertainty.value_low)).toBeLessThan(
+      Number(modeled.value),
+    );
+    expect(Number(modeled.uncertainty.value_high)).toBeGreaterThan(
+      Number(modeled.value),
+    );
+    expect(Number(horizon.valuation.uncertainty.signed_value_low)).toBeLessThan(
+      Number(horizon.valuation.regression_reference.signed_value),
+    );
+    expect(Number(horizon.valuation.uncertainty.signed_value_high)).toBeGreaterThan(
+      Number(horizon.valuation.regression_reference.signed_value),
+    );
+    expect(result.valuation_status).toBe("COMPLETE");
+    expect(result.coverage).toMatchObject({
+      complete_entry_packages: 0,
+      valued_entry_packages: 1,
+      valued_packages: 1,
+      valuation_basis_counts: [
+        { valuation_basis: "MIXED_OBSERVED_MODELED", count: 1 },
+      ],
+      modeled_leg_count_by_role: [{ role: "BACK_CALL", count: 1 }],
+    });
+    const normalizedEvidence = normalizeHistoricalExecutionEvidence(
+      horizon.valuation.execution_evidence_input,
+    );
+    expect(normalizedEvidence).toMatchObject({
+      candidate_fingerprint:
+        horizon.valuation.execution_evidence_input
+          .candidate_fingerprint,
+      coverage: {
+        quote_coverage: "NONE",
+        model_coverage: "COMPLETE",
+      },
+      observations: [
+        {
+          model_coverage: "COMPLETE",
+          references: [
+            {
+              evidence_type: "MODEL_REFERENCE",
+              signed_value:
+                horizon.valuation.regression_reference.signed_value,
+              status: "AVAILABLE",
+            },
+          ],
+        },
+      ],
+    });
+  });
+
+  test("fully models an exact package when all candles are unavailable", async () => {
+    const service = {
+      getHistoricalCandlesBatch: jest.fn(async (request) =>
+        request.instruments.map((instrument) => ({
+          ...candleResult(instrument, request.interval, []),
+          status: "NOT_AVAILABLE",
+          failure_reasons: ["MISSING_CONTRACT_EVIDENCE"],
+        })),
+      ),
+    };
+
+    const result = await getHistoricalOptionPackageHorizons(
+      service,
+      horizonRequest({
+        horizons: ["ENTRY"],
+        valuation_fallback: modelFallback([
+          modelCheckpoint("2026-08-25"),
+        ]),
+      }),
+    );
+    const valuation = result.candidates[0].horizons[0].valuation;
+
+    expect(result.status).toBe("NOT_AVAILABLE");
+    expect(result.valuation_status).toBe("COMPLETE");
+    expect(valuation).toMatchObject({
+      status: "AVAILABLE",
+      valuation_basis: "MODEL_SURFACE",
+      quality: "LOW",
+      observed_leg_count: 0,
+      modeled_leg_count: 4,
+      unavailable_leg_count: 0,
+      regression_reference: {
+        evidence_type: "MODEL_REFERENCE",
+        price_semantics: "SIGNED_CASH_FLOW_PER_UNIT",
+        model_version: "BLACK_SCHOLES_SPOT/1.0.0",
+      },
+    });
+    expect(
+      valuation.legs.every(
+        (leg) =>
+          leg.valuation_source === "MODELED" &&
+          leg.valuation_basis === "MODEL_SURFACE" &&
+          leg.model_provenance !== null,
+      ),
+    ).toBe(true);
+    expect(result.coverage).toMatchObject({
+      complete_packages: 0,
+      valued_packages: 1,
+      valuation_basis_counts: [
+        { valuation_basis: "MODEL_SURFACE", count: 1 },
+      ],
+      modeled_leg_count_by_role: [
+        { role: "BACK_CALL", count: 1 },
+        { role: "BACK_PUT", count: 1 },
+        { role: "FRONT_CALL", count: 1 },
+        { role: "FRONT_PUT", count: 1 },
+      ],
+    });
+  });
+
+  test("keeps valuation unavailable when a missing leg lacks frozen model inputs", async () => {
+    const original = horizonService();
+    const missingSymbol = DD_LEGS[3].provider_symbol;
+    const service = {
+      getHistoricalCandlesBatch: jest.fn(async (request) => {
+        const results = await original.getHistoricalCandlesBatch(request);
+        return results.map((result) =>
+          result.symbol === missingSymbol
+            ? {
+                ...result,
+                status: "NOT_AVAILABLE",
+                actual_range: null,
+                candles: [],
+                failure_reasons: ["MISSING_CONTRACT_EVIDENCE"],
+              }
+            : result,
+        );
+      }),
+    };
+    const result = await getHistoricalOptionPackageHorizons(
+      service,
+      horizonRequest({
+        horizons: ["ENTRY"],
+        valuation_fallback: modelFallback([]),
+      }),
+    );
+    const valuation = result.candidates[0].horizons[0].valuation;
+
+    expect(valuation).toMatchObject({
+      status: "NOT_AVAILABLE",
+      observed_leg_count: 3,
+      modeled_leg_count: 0,
+      unavailable_leg_count: 1,
+      failure_reasons: ["MODEL_CHECKPOINT_UNAVAILABLE"],
+      regression_reference: null,
+      execution_evidence_input: null,
+    });
+  });
+
+  test("models ENTRY, +3, and +5 only at caller-supplied sessions", async () => {
+    const service = {
+      getHistoricalCandlesBatch: jest.fn(async (request) =>
+        request.instruments.map((instrument) => ({
+          ...candleResult(instrument, request.interval, []),
+          status: "NOT_AVAILABLE",
+          failure_reasons: ["MISSING_CONTRACT_EVIDENCE"],
+        })),
+      ),
+    };
+    const result = await getHistoricalOptionPackageHorizons(
+      service,
+      horizonRequest({
+        valuation_fallback: modelFallback([
+          modelCheckpoint("2026-08-25"),
+          modelCheckpoint("2026-08-31"),
+          modelCheckpoint("2026-09-02"),
+        ]),
+      }),
+    );
+
+    expect(
+      result.candidates[0].horizons.map((horizon) => ({
+        horizon_id: horizon.horizon_id,
+        session_date: horizon.session_date,
+        checkpoint:
+          horizon.valuation.legs[0].model_provenance.checkpoint,
+        basis: horizon.valuation.valuation_basis,
+      })),
+    ).toEqual([
+      {
+        horizon_id: "ENTRY",
+        session_date: "2026-08-25",
+        checkpoint: "2026-08-25T14:30:00.000Z",
+        basis: "MODEL_SURFACE",
+      },
+      {
+        horizon_id: "OUTCOME_3_TRADING_DAYS",
+        session_date: "2026-08-31",
+        checkpoint: "2026-08-31T14:30:00.000Z",
+        basis: "MODEL_SURFACE",
+      },
+      {
+        horizon_id: "OUTCOME_5_TRADING_DAYS",
+        session_date: "2026-09-02",
+        checkpoint: "2026-09-02T14:30:00.000Z",
+        basis: "MODEL_SURFACE",
+      },
+    ]);
+    expect(result.valuation_status).toBe("COMPLETE");
+    expect(result.coverage).toMatchObject({
+      complete_packages: 0,
+      valued_entry_packages: 1,
+      valued_outcome_3_trading_days_packages: 1,
+      valued_outcome_5_trading_days_packages: 1,
+      valued_packages: 3,
+    });
+  });
+
+  test("keeps one frozen source contract across mixed and full model horizons", async () => {
+    const original = horizonService();
+    const missingSymbol = DD_LEGS[3].provider_symbol;
+    const service = {
+      getHistoricalCandlesBatch: jest.fn(async (request) => {
+        if (request.end_time.startsWith("2026-08-25")) {
+          const results = await original.getHistoricalCandlesBatch(request);
+          return results.map((result) =>
+            result.symbol === missingSymbol
+              ? {
+                  ...result,
+                  status: "NOT_AVAILABLE",
+                  actual_range: null,
+                  candles: [],
+                  failure_reasons: ["MISSING_CONTRACT_EVIDENCE"],
+                }
+              : result,
+          );
+        }
+        return request.instruments.map((instrument) => ({
+          ...candleResult(instrument, request.interval, []),
+          status: "NOT_AVAILABLE",
+          failure_reasons: ["MISSING_CONTRACT_EVIDENCE"],
+        }));
+      }),
+    };
+    const fallback = modelFallback([
+      modelCheckpoint("2026-08-25"),
+      modelCheckpoint("2026-08-31"),
+    ]);
+    const result = await getHistoricalOptionPackageHorizons(
+      service,
+      horizonRequest({
+        horizons: ["ENTRY", "OUTCOME_3_TRADING_DAYS"],
+        valuation_fallback: fallback,
+      }),
+    );
+    const [entry, exit] = result.candidates[0].horizons;
+    const entryEvidence = normalizeHistoricalExecutionEvidence(
+      entry.valuation.execution_evidence_input,
+    );
+    const exitEvidence = normalizeHistoricalExecutionEvidence(
+      exit.valuation.execution_evidence_input,
+    );
+    const sourceIdentity = (reference) => ({
+      provider_id: reference.source.provider_id,
+      dataset_id: reference.source.dataset_id,
+      license_scope_id: reference.source.license_scope_id,
+      resolution_profile: reference.source.resolution_profile,
+      source_revision: reference.source.source_revision,
+    });
+
+    expect(entry.valuation.valuation_basis).toBe(
+      "MIXED_OBSERVED_MODELED",
+    );
+    expect(exit.valuation.valuation_basis).toBe("MODEL_SURFACE");
+    expect(
+      sourceIdentity(entryEvidence.observations[0].references[0]),
+    ).toEqual(fallback.source_contract);
+    expect(
+      sourceIdentity(exitEvidence.observations[0].references[0]),
+    ).toEqual(fallback.source_contract);
+
+    const profileBody = {
+      profile_id: "issue-64-reference-cost",
+      profile_version: "1.0.0",
+      model: "REFERENCE_COST",
+      quote_source: null,
+      reference_type: "MODEL_REFERENCE",
+      latency_ms: 0,
+      minimum_package_size: 1,
+      tick_size: "0.000001",
+      midpoint_to_adverse_fraction: null,
+      additional_cost_per_package: "0",
+      queue_model: "NOT_MODELED",
+      market_impact_model: "NOT_MODELED",
+      atomic_package: true,
+    };
+    const simulation = simulateHistoricalExecution({
+      run_id: "issue-64-source-contract",
+      frozen_decision_id: "decision-64",
+      frozen_candidate_id: "dd-2026-08-25",
+      candidate_fingerprint: entryEvidence.candidate_fingerprint,
+      grading_profile: {
+        version: "SPX-SPREAD-V1",
+        hash: contentId("a"),
+      },
+      candidate_construction_profile: {
+        version: "SPX-CANDIDATE-RESEARCH-V1",
+        hash: contentId("b"),
+      },
+      measurement_basis: {
+        basis_id: "MODEL_VALUATION",
+        version: "1.0.0",
+        hash: contentId("c"),
+      },
+      study_stage: "IN_SAMPLE",
+      prior_outcome_accessed: true,
+      decision_frozen_at: "2026-08-20T12:00:00.000Z",
+      candidate_frozen_at: "2026-08-20T12:01:00.000Z",
+      profile_frozen_at: "2026-08-20T12:02:00.000Z",
+      outcome_accessed_at: "2026-09-10T12:00:00.000Z",
+      source_manifest_ids: [
+        ...new Set([
+          ...entryEvidence.source_manifest_ids,
+          ...exitEvidence.source_manifest_ids,
+        ]),
+      ].sort(),
+      source_contract: fallback.source_contract,
+      quantity: 1,
+      horizon: {
+        kind: "FIXED_TRADING_DAYS",
+        trading_days: 3,
+        scheduled_exit_at: exit.scheduled_checkpoint,
+      },
+      execution_profile: {
+        ...profileBody,
+        profile_hash: historicalExecutionProfileHash(profileBody),
+      },
+      fee_model: null,
+      entry: {
+        window_start: entry.scheduled_checkpoint,
+        window_end: "2026-08-25T14:31:00.000Z",
+        signed_limit:
+          entry.valuation.regression_reference.signed_value,
+        evidence: entryEvidence,
+      },
+      exit: {
+        window_start: exit.scheduled_checkpoint,
+        window_end: "2026-08-31T14:31:00.000Z",
+        signed_limit:
+          exit.valuation.regression_reference.signed_value,
+        evidence: exitEvidence,
+      },
+    });
+    expect(simulation.evidence_strength).toBe("REFERENCE_MODEL");
+  });
+
+  test("uses coherent parallel-IV package uncertainty scenarios", async () => {
+    const candidate = {
+      candidate_id: "credit-put-vertical",
+      family: "CREDIT_VERTICAL",
+      entry_date: "2026-08-25",
+      legs: [
+        {
+          role: "SHORT_PUT",
+          provider_symbol: "SPXW  260922P07400000",
+          action: "SELL_TO_OPEN",
+        },
+        {
+          role: "LONG_PUT",
+          provider_symbol: "SPXW  260922P07350000",
+          action: "BUY_TO_OPEN",
+        },
+      ],
+    };
+    const service = {
+      getHistoricalCandlesBatch: jest.fn(async (request) =>
+        request.instruments.map((instrument) => ({
+          ...candleResult(instrument, request.interval, []),
+          status: "NOT_AVAILABLE",
+          failure_reasons: ["MISSING_CONTRACT_EVIDENCE"],
+        })),
+      ),
+    };
+    const result = await getHistoricalOptionPackageHorizons(
+      service,
+      horizonRequest({
+        horizons: ["ENTRY"],
+        candidates: [candidate],
+        valuation_fallback: modelFallback([
+          modelCheckpoint("2026-08-25", candidate.legs, {
+            underlying: {
+              value: "7400",
+              ...modelSource("2026-08-25", "d"),
+            },
+          }),
+        ]),
+      }),
+    );
+    const valuation = result.candidates[0].horizons[0].valuation;
+    const low = Number(valuation.uncertainty.signed_value_low);
+    const high = Number(valuation.uncertainty.signed_value_high);
+
+    expect(valuation.uncertainty.method).toBe("PARALLEL_IV_SHIFT");
+    expect(low).toBeGreaterThanOrEqual(-50);
+    expect(high).toBeLessThanOrEqual(0);
+    expect(low).toBeLessThanOrEqual(
+      Number(valuation.regression_reference.signed_value),
+    );
+    expect(high).toBeGreaterThanOrEqual(
+      Number(valuation.regression_reference.signed_value),
+    );
+  });
+
+  test("rejects future, stale, and invalid model inputs", async () => {
+    await expect(
+      getHistoricalOptionPackageHorizons(
+        horizonService(),
+        horizonRequest({
+          horizons: ["ENTRY"],
+          valuation_fallback: modelFallback([
+            modelCheckpoint("2026-08-25", DD_LEGS, {
+              underlying: {
+                value: "7800",
+                ...modelSource("2026-08-25", "d"),
+                available_at: "2026-08-25T14:31:00.000Z",
+              },
+            }),
+          ]),
+        }),
+      ),
+    ).rejects.toThrow(
+      "valuation_fallback.checkpoints[0].underlying.available_at must not be after the scheduled checkpoint",
+    );
+
+    const futureIvCheckpoint = modelCheckpoint("2026-08-25");
+    futureIvCheckpoint.leg_inputs[0].available_at =
+      "2026-08-25T14:31:00.000Z";
+    await expect(
+      getHistoricalOptionPackageHorizons(
+        horizonService(),
+        horizonRequest({
+          horizons: ["ENTRY"],
+          valuation_fallback: modelFallback([
+            futureIvCheckpoint,
+          ]),
+        }),
+      ),
+    ).rejects.toThrow(
+      "valuation_fallback.checkpoints[0].leg_inputs[0].available_at must not be after the scheduled checkpoint",
+    );
+
+    await expect(
+      getHistoricalOptionPackageHorizons(
+        horizonService(),
+        horizonRequest({
+          horizons: ["ENTRY"],
+          valuation_fallback: modelFallback(
+            [modelCheckpoint("2026-08-25")],
+            { max_input_age_minutes: 10 },
+          ),
+        }),
+      ),
+    ).rejects.toThrow(
+      "valuation_fallback.checkpoints[0].underlying.observed_at exceeds valuation_fallback.max_input_age_minutes",
+    );
+
+    const invalidIvCheckpoint = modelCheckpoint("2026-08-25");
+    invalidIvCheckpoint.leg_inputs[0].implied_volatility = "0";
+    await expect(
+      getHistoricalOptionPackageHorizons(
+        horizonService(),
+        horizonRequest({
+          horizons: ["ENTRY"],
+          valuation_fallback: modelFallback([
+            invalidIvCheckpoint,
+          ]),
+        }),
+      ),
+    ).rejects.toThrow(
+      "valuation_fallback.checkpoints[0].leg_inputs[0].implied_volatility must be greater than 0",
+    );
   });
 
   test("fails closed when CACHE_ONLY cannot resolve an exact manifest", async () => {

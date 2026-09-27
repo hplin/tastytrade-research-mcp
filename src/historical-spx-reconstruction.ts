@@ -27,6 +27,7 @@ import type {
   HistoricalSpxCandidate,
   HistoricalSpxCandidatesPlan,
 } from "./historical-spx-candidates.js";
+import { normalCdf } from "./option-model.js";
 import {
   candleSessionForResolutionProfile,
   historicalBarMatchesResolutionProfile,
@@ -472,21 +473,6 @@ function contractSpec(
     occ_symbol: occSymbol(expirationDate, optionSide, strike),
     streamer_symbol: streamerSymbol(expirationDate, optionSide, strike),
   };
-}
-
-function normalCdf(value: number): number {
-  const absolute = Math.abs(value);
-  const t = 1 / (1 + 0.2316419 * absolute);
-  const density = 0.3989422804014327 * Math.exp((-absolute * absolute) / 2);
-  const tail =
-    density *
-    t *
-    (0.31938153 +
-      t *
-        (-0.356563782 +
-          t * (1.781477937 + t * (-1.821255978 + t * 1.330274429))));
-  const positive = 1 - tail;
-  return value >= 0 ? positive : 1 - positive;
 }
 
 function inverseNormalCdf(probability: number): number {
