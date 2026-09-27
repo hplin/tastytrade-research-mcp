@@ -119,13 +119,14 @@ For the current Azure Container Apps deployment, use a classic private Azure Fil
 ```text
 TASTYTRADE_EVIDENCE_CACHE_DIR=/var/lib/tastytrade-evidence-cache
 TASTYTRADE_EVIDENCE_CACHE_DEFAULT_MODE=BYPASS
+TASTYTRADE_EVIDENCE_CACHE_FILESYSTEM_MODE=AZURE_FILES_SMB
 TASTYTRADE_EVIDENCE_CACHE_MAX_BYTES=1073741824
 TASTYTRADE_EVIDENCE_CACHE_MAX_CONCURRENCY=4
 TASTYTRADE_EVIDENCE_CACHE_DATASET_ID=tastytrade-dxlink-candles
 TASTYTRADE_EVIDENCE_CACHE_LICENSE_SCOPE_ID=private-research
 ```
 
-Keep the default mode `BYPASS`; individual regression requests opt into `READ_WRITE` or `CACHE_ONLY`. Do not enable automatic caching for live requests.
+Keep the default mode `BYPASS`; individual regression requests opt into `READ_WRITE` or `CACHE_ONLY`. Do not enable automatic caching for live requests. Azure Files SMB does not expose POSIX `chmod` or hard links, so the explicit filesystem mode uses same-share atomic rename publication and mount-level access control while retaining checksum and read-back verification. Keep this deployment at one replica.
 
 Azure requires an environment-level storage definition plus a revision-level `AzureFile` volume and container `volumeMount`. Follow the Microsoft Container Apps Azure Files procedure and keep the storage-account key out of source control. After the new revision is healthy, acceptance requires one `READ_WRITE` historical request to return a non-null `manifest_id`, followed by an exact `CACHE_ONLY` replay of that manifest with no provider call.
 

@@ -17,10 +17,19 @@ The filesystem backend separates immutable content from mutable lookup state:
   failures/requests/   mutable short-lived retryable-failure pointers
 ```
 
-Directories are created with mode `0700` and files with mode `0600`.
-Writes use a same-directory temporary file, `fsync`, atomic publication, and
-read-back verification. Objects and manifests are addressed by SHA-256 over
-canonical JSON. Mutable indexes have their own checksums.
+On POSIX filesystems, directories are created with mode `0700` and files with
+mode `0600`. Writes use a same-directory temporary file, `fsync`, atomic
+publication, and read-back verification. Objects and manifests are addressed
+by SHA-256 over canonical JSON. Mutable indexes have their own checksums.
+
+Azure Files over SMB does not support POSIX `chmod` or hard links. Deployments
+using that backend must explicitly set
+`TASTYTRADE_EVIDENCE_CACHE_FILESYSTEM_MODE=AZURE_FILES_SMB`. That mode relies
+on the private environment storage credential and single-replica deployment
+boundary, skips unsupported mode changes, and atomically publishes immutable
+content-addressed files with same-share renames. Checksum and read-back
+verification remain mandatory. The default stays `POSIX` and fails closed on
+unsupported permission operations.
 The versioned machine-readable manifest contract is
 [`evidence-cache.schema.json`](evidence-cache.schema.json).
 
@@ -72,6 +81,7 @@ Set the backend on a private, provider-license-compliant volume:
 ```bash
 export TASTYTRADE_EVIDENCE_CACHE_DIR=/private/tastytrade-evidence
 export TASTYTRADE_EVIDENCE_CACHE_DEFAULT_MODE=BYPASS
+export TASTYTRADE_EVIDENCE_CACHE_FILESYSTEM_MODE=POSIX
 export TASTYTRADE_EVIDENCE_CACHE_MAX_BYTES=1073741824
 export TASTYTRADE_EVIDENCE_CACHE_MAX_CONCURRENCY=4
 export TASTYTRADE_EVIDENCE_CACHE_RETRYABLE_FAILURE_TTL_MS=30000
