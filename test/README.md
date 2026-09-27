@@ -78,7 +78,8 @@ The suite builds the TypeScript project before running Jest and covers:
 - checkpoint-safe SPX selector candidate discovery;
 - explicit-calendar SPX range discovery with bounded workers, hard
   checkpoint deadlines, transient retry, ordered partial progress,
-  continuation without completed-checkpoint replay, aggregate cache
+  fair first-pass-before-retry continuation, deferred round-robin scheduling,
+  v1 cursor compatibility, no completed-checkpoint replay, aggregate cache
   diagnostics, stage-level timeout attribution, selector-start accounting,
   result-derived selector-timeout attribution across retries, and bounded
   100-symbol candidate reconstruction batches;

@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { describe, expect, jest, test } from "@jest/globals";
 import {
@@ -288,6 +289,64 @@ function rangeCandidateResult(input, overrides = {}) {
     warnings: overrides.warnings ?? [],
     evidence_cache: overrides.evidence_cache ?? null,
   };
+}
+
+function continuationCursor(version, payload) {
+  const serialized = JSON.stringify(payload);
+  return `${version}.${Buffer.from(serialized, "utf8").toString(
+    "base64url",
+  )}.${createHash("sha256").update(serialized).digest("hex")}`;
+}
+
+function rateLimitedRangeCandidateResult(input, cacheHit = false) {
+  const date = input.as_of.slice(0, 10);
+  return rangeCandidateResult(input, {
+    status: "PARTIAL",
+    attempts: [
+      {
+        option_side: "CALL",
+        selector: {
+          method: "DELTA",
+          value: "20",
+          days_until_expiration: 28,
+        },
+        backtest_id: null,
+        status: "RECONSTRUCTED_CANDIDATE_FOUND",
+        error: null,
+      },
+      {
+        option_side: "PUT",
+        selector: {
+          method: "DELTA",
+          value: "20",
+          days_until_expiration: 28,
+        },
+        backtest_id: null,
+        status: "PROVIDER_ERROR",
+        error: "Request failed with status code 429",
+        provider_error: {
+          code: "ERR_BAD_REQUEST",
+          http_status: 429,
+          retryable: true,
+        },
+      },
+    ],
+    evidence_cache: {
+      contract_version: "1.0.0",
+      manifest_ids: [`sha256:${date.replaceAll("-", "").padEnd(64, "0")}`],
+      normalized_content_ids: [],
+      provider_payload_content_ids: [],
+      cache_hits: cacheHit ? 1 : 0,
+      cache_misses: cacheHit ? 0 : 1,
+      cache_only_hits: 0,
+      refreshes: 0,
+      retryable_failures: 0,
+      retryable_failure_hits: 0,
+      provider_calls_avoided: cacheHit ? 1 : 0,
+      bytes_read: cacheHit ? 1 : 0,
+      bytes_written: cacheHit ? 0 : 1,
+    },
+  });
 }
 
 describe("historical SPX candidate discovery", () => {
@@ -1235,6 +1294,11 @@ describe("historical SPX candidate discovery", () => {
         "2026-08-27",
         "2026-08-28",
       ]);
+      expect(first.continuation).toMatchObject({
+        unattempted_session_dates: ["2026-08-27", "2026-08-28"],
+        deferred_session_dates: [],
+      });
+      expect(first.continuation.cursor.startsWith("v2.")).toBe(true);
 
       const secondDiscover = jest.fn(async (_backtester, input) =>
         rangeCandidateResult(input),
@@ -1257,6 +1321,255 @@ describe("historical SPX candidate discovery", () => {
       expect(second.progress.checkpoints_previously_completed).toBe(2);
       expect(second.progress.checkpoints_remaining).toBe(0);
       expect(second.continuation).toBeNull();
+    });
+
+    test("finishes the first pass before retrying rate-limited partial checkpoints", async () => {
+      const sessionDates = [
+        "2026-08-24",
+        "2026-08-25",
+        "2026-08-26",
+        "2026-08-27",
+        "2026-08-28",
+        "2026-08-31",
+      ];
+      const attempts = new Map();
+      const calledDates = [];
+      const discover = jest.fn(async (_backtester, input) => {
+        const date = input.as_of.slice(0, 10);
+        calledDates.push(date);
+        attempts.set(date, (attempts.get(date) ?? 0) + 1);
+        if (
+          sessionDates.slice(0, 2).includes(date) &&
+          attempts.get(date) === 1
+        ) {
+          return rateLimitedRangeCandidateResult(input);
+        }
+        return rangeCandidateResult(input, {
+          evidence_cache: sessionDates.slice(0, 2).includes(date)
+            ? rateLimitedRangeCandidateResult(input, true).evidence_cache
+            : null,
+        });
+      });
+      const request = {
+        ...RANGE_REQUEST,
+        start_date: sessionDates[0],
+        end_date: sessionDates.at(-1),
+        trading_calendar: {
+          ...RANGE_REQUEST.trading_calendar,
+          session_dates: sessionDates,
+        },
+        max_concurrency: 1,
+        max_checkpoints_per_run: 2,
+        retry_policy: {
+          max_attempts: 1,
+          backoff_ms: 0,
+        },
+      };
+      const rounds = [];
+      let cursor;
+      for (let round = 0; round < 4; round += 1) {
+        const result = await discoverHistoricalSpxCandidatesRange(
+          {},
+          {
+            ...request,
+            ...(cursor ? { continuation_cursor: cursor } : {}),
+          },
+          undefined,
+          { discover },
+        );
+        rounds.push(result);
+        cursor = result.continuation?.cursor;
+      }
+
+      expect(calledDates).toEqual([
+        "2026-08-24",
+        "2026-08-25",
+        "2026-08-26",
+        "2026-08-27",
+        "2026-08-28",
+        "2026-08-31",
+        "2026-08-24",
+        "2026-08-25",
+      ]);
+      expect(rounds[0].checkpoints).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            status: "PARTIAL",
+            result: expect.objectContaining({
+              contracts: [
+                expect.objectContaining({
+                  provider_symbol: "SPXW-2026-08-24",
+                }),
+              ],
+            }),
+            error: expect.objectContaining({
+              category: "PROVIDER_RATE_LIMIT",
+              retryable: true,
+            }),
+          }),
+        ]),
+      );
+      expect(rounds[0].continuation).toMatchObject({
+        unattempted_session_dates: sessionDates.slice(2),
+        deferred_session_dates: sessionDates.slice(0, 2),
+        unresolved_session_dates: [
+          ...sessionDates.slice(2),
+          ...sessionDates.slice(0, 2),
+        ],
+      });
+      expect(rounds[1].continuation).toMatchObject({
+        unattempted_session_dates: sessionDates.slice(4),
+        deferred_session_dates: sessionDates.slice(0, 2),
+      });
+      expect(rounds[2].continuation).toMatchObject({
+        unattempted_session_dates: [],
+        deferred_session_dates: sessionDates.slice(0, 2),
+      });
+      expect(rounds[3].continuation).toBeNull();
+      expect(rounds[3].coverage.cache).toMatchObject({
+        cache_hits: 2,
+        cache_misses: 0,
+        provider_calls_avoided: 2,
+      });
+      expect(
+        new Set(rounds.map((result) => result.request_id)).size,
+      ).toBe(1);
+      expect(
+        prepareHistoricalSpxCandidatesRange({
+          ...request,
+          continuation_cursor: rounds[0].continuation.cursor,
+        }).request_id,
+      ).toBe(rounds[0].request_id);
+    });
+
+    test("makes a finite first pass over 21 sessions and rotates deferred retries", async () => {
+      const sessionDates = [
+        "2026-08-03",
+        "2026-08-04",
+        "2026-08-05",
+        "2026-08-06",
+        "2026-08-07",
+        "2026-08-10",
+        "2026-08-11",
+        "2026-08-12",
+        "2026-08-13",
+        "2026-08-14",
+        "2026-08-17",
+        "2026-08-18",
+        "2026-08-19",
+        "2026-08-20",
+        "2026-08-21",
+        "2026-08-24",
+        "2026-08-25",
+        "2026-08-26",
+        "2026-08-27",
+        "2026-08-28",
+        "2026-08-31",
+      ];
+      const calledDates = [];
+      const discover = jest.fn(async (_backtester, input) => {
+        calledDates.push(input.as_of.slice(0, 10));
+        return rateLimitedRangeCandidateResult(input);
+      });
+      const request = {
+        ...RANGE_REQUEST,
+        start_date: sessionDates[0],
+        end_date: sessionDates.at(-1),
+        trading_calendar: {
+          ...RANGE_REQUEST.trading_calendar,
+          session_dates: sessionDates,
+        },
+        max_concurrency: 1,
+        max_checkpoints_per_run: 5,
+        retry_policy: {
+          max_attempts: 1,
+          backoff_ms: 0,
+        },
+      };
+      let cursor;
+      let lastFirstPass;
+      for (let round = 0; round < 5; round += 1) {
+        lastFirstPass = await discoverHistoricalSpxCandidatesRange(
+          {},
+          {
+            ...request,
+            ...(cursor ? { continuation_cursor: cursor } : {}),
+          },
+          undefined,
+          { discover },
+        );
+        cursor = lastFirstPass.continuation.cursor;
+      }
+
+      expect(calledDates).toEqual(sessionDates);
+      expect(lastFirstPass.continuation).toMatchObject({
+        unattempted_session_dates: [],
+        deferred_session_dates: sessionDates,
+        unresolved_session_dates: sessionDates,
+      });
+      expect(lastFirstPass.progress).toMatchObject({
+        checkpoints_attempted: 1,
+        checkpoints_deferred: 20,
+        checkpoints_remaining: 21,
+        checkpoints_unattempted: 0,
+        checkpoints_awaiting_retry: 21,
+      });
+
+      const retryRound = await discoverHistoricalSpxCandidatesRange(
+        {},
+        {
+          ...request,
+          continuation_cursor: cursor,
+        },
+        undefined,
+        { discover },
+      );
+      expect(
+        retryRound.checkpoints.map((checkpoint) => checkpoint.session_date),
+      ).toEqual(sessionDates.slice(0, 5));
+      expect(retryRound.continuation.deferred_session_dates).toEqual([
+        ...sessionDates.slice(5),
+        ...sessionDates.slice(0, 5),
+      ]);
+      expect(retryRound.continuation.unattempted_session_dates).toEqual([]);
+    });
+
+    test("accepts v1 cursors and emits classified v2 queue state", async () => {
+      const plan = prepareHistoricalSpxCandidatesRange(RANGE_REQUEST);
+      const cursor = continuationCursor("v1", {
+        completed: [],
+        contract_version: "1.0.0",
+        pending_session_dates:
+          RANGE_REQUEST.trading_calendar.session_dates,
+        request_id: plan.request_id,
+      });
+      const discover = jest.fn(async (_backtester, input) =>
+        rateLimitedRangeCandidateResult(input),
+      );
+      const result = await discoverHistoricalSpxCandidatesRange(
+        {},
+        {
+          ...RANGE_REQUEST,
+          max_checkpoints_per_run: 1,
+          retry_policy: {
+            max_attempts: 1,
+            backoff_ms: 0,
+          },
+          continuation_cursor: cursor,
+        },
+        undefined,
+        { discover },
+      );
+
+      expect(result.request_id).toBe(plan.request_id);
+      expect(result.continuation.cursor.startsWith("v2.")).toBe(true);
+      expect(result.continuation).toMatchObject({
+        unattempted_session_dates:
+          RANGE_REQUEST.trading_calendar.session_dates.slice(1),
+        deferred_session_dates: [
+          RANGE_REQUEST.trading_calendar.session_dates[0],
+        ],
+      });
     });
 
     test("rejects cursor tampering and logical-request changes before discovery", async () => {
@@ -1308,6 +1621,26 @@ describe("historical SPX candidate discovery", () => {
           { discover },
         ),
       ).rejects.toThrow("does not match");
+      const [, encoded] = cursor.split(".");
+      const payload = JSON.parse(
+        Buffer.from(encoded, "base64url").toString("utf8"),
+      );
+      payload.deferred_session_dates = [
+        payload.unattempted_session_dates[0],
+      ];
+      const invalidQueueCursor = continuationCursor("v2", payload);
+      await expect(
+        discoverHistoricalSpxCandidatesRange(
+          {},
+          {
+            ...RANGE_REQUEST,
+            max_checkpoints_per_run: 1,
+            continuation_cursor: invalidQueueCursor,
+          },
+          undefined,
+          { discover },
+        ),
+      ).rejects.toThrow("progress does not match");
       expect(discover).not.toHaveBeenCalled();
     });
 
