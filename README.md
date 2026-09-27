@@ -36,7 +36,7 @@ The project is intentionally separate from the official
 | `tastytrade_get_historical_spx_candidate_universe` | Return a bounded multi-strike, multi-expiration SPXW universe and optional versioned RESEARCH_ONLY DD selected-leg/matched-delta IV handoff |
 | `tastytrade_get_historical_option_package_at_checkpoint` | Reconstruct an exact-leg SPX package reference at an RFC3339 or IANA-local checkpoint with explicit age and skew controls |
 | `tastytrade_get_historical_option_package_path` | Return profile-aligned completed-candle package points and explicit gaps without interpolation |
-| `tastytrade_get_historical_option_package_horizons` | Reconstruct a frozen exact-leg candidate inventory at caller-supplied ENTRY/+3/+5 trading sessions with aggregate coverage diagnostics |
+| `tastytrade_get_historical_option_package_horizons` | Reconstruct a frozen exact-leg candidate inventory at caller-supplied ENTRY/+3/+5 trading sessions, with an opt-in research-only model fallback for candle-missing legs |
 | `tastytrade_normalize_historical_execution_evidence` | Normalize immutable exact-leg quote snapshots/windows into signed, provider-neutral simulated-execution inputs without claiming a fill |
 | `tastytrade_simulate_historical_execution` | Apply one caller-frozen, hashed execution profile to immutable exact-leg evidence and return a separate simulated fill/P&L result |
 | `tastytrade_build_historical_replay_report` | Aggregate frozen baseline/research decisions and immutable execution simulations into deterministic +3/+5-day metrics without changing grading or paper state |
@@ -284,6 +284,24 @@ references labeled `VALUATION_ONLY` / `CANDLE_REFERENCE` and reports complete
 package counts, missing legs by role, missing-reason counts, and coverage by
 strategy, expiration, entry DTE, and resolution profile. Exact 21/35-DTE
 Double Diagonals are supported without changing grading or leg selection.
+
+An optional `valuation_fallback` can supply checkpoint-frozen SPX levels,
+per-exact-leg IV or surface inputs, rates, dividends, immutable source IDs,
+and an IV-shift uncertainty assumption. The strict candle `status`, `package`,
+legs, and failure taxonomy remain unchanged. A separate `valuation` object
+classifies each result as `EXACT_PACKAGE_REFERENCE`,
+`MIXED_OBSERVED_MODELED`, or `MODEL_SURFACE`; observed leg values are copied
+unchanged and only unavailable exact legs are modeled. Cache/provider errors,
+stale observations, and alignment failures remain non-modelable.
+
+Any package containing a modeled leg is `MODEL_REFERENCE` /
+`VALUATION_ONLY`, carries `guaranteed_executable: false`, and is explicitly
+not bid/ask, NBBO, midpoint, touch, or fill evidence. Its
+`execution_evidence_input` can be passed to
+`tastytrade_normalize_historical_execution_evidence` and then evaluated only
+through a separately frozen `REFERENCE_COST` execution profile. Coverage
+keeps strict package counts separate from valued exact, mixed, and fully
+modeled cohorts.
 
 `tastytrade_get_historical_option_package_path` emits a point only when every
 leg has an exact timestamp-aligned completed bar. It never interpolates or

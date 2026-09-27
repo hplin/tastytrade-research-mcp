@@ -184,6 +184,134 @@ expiration, entry DTE, and requested/effective resolution profile. Exact
 front/back expirations, including a 21/35-DTE Double Diagonal, are treated as
 one immutable four-leg package.
 
+## Optional research model valuation
+
+The horizon tool supports an opt-in `valuation_fallback` for regression
+coverage when an exact frozen leg has no historical candle:
+
+```json
+{
+  "valuation_fallback": {
+    "mode": "MODEL_IF_LEG_MISSING",
+    "pricing_model": "BLACK_SCHOLES_SPOT",
+    "model_version": "1.0.0",
+    "source_contract": {
+      "provider_id": "local-research-model",
+      "dataset_id": "historical-option-package-model-valuation",
+      "license_scope_id": "private-research",
+      "resolution_profile": {
+        "profile_id": "HISTORICAL_OPTION_MODEL_VALUATION",
+        "profile_version": "1.0.0",
+        "native_resolution": "MODEL_INPUTS",
+        "effective_resolution": "MODEL_REFERENCE"
+      },
+      "source_revision": "black-scholes-spot/1.0.0"
+    },
+    "annualized_risk_free_rate": "0.04",
+    "annualized_dividend_yield": "0.01",
+    "volatility_shift_fraction": "0.1",
+    "max_input_age_minutes": 120,
+    "checkpoints": [
+      {
+        "session_date": "2026-08-25",
+        "underlying": {
+          "value": "7800",
+          "observed_at": "2026-08-25T13:00:00Z",
+          "available_at": "2026-08-25T14:00:00Z",
+          "retrieved_at": "2026-08-25T16:00:00Z",
+          "source": "approved-historical-source",
+          "dataset_id": "spx-underlying",
+          "license_scope_id": "private-research",
+          "source_revision": "2026-08-25",
+          "manifest_ids": ["sha256:<64 lowercase hex characters>"],
+          "normalized_content_ids": [
+            "sha256:<64 lowercase hex characters>"
+          ]
+        },
+        "leg_inputs": [
+          {
+            "provider_symbol": "SPXW  260922P07350000",
+            "implied_volatility": "0.22",
+            "iv_origin": "INTERPOLATED_SURFACE",
+            "surface_id": "spxw-surface-2026-08-25-0730",
+            "source_symbols": [
+              "SPXW  260922P07325000",
+              "SPXW  260922P07375000"
+            ],
+            "observed_at": "2026-08-25T13:00:00Z",
+            "available_at": "2026-08-25T14:00:00Z",
+            "retrieved_at": "2026-08-25T16:00:00Z",
+            "source": "approved-historical-source",
+            "dataset_id": "spxw-iv-surface",
+            "license_scope_id": "private-research",
+            "source_revision": "2026-08-25",
+            "manifest_ids": ["sha256:<64 lowercase hex characters>"],
+            "normalized_content_ids": [
+              "sha256:<64 lowercase hex characters>"
+            ]
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+The caller supplies one checkpoint record for every horizon that may need a
+modeled leg. Dates still resolve through the caller's trading-session array;
+the model never infers weekdays. Each source must satisfy:
+
+```text
+observed_at <= available_at <= scheduled checkpoint <= retrieved_at
+scheduled checkpoint - observed_at <= max_input_age_minutes
+scheduled checkpoint - available_at <= max_input_age_minutes
+```
+
+Malformed, stale, or future-dated model inputs are rejected. The fallback is
+eligible only for `HISTORICAL_CANDLE_UNAVAILABLE` and
+`CONTRACT_ABSENT_FROM_RECONSTRUCTED_UNIVERSE`. It does not turn
+`CACHE_ERROR`, `PROVIDER_ERROR`, `STALE_OBSERVATION`, or
+`ALIGNMENT_MISMATCH` into a successful valuation.
+
+The original horizon `status`, `legs`, and strict `package` remain the candle
+reconstruction result. When fallback is enabled, the additive `valuation`
+object reports:
+
+- `EXACT_PACKAGE_REFERENCE` / `HIGH` when all exact candle values exist;
+- `MIXED_OBSERVED_MODELED` / `MEDIUM` when only missing legs are modeled; or
+- `MODEL_SURFACE` / `LOW` when all legs are theoretical.
+
+Every valuation leg identifies `OBSERVED`, `MODELED`, or `UNAVAILABLE`.
+Observed decimal values are preserved byte-for-byte. Modeled legs retain the
+same OCC symbol, action, quantity, strike, expiration, side, DTE, multiplier,
+settlement, model/version, SPX input, IV origin/surface, timestamps, source
+revision, license scope, manifest IDs, and normalized content IDs.
+
+Black-Scholes spot valuation uses the caller's explicit rate and dividend
+assumptions. The central value and the low/high band are rounded to six
+decimal places before exact package arithmetic. The band reprices each
+modeled leg in two coherent parallel scenarios:
+`IV * (1 - volatility_shift_fraction)` and
+`IV * (1 + volatility_shift_fraction)`. It is sensitivity metadata, not a
+statistical confidence interval. Each normalized input also reports its age
+at the checkpoint.
+
+Packages containing a modeled leg use `MODEL_REFERENCE`; exact packages keep
+`CANDLE_REFERENCE`. Both remain `VALUATION_ONLY` with
+`guaranteed_executable: false`. They are never labeled as a quote, bid/ask,
+NBBO, midpoint, historical touch, executable package price, or broker fill.
+For opening inventories, `execution_evidence_input` is a complete adapter
+payload for `tastytrade_normalize_historical_execution_evidence`. The
+resulting model reference may be consumed only by a separately frozen
+`REFERENCE_COST` profile. `valuation_fallback.source_contract` is emitted
+unchanged for every modeled horizon, so mixed and fully modeled references
+can share one frozen downstream source contract while remaining distinct
+valuation-basis cohorts.
+
+Valuation coverage is additive to strict coverage and separately reports
+valued ENTRY/+3/+5 packages, basis counts, quality counts, and modeled-leg
+counts by role.
+
 ## Short-window package path
 
 The path tool accepts `1m`, `5m`, `15m`, `30m`, or `1h`. If a requested fine

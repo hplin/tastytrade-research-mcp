@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { ExactDecimal } from "./decimal.js";
+import { ExactDecimal, type DecimalInput } from "./decimal.js";
 import {
   EvidenceCacheError,
   evidenceCacheWithContext,
@@ -99,6 +99,14 @@ export type HistoricalPackageReferenceValue = {
   reference_type: "CANDLE_REFERENCE";
   evidence_class: "VALUATION_ONLY";
   guaranteed_executable: false;
+};
+
+export type HistoricalOptionPackageCalculatedValue = {
+  signed_value: string;
+  value: string;
+  price_effect: PriceEffect;
+  expected_price_effect: PriceEffect;
+  price_effect_matches_family: boolean;
 };
 
 export type HistoricalOptionPackageLegFailureReason =
@@ -500,12 +508,11 @@ export function validateHistoricalOptionPackageLegs(
   normalizeLegs(family, legs);
 }
 
-function packageReferenceValue(
+export function calculateHistoricalOptionPackageValue(
   family: SpreadFamily,
   legs: Array<Pick<ParsedLeg, "action" | "quantity">>,
-  prices: string[],
-  warnings: string[],
-): HistoricalPackageReferenceValue {
+  prices: DecimalInput[],
+): HistoricalOptionPackageCalculatedValue {
   let signedDebit = ExactDecimal.zero();
   for (const [index, leg] of legs.entries()) {
     const price = ExactDecimal.parse(prices[index], `legs[${index}].price`);
@@ -521,12 +528,34 @@ function packageReferenceValue(
   const priceEffect: PriceEffect =
     comparison > 0 ? "DEBIT" : comparison < 0 ? "CREDIT" : "EVEN";
   const expected = expectedPriceEffect(family);
-  if (priceEffect !== expected) {
-    warnings.push(`FAMILY_PRICE_EFFECT_MISMATCH:${expected}_EXPECTED`);
-  }
   return {
+    signed_value: signedDebit.toString(),
     value: signedDebit.abs().toString(),
     price_effect: priceEffect,
+    expected_price_effect: expected,
+    price_effect_matches_family: priceEffect === expected,
+  };
+}
+
+function packageReferenceValue(
+  family: SpreadFamily,
+  legs: Array<Pick<ParsedLeg, "action" | "quantity">>,
+  prices: string[],
+  warnings: string[],
+): HistoricalPackageReferenceValue {
+  const calculated = calculateHistoricalOptionPackageValue(
+    family,
+    legs,
+    prices,
+  );
+  if (!calculated.price_effect_matches_family) {
+    warnings.push(
+      `FAMILY_PRICE_EFFECT_MISMATCH:${calculated.expected_price_effect}_EXPECTED`,
+    );
+  }
+  return {
+    value: calculated.value,
+    price_effect: calculated.price_effect,
     evidence_type: "HISTORICAL_OPTION_PACKAGE_REFERENCE",
     reference_type: "CANDLE_REFERENCE",
     evidence_class: "VALUATION_ONLY",
