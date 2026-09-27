@@ -177,8 +177,15 @@ It preserves chronological output order while using a bounded worker pool,
 isolates checkpoint failures, retries only transient provider failures, and
 returns an opaque continuation cursor for unresolved or deferred sessions.
 Continuation scheduling completes a first pass over never-attempted sessions
-before retrying failures, then rotates unresolved retries to the queue tail so
-rate-limited dates cannot block later checkpoints.
+before retrying failures. Retry-eligible checkpoints run before checkpoints
+whose provider cooldown is still active, and unresolved retries rotate to the
+queue tail so rate-limited dates cannot block later checkpoints.
+All Backtester endpoints in one server process share a request-start gate.
+It spaces starts by at least 100 ms by default, honors `Retry-After` before
+`X-RateLimit-Reset`, and falls back to bounded jittered 10/30/90-second
+cooldowns. Override only the pacing interval with
+`TASTYTRADE_BACKTESTER_MIN_REQUEST_INTERVAL_MS`; continuation retry timestamps
+remain provider- or scheduler-derived.
 Per-checkpoint stage timings identify cache lookup, provider bootstrap,
 contract-universe construction, candle reconstruction, selector evaluation,
 and the stage interrupted by a deadline. Operational settings and diagnostic

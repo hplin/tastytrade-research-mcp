@@ -1,6 +1,14 @@
-import axios, { type AxiosInstance } from "axios";
+import axios, {
+  type AxiosInstance,
+  type AxiosRequestConfig,
+  type AxiosResponse,
+} from "axios";
 import { BACKTESTER_BASE_URL, USER_AGENT, assertTrustedHosts } from "./config.js";
 import { TastytradeOAuthClient } from "./oauth-client.js";
+import {
+  ProviderRateLimiter,
+  type ProviderRateLimitState,
+} from "./provider-rate-limit.js";
 
 export type JsonObject = Record<string, unknown>;
 
@@ -9,20 +17,62 @@ export type BacktesterRequestOptions = {
   signal?: AbortSignal;
 };
 
-export class TastytradeBacktesterClient {
-  private readonly http: AxiosInstance;
+export type BacktesterHttpClient = Pick<AxiosInstance, "get" | "post">;
 
-  constructor(private readonly oauth = new TastytradeOAuthClient()) {
+export type TastytradeBacktesterClientOptions = {
+  rateLimiter?: ProviderRateLimiter;
+  min_request_interval_ms?: number;
+  http?: BacktesterHttpClient;
+};
+
+const DEFAULT_MIN_REQUEST_INTERVAL_MS = 100;
+const MAX_MIN_REQUEST_INTERVAL_MS = 60_000;
+
+function minRequestIntervalFromEnv(): number {
+  const raw =
+    process.env.TASTYTRADE_BACKTESTER_MIN_REQUEST_INTERVAL_MS?.trim();
+  if (!raw) return DEFAULT_MIN_REQUEST_INTERVAL_MS;
+  const parsed = Number(raw);
+  if (
+    !Number.isInteger(parsed) ||
+    parsed < 0 ||
+    parsed > MAX_MIN_REQUEST_INTERVAL_MS
+  ) {
+    throw new Error(
+      "TASTYTRADE_BACKTESTER_MIN_REQUEST_INTERVAL_MS must be an integer between 0 and 60000.",
+    );
+  }
+  return parsed;
+}
+
+export class TastytradeBacktesterClient {
+  private readonly http: BacktesterHttpClient;
+  private readonly rateLimiter: ProviderRateLimiter;
+
+  constructor(
+    private readonly oauth = new TastytradeOAuthClient(),
+    options: TastytradeBacktesterClientOptions = {},
+  ) {
     assertTrustedHosts();
-    this.http = axios.create({
-      baseURL: BACKTESTER_BASE_URL,
-      timeout: 60_000,
-      maxRedirects: 0,
-      headers: {
-        "Content-Type": "application/json",
-        "User-Agent": USER_AGENT,
-      },
-    });
+    this.http =
+      options.http ??
+      axios.create({
+        baseURL: BACKTESTER_BASE_URL,
+        timeout: 60_000,
+        maxRedirects: 0,
+        headers: {
+          "Content-Type": "application/json",
+          "User-Agent": USER_AGENT,
+        },
+      });
+    this.rateLimiter =
+      options.rateLimiter ??
+      new ProviderRateLimiter({
+        provider: "tastytrade-backtester",
+        min_interval_ms:
+          options.min_request_interval_ms ??
+          minRequestIntervalFromEnv(),
+      });
   }
 
   private async headers(): Promise<Record<string, string>> {
@@ -40,72 +90,105 @@ export class TastytradeBacktesterClient {
     };
   }
 
+  private async request<T>(
+    operation: (
+      config: AxiosRequestConfig,
+    ) => Promise<AxiosResponse<T>>,
+    options?: BacktesterRequestOptions,
+  ): Promise<T> {
+    const config = await this.requestConfig(options);
+    try {
+      const response = await this.rateLimiter.run(
+        () => operation(config),
+        options?.signal,
+      );
+      this.rateLimiter.recordSuccess(response.headers);
+      return response.data;
+    } catch (error) {
+      if (axios.isAxiosError(error) && error.response?.status === 429) {
+        throw this.rateLimiter.recordRateLimit(error);
+      }
+      throw error;
+    }
+  }
+
+  getProviderRateLimitState(): ProviderRateLimitState | null {
+    return this.rateLimiter.getState();
+  }
+
   async getAvailableDates(
     options?: BacktesterRequestOptions,
   ): Promise<unknown> {
-    const response = await this.http.get("/available-dates", {
-      ...(await this.requestConfig(options)),
-    });
-    return response.data;
+    return this.request(
+      (config) => this.http.get("/available-dates", config),
+      options,
+    );
   }
 
   async listBacktests(options?: BacktesterRequestOptions): Promise<unknown> {
-    const response = await this.http.get("/backtests", {
-      ...(await this.requestConfig(options)),
-    });
-    return response.data;
+    return this.request(
+      (config) => this.http.get("/backtests", config),
+      options,
+    );
   }
 
   async createBacktest(
     request: JsonObject,
     options?: BacktesterRequestOptions,
   ): Promise<unknown> {
-    const response = await this.http.post("/backtests", request, {
-      ...(await this.requestConfig(options)),
-    });
-    return response.data;
+    return this.request(
+      (config) => this.http.post("/backtests", request, config),
+      options,
+    );
   }
 
   async getBacktest(
     id: string,
     options?: BacktesterRequestOptions,
   ): Promise<unknown> {
-    const response = await this.http.get(`/backtests/${encodeURIComponent(id)}`, {
-      ...(await this.requestConfig(options)),
-    });
-    return response.data;
+    return this.request(
+      (config) =>
+        this.http.get(`/backtests/${encodeURIComponent(id)}`, config),
+      options,
+    );
   }
 
   async getBacktestLogs(
     id: string,
     options?: BacktesterRequestOptions,
   ): Promise<unknown> {
-    const response = await this.http.get(
-      `/backtests/${encodeURIComponent(id)}/logs`,
-      await this.requestConfig(options),
+    return this.request(
+      (config) =>
+        this.http.get(
+          `/backtests/${encodeURIComponent(id)}/logs`,
+          config,
+        ),
+      options,
     );
-    return response.data;
   }
 
   async cancelBacktest(
     id: string,
     options?: BacktesterRequestOptions,
   ): Promise<unknown> {
-    const response = await this.http.post(
-      `/backtests/${encodeURIComponent(id)}/cancel`,
-      {},
-      await this.requestConfig(options),
+    return this.request(
+      (config) =>
+        this.http.post(
+          `/backtests/${encodeURIComponent(id)}/cancel`,
+          {},
+          config,
+        ),
+      options,
     );
-    return response.data;
   }
 
   async simulateTrade(
     request: JsonObject,
     options?: BacktesterRequestOptions,
   ): Promise<unknown> {
-    const response = await this.http.post("/simulate-trade", request, {
-      ...(await this.requestConfig(options)),
-    });
-    return response.data;
+    return this.request(
+      (config) => this.http.post("/simulate-trade", request, config),
+      options,
+    );
   }
 }

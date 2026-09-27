@@ -38,6 +38,11 @@ import {
   type LocalCheckpointInput,
   type ResolvedCheckpoint,
 } from "./time.js";
+import {
+  providerRateLimitMetadataFromError,
+  type ProviderRateLimitMetadata,
+  type ProviderRateLimitState,
+} from "./provider-rate-limit.js";
 
 export type HistoricalCandidateSelector = BacktestStrikeSelector & {
   days_until_expiration: number;
@@ -119,6 +124,7 @@ export type HistoricalCandidateAttempt = {
     code: string | null;
     http_status: number | null;
     retryable: boolean;
+    rate_limit?: ProviderRateLimitMetadata;
   };
 };
 
@@ -187,6 +193,7 @@ export type HistoricalCandidateBacktester = {
     request: JsonObject,
     options?: BacktesterRequestOptions,
   ): Promise<unknown>;
+  getProviderRateLimitState?(): ProviderRateLimitState | null;
 };
 
 export type HistoricalSpxCandidateExecutionOptions = {
@@ -1054,6 +1061,7 @@ function providerErrorMetadata(error: unknown): {
   code: string | null;
   http_status: number | null;
   retryable: boolean;
+  rate_limit?: ProviderRateLimitMetadata;
 } {
   const code =
     error &&
@@ -1073,6 +1081,7 @@ function providerErrorMetadata(error: unknown): {
     error &&
     typeof error === "object" &&
     (error as { retryable?: unknown }).retryable === true;
+  const rateLimit = providerRateLimitMetadataFromError(error);
   return {
     code,
     http_status: httpStatus,
@@ -1090,6 +1099,7 @@ function providerErrorMetadata(error: unknown): {
           "PROVIDER_TIMEOUT",
         ].includes(normalizedCode),
     ),
+    ...(rateLimit === null ? {} : { rate_limit: rateLimit }),
   };
 }
 

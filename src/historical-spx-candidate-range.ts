@@ -27,6 +27,12 @@ import {
   resolveCheckpoint,
   type ResolvedCheckpoint,
 } from "./time.js";
+import {
+  providerRateLimitMetadataFromError,
+  type ProviderRateLimitCause,
+  type ProviderRateLimitMetadata,
+  type ProviderRateLimitSource,
+} from "./provider-rate-limit.js";
 
 export const HISTORICAL_SPX_CANDIDATE_RANGE_CONTRACT_VERSION = "1.0.0";
 
@@ -41,6 +47,25 @@ const MAX_RETRY_ATTEMPTS = 3;
 const DEFAULT_RETRY_BACKOFF_MS = 250;
 const MAX_RETRY_BACKOFF_MS = 10_000;
 const MAX_TRADING_CALENDAR_SESSIONS = 400;
+const RATE_LIMIT_FALLBACK_DELAYS_MS = [10_000, 30_000, 90_000] as const;
+const MAX_RATE_LIMIT_FALLBACK_MS = 15 * 60_000;
+const RATE_LIMIT_JITTER_RATIO = 0.2;
+const MAX_CONTINUATION_RETRY_COUNT = 1_000_000;
+const FAILURE_CATEGORY_CODES: Record<
+  HistoricalSpxCandidateRangeFailureCategory,
+  number
+> = {
+  PROVIDER_TIMEOUT: 0,
+  PROVIDER_RATE_LIMIT: 1,
+  PROVIDER_ERROR: 2,
+  CACHE_ERROR: 3,
+};
+const FAILURE_CATEGORIES_BY_CODE = [
+  "PROVIDER_TIMEOUT",
+  "PROVIDER_RATE_LIMIT",
+  "PROVIDER_ERROR",
+  "CACHE_ERROR",
+] as const satisfies readonly HistoricalSpxCandidateRangeFailureCategory[];
 
 export type HistoricalSpxCandidateRangeRetryPolicy = {
   max_attempts?: number;
@@ -109,6 +134,28 @@ export type HistoricalSpxCandidateRangeDiagnostics = {
   stages: HistoricalSpxCandidateRangeStageDiagnostic[];
 };
 
+export type HistoricalSpxCandidateRangeRetryMetadata = {
+  retry_count: number;
+  next_retry_at: string | null;
+  last_error: HistoricalSpxCandidateRangeFailureCategory | null;
+  last_retry_after_seconds: number | null;
+  provider: string | null;
+};
+
+export type HistoricalSpxCandidateRangeRateLimitDiagnostics = {
+  provider: string | null;
+  cooldown_active: boolean;
+  cooldown_until: string | null;
+  last_429_at: string | null;
+  retry_after_seconds: number | null;
+  rate_limit_count: number;
+  remaining: number | null;
+  source: ProviderRateLimitSource | null;
+  cause: ProviderRateLimitCause | null;
+  checkpoints_retry_eligible: number;
+  checkpoints_cooling_down: number;
+};
+
 export type HistoricalSpxCandidateRangeCheckpoint = {
   session_date: string;
   scheduled_checkpoint: string;
@@ -121,6 +168,7 @@ export type HistoricalSpxCandidateRangeCheckpoint = {
     code: string | null;
     message: string;
     retryable: boolean;
+    rate_limit: ProviderRateLimitMetadata | null;
   } | null;
   attempt_errors: Array<{
     attempt: number;
@@ -128,7 +176,9 @@ export type HistoricalSpxCandidateRangeCheckpoint = {
     code: string | null;
     message: string;
     retryable: boolean;
+    rate_limit: ProviderRateLimitMetadata | null;
   }>;
+  retry: HistoricalSpxCandidateRangeRetryMetadata;
   cache_fully_served: boolean;
   provider_access_required: boolean;
   diagnostics: HistoricalSpxCandidateRangeDiagnostics;
@@ -155,6 +205,12 @@ export type HistoricalSpxCandidatesRangePlan = {
   pending_session_dates: string[];
   unattempted_session_dates: string[];
   deferred_session_dates: string[];
+  deferred_checkpoints: Array<
+    HistoricalSpxCandidateRangeRetryMetadata & {
+      session_date: string;
+    }
+  >;
+  provider_rate_limit: ProviderRateLimitMetadata | null;
   previously_completed: Array<{
     session_date: string;
     status: RangeCompletionStatus;
@@ -184,7 +240,12 @@ type ContinuationState = {
   request_id: string;
   completed: ContinuationCompletion[];
   unattempted_session_dates: string[];
-  deferred_session_dates: string[];
+  deferred_checkpoints: Array<
+    HistoricalSpxCandidateRangeRetryMetadata & {
+      session_date: string;
+    }
+  >;
+  provider_rate_limit: ProviderRateLimitMetadata | null;
 };
 
 type ContinuationPayloadV1 = {
@@ -192,6 +253,43 @@ type ContinuationPayloadV1 = {
   request_id: string;
   completed: ContinuationCompletion[];
   pending_session_dates: string[];
+};
+
+type ContinuationPayloadV2 = {
+  contract_version: typeof HISTORICAL_SPX_CANDIDATE_RANGE_CONTRACT_VERSION;
+  request_id: string;
+  completed: ContinuationCompletion[];
+  unattempted_session_dates: string[];
+  deferred_session_dates: string[];
+};
+
+type ContinuationPayloadV3 = {
+  contract_version: typeof HISTORICAL_SPX_CANDIDATE_RANGE_CONTRACT_VERSION;
+  request_id: string;
+  completed: Array<[string, RangeCompletionStatus]>;
+  unattempted_session_dates: string[];
+  deferred_checkpoints: Array<
+    [
+      string,
+      number,
+      number | null,
+      number | null,
+      number | null,
+      string | null,
+    ]
+  >;
+  provider_rate_limit:
+    | [
+        string,
+        string,
+        string,
+        number,
+        number,
+        number | null,
+        ProviderRateLimitSource,
+        ProviderRateLimitCause,
+      ]
+    | null;
 };
 
 export type HistoricalSpxCandidatesRangeResult = {
@@ -221,6 +319,8 @@ export type HistoricalSpxCandidatesRangeResult = {
     checkpoints_remaining: number;
     checkpoints_unattempted: number;
     checkpoints_awaiting_retry: number;
+    checkpoints_retry_eligible: number;
+    checkpoints_cooling_down: number;
   };
   coverage: {
     selector_attempts_requested: number;
@@ -261,12 +361,19 @@ export type HistoricalSpxCandidatesRangeResult = {
     checkpoints_fully_served: number;
     checkpoints_requiring_provider_access: number;
   };
+  rate_limit: HistoricalSpxCandidateRangeRateLimitDiagnostics;
   continuation: {
     cursor: string | null;
     completed_session_dates: string[];
     unresolved_session_dates: string[];
     unattempted_session_dates: string[];
     deferred_session_dates: string[];
+    deferred_checkpoints: Array<
+      HistoricalSpxCandidateRangeRetryMetadata & {
+        session_date: string;
+      }
+    >;
+    provider_rate_limit: ProviderRateLimitMetadata | null;
   } | null;
   warnings: string[];
 };
@@ -280,6 +387,7 @@ export type HistoricalSpxCandidateRangeRuntime = {
   ) => Promise<HistoricalSpxCandidatesResult>;
   now?: () => number;
   sleep?: (milliseconds: number) => Promise<void>;
+  random?: () => number;
 };
 
 type Failure = NonNullable<HistoricalSpxCandidateRangeCheckpoint["error"]>;
@@ -413,24 +521,64 @@ function batchIdentity(
 }
 
 function encodeContinuation(payload: ContinuationState): string {
-  const serialized = canonicalJson(payload);
+  const defaultProvider = payload.provider_rate_limit?.provider ?? null;
+  const encodedPayload: ContinuationPayloadV3 = {
+    contract_version: payload.contract_version,
+    request_id: payload.request_id,
+    completed: payload.completed.map((entry) => [
+      entry.session_date,
+      entry.status,
+    ]),
+    unattempted_session_dates: payload.unattempted_session_dates,
+    deferred_checkpoints: payload.deferred_checkpoints.map((entry) => [
+      entry.session_date,
+      entry.retry_count,
+      entry.next_retry_at === null
+        ? null
+        : Date.parse(entry.next_retry_at),
+      entry.last_error === null
+        ? null
+        : FAILURE_CATEGORY_CODES[entry.last_error],
+      entry.last_retry_after_seconds,
+      entry.provider === defaultProvider
+        ? null
+        : entry.provider ?? "",
+    ]),
+    provider_rate_limit: payload.provider_rate_limit
+      ? [
+          payload.provider_rate_limit.provider,
+          payload.provider_rate_limit.cooldown_until,
+          payload.provider_rate_limit.last_429_at,
+          payload.provider_rate_limit.retry_after_seconds,
+          payload.provider_rate_limit.rate_limit_count,
+          payload.provider_rate_limit.remaining,
+          payload.provider_rate_limit.source,
+          payload.provider_rate_limit.cause,
+        ]
+      : null,
+  };
+  const serialized = canonicalJson(encodedPayload);
   const encoded = Buffer.from(serialized, "utf8").toString("base64url");
-  return `v2.${encoded}.${createHash("sha256")
+  return `v3.${encoded}.${createHash("sha256")
     .update(serialized)
     .digest("hex")}`;
 }
 
-function decodeCompletions(value: unknown): ContinuationCompletion[] {
+function completionStatuses(): Set<RangeCompletionStatus> {
+  return new Set<RangeCompletionStatus>([
+    "AVAILABLE",
+    "PARTIAL",
+    "NOT_AVAILABLE",
+  ]);
+}
+
+function decodeLegacyCompletions(value: unknown): ContinuationCompletion[] {
   if (!Array.isArray(value)) {
     throw new Error(
       "continuation_cursor does not match this logical range request.",
     );
   }
-  const statusValues = new Set<RangeCompletionStatus>([
-    "AVAILABLE",
-    "PARTIAL",
-    "NOT_AVAILABLE",
-  ]);
+  const statusValues = completionStatuses();
   return value.map((entry) => {
     if (
       !entry ||
@@ -443,6 +591,29 @@ function decodeCompletions(value: unknown): ContinuationCompletion[] {
     return {
       session_date: entry.session_date,
       status: entry.status as RangeCompletionStatus,
+    };
+  });
+}
+
+function decodeV3Completions(value: unknown): ContinuationCompletion[] {
+  if (!Array.isArray(value)) {
+    throw new Error(
+      "continuation_cursor does not match this logical range request.",
+    );
+  }
+  const statusValues = completionStatuses();
+  return value.map((entry) => {
+    if (
+      !Array.isArray(entry) ||
+      entry.length !== 2 ||
+      typeof entry[0] !== "string" ||
+      !statusValues.has(entry[1] as RangeCompletionStatus)
+    ) {
+      throw new Error("continuation_cursor contains an invalid completion.");
+    }
+    return {
+      session_date: entry[0],
+      status: entry[1] as RangeCompletionStatus,
     };
   });
 }
@@ -462,6 +633,210 @@ function decodeSessionDateQueue(value: unknown): string[] {
   return value as string[];
 }
 
+function decodeContinuationTimestamp(
+  value: unknown,
+  field: string,
+): string {
+  if (typeof value !== "string") {
+    throw new Error(`continuation_cursor contains invalid ${field}.`);
+  }
+  const parsed = Date.parse(value);
+  if (!Number.isFinite(parsed)) {
+    throw new Error(`continuation_cursor contains invalid ${field}.`);
+  }
+  return new Date(parsed).toISOString();
+}
+
+function decodeOptionalContinuationTimestamp(
+  value: unknown,
+  field: string,
+): string | null {
+  return value === null ? null : decodeContinuationTimestamp(value, field);
+}
+
+function decodeOptionalCompactTimestamp(
+  value: unknown,
+  field: string,
+): string | null {
+  if (value === null) return null;
+  if (
+    typeof value !== "number" ||
+    !Number.isInteger(value) ||
+    value < 0 ||
+    value > 8_640_000_000_000_000
+  ) {
+    throw new Error(`continuation_cursor contains invalid ${field}.`);
+  }
+  return new Date(value).toISOString();
+}
+
+function decodeOptionalNonNegativeInteger(
+  value: unknown,
+  field: string,
+  maximum = MAX_CONTINUATION_RETRY_COUNT,
+): number | null {
+  if (value === null) return null;
+  if (
+    typeof value !== "number" ||
+    !Number.isInteger(value) ||
+    value < 0 ||
+    value > maximum
+  ) {
+    throw new Error(`continuation_cursor contains invalid ${field}.`);
+  }
+  return value;
+}
+
+function decodeOptionalProvider(
+  value: unknown,
+  field: string,
+): string | null {
+  if (value === null) return null;
+  if (
+    typeof value !== "string" ||
+    !value.trim() ||
+    value.length > 100
+  ) {
+    throw new Error(`continuation_cursor contains invalid ${field}.`);
+  }
+  return value;
+}
+
+function decodeCompactProvider(
+  value: unknown,
+  defaultProvider: string | null,
+): string | null {
+  if (value === null) return defaultProvider;
+  if (value === "") return null;
+  return decodeOptionalProvider(value, "deferred provider");
+}
+
+function decodeFailureCategory(
+  value: unknown,
+): HistoricalSpxCandidateRangeFailureCategory | null {
+  if (value === null) return null;
+  if (
+    typeof value !== "number" ||
+    !Number.isInteger(value) ||
+    value < 0 ||
+    value >= FAILURE_CATEGORIES_BY_CODE.length
+  ) {
+    throw new Error(
+      "continuation_cursor contains invalid deferred last_error.",
+    );
+  }
+  return FAILURE_CATEGORIES_BY_CODE[value]!;
+}
+
+function decodeDeferredCheckpoints(
+  value: unknown,
+  defaultProvider: string | null,
+): ContinuationState["deferred_checkpoints"] {
+  if (!Array.isArray(value)) {
+    throw new Error(
+      "continuation_cursor does not match this logical range request.",
+    );
+  }
+  return value.map((entry) => {
+    if (
+      !Array.isArray(entry) ||
+      entry.length !== 6 ||
+      typeof entry[0] !== "string" ||
+      typeof entry[1] !== "number" ||
+      !Number.isInteger(entry[1]) ||
+      entry[1] < 0 ||
+      entry[1] > MAX_CONTINUATION_RETRY_COUNT
+    ) {
+      throw new Error(
+        "continuation_cursor contains invalid deferred retry metadata.",
+      );
+    }
+    return {
+      session_date: entry[0],
+      retry_count: entry[1],
+      next_retry_at: decodeOptionalCompactTimestamp(
+        entry[2],
+        "deferred next_retry_at",
+      ),
+      last_error: decodeFailureCategory(entry[3]),
+      last_retry_after_seconds: decodeOptionalNonNegativeInteger(
+        entry[4],
+        "deferred last_retry_after_seconds",
+        Number.MAX_SAFE_INTEGER,
+      ),
+      provider: decodeCompactProvider(entry[5], defaultProvider),
+    };
+  });
+}
+
+function decodeProviderRateLimit(
+  value: unknown,
+): ProviderRateLimitMetadata | null {
+  if (value === null) return null;
+  const sources = new Set<ProviderRateLimitSource>([
+    "RETRY_AFTER",
+    "X_RATE_LIMIT_RESET",
+    "FALLBACK",
+  ]);
+  const causes = new Set<ProviderRateLimitCause>([
+    "HTTP_429",
+    "ACTIVE_COOLDOWN",
+  ]);
+  if (
+    !Array.isArray(value) ||
+    value.length !== 8 ||
+    typeof value[0] !== "string" ||
+    !value[0].trim() ||
+    value[0].length > 100 ||
+    typeof value[3] !== "number" ||
+    !Number.isInteger(value[3]) ||
+    value[3] < 0 ||
+    typeof value[4] !== "number" ||
+    !Number.isInteger(value[4]) ||
+    value[4] < 0 ||
+    value[4] > MAX_CONTINUATION_RETRY_COUNT ||
+    (value[5] !== null &&
+      (typeof value[5] !== "number" ||
+        !Number.isInteger(value[5]) ||
+        value[5] < 0)) ||
+    !sources.has(value[6] as ProviderRateLimitSource) ||
+    !causes.has(value[7] as ProviderRateLimitCause)
+  ) {
+    throw new Error(
+      "continuation_cursor contains invalid provider rate-limit metadata.",
+    );
+  }
+  return {
+    provider: value[0],
+    cooldown_until: decodeContinuationTimestamp(
+      value[1],
+      "provider cooldown_until",
+    ),
+    last_429_at: decodeContinuationTimestamp(
+      value[2],
+      "provider last_429_at",
+    ),
+    retry_after_seconds: value[3],
+    rate_limit_count: value[4],
+    remaining: value[5],
+    source: value[6] as ProviderRateLimitSource,
+    cause: value[7] as ProviderRateLimitCause,
+  };
+}
+
+function deferredCheckpoint(
+  sessionDate: string,
+): ContinuationState["deferred_checkpoints"][number] {
+  return {
+    session_date: sessionDate,
+    retry_count: 0,
+    next_retry_at: null,
+    last_error: null,
+    last_retry_after_seconds: null,
+    provider: null,
+  };
+}
+
 function validateContinuationState(
   state: ContinuationState,
   sessionDates: string[],
@@ -470,10 +845,13 @@ function validateContinuationState(
     state.completed.map((entry) => entry.session_date),
   );
   const unattemptedDates = new Set(state.unattempted_session_dates);
-  const deferredDates = new Set(state.deferred_session_dates);
+  const deferredDates = new Set(
+    state.deferred_checkpoints.map((entry) => entry.session_date),
+  );
   const expected = new Set(sessionDates);
   if (
     completedDates.size !== state.completed.length ||
+    deferredDates.size !== state.deferred_checkpoints.length ||
     [...completedDates].some(
       (date) =>
         !expected.has(date) ||
@@ -511,7 +889,7 @@ function decodeContinuation(
   const parts = cursor.split(".");
   if (
     parts.length !== 3 ||
-    (parts[0] !== "v1" && parts[0] !== "v2")
+    (parts[0] !== "v1" && parts[0] !== "v2" && parts[0] !== "v3")
   ) {
     throw new Error("continuation_cursor has an unsupported format.");
   }
@@ -547,34 +925,59 @@ function decodeContinuation(
     );
   }
 
-  const completed = decodeCompletions(payload.completed);
   if (parts[0] === "v1") {
     const legacy = payload as Partial<ContinuationPayloadV1>;
     return validateContinuationState(
       {
         contract_version: HISTORICAL_SPX_CANDIDATE_RANGE_CONTRACT_VERSION,
         request_id: requestId,
-        completed,
+        completed: decodeLegacyCompletions(legacy.completed),
         unattempted_session_dates: decodeSessionDateQueue(
           legacy.pending_session_dates,
         ),
-        deferred_session_dates: [],
+        deferred_checkpoints: [],
+        provider_rate_limit: null,
       },
       sessionDates,
     );
   }
 
+  if (parts[0] === "v2") {
+    const legacy = payload as Partial<ContinuationPayloadV2>;
+    return validateContinuationState(
+      {
+        contract_version: HISTORICAL_SPX_CANDIDATE_RANGE_CONTRACT_VERSION,
+        request_id: requestId,
+        completed: decodeLegacyCompletions(legacy.completed),
+        unattempted_session_dates: decodeSessionDateQueue(
+          legacy.unattempted_session_dates,
+        ),
+        deferred_checkpoints: decodeSessionDateQueue(
+          legacy.deferred_session_dates,
+        ).map(deferredCheckpoint),
+        provider_rate_limit: null,
+      },
+      sessionDates,
+    );
+  }
+
+  const current = payload as Partial<ContinuationPayloadV3>;
+  const providerRateLimit = decodeProviderRateLimit(
+    current.provider_rate_limit,
+  );
   return validateContinuationState(
     {
       contract_version: HISTORICAL_SPX_CANDIDATE_RANGE_CONTRACT_VERSION,
       request_id: requestId,
-      completed,
+      completed: decodeV3Completions(current.completed),
       unattempted_session_dates: decodeSessionDateQueue(
-        payload.unattempted_session_dates,
+        current.unattempted_session_dates,
       ),
-      deferred_session_dates: decodeSessionDateQueue(
-        payload.deferred_session_dates,
+      deferred_checkpoints: decodeDeferredCheckpoints(
+        current.deferred_checkpoints,
+        providerRateLimit?.provider ?? null,
       ),
+      provider_rate_limit: providerRateLimit,
     },
     sessionDates,
   );
@@ -653,11 +1056,14 @@ function prepareRange(
         request_id: requestId,
         completed: [],
         unattempted_session_dates: sessionDates,
-        deferred_session_dates: [],
+        deferred_checkpoints: [],
+        provider_rate_limit: null,
       };
   const pendingSessionDates = [
     ...continuation.unattempted_session_dates,
-    ...continuation.deferred_session_dates,
+    ...continuation.deferred_checkpoints.map(
+      (entry) => entry.session_date,
+    ),
   ];
 
   return {
@@ -712,7 +1118,11 @@ function prepareRange(
       pending_session_dates: pendingSessionDates,
       unattempted_session_dates:
         continuation.unattempted_session_dates,
-      deferred_session_dates: continuation.deferred_session_dates,
+      deferred_session_dates: continuation.deferred_checkpoints.map(
+        (entry) => entry.session_date,
+      ),
+      deferred_checkpoints: continuation.deferred_checkpoints,
+      provider_rate_limit: continuation.provider_rate_limit,
       previously_completed: continuation.completed,
     },
     checkpoints,
@@ -757,6 +1167,7 @@ function classifyFailure(error: unknown): Failure {
     typeof error === "object" &&
       (error as { retryable?: unknown }).retryable === true,
   );
+  const rateLimit = providerRateLimitMetadataFromError(error);
 
   if (
     responseStatus === 429 ||
@@ -771,6 +1182,7 @@ function classifyFailure(error: unknown): Failure {
       code,
       message,
       retryable: true,
+      rate_limit: rateLimit,
     };
   }
   if (
@@ -786,6 +1198,7 @@ function classifyFailure(error: unknown): Failure {
       code,
       message,
       retryable: true,
+      rate_limit: null,
     };
   }
   if (error instanceof EvidenceCacheError) {
@@ -795,6 +1208,7 @@ function classifyFailure(error: unknown): Failure {
       code,
       message,
       retryable,
+      rate_limit: null,
     };
   }
   if (
@@ -813,6 +1227,7 @@ function classifyFailure(error: unknown): Failure {
       code,
       message,
       retryable: true,
+      rate_limit: null,
     };
   }
   return {
@@ -820,6 +1235,7 @@ function classifyFailure(error: unknown): Failure {
     code,
     message,
     retryable,
+    rate_limit: null,
   };
 }
 
@@ -841,6 +1257,7 @@ function failureFromResult(
             ? undefined
             : { status: attempt.provider_error.http_status },
         retryable: attempt.provider_error?.retryable ?? false,
+        provider_rate_limit: attempt.provider_error?.rate_limit,
       },
     );
     return classifyFailure(error);
@@ -848,12 +1265,19 @@ function failureFromResult(
   if (failures.every((failure) => failure.category === "PROVIDER_TIMEOUT")) {
     return failures[0];
   }
-  if (
-    failures.every(
-      (failure) => failure.category === "PROVIDER_RATE_LIMIT",
-    )
-  ) {
-    return failures[0];
+  const rateLimitFailures = failures.filter(
+    (failure) => failure.category === "PROVIDER_RATE_LIMIT",
+  );
+  if (rateLimitFailures.length > 0) {
+    return rateLimitFailures.reduce((selected, failure) => {
+      const selectedUntil = selected.rate_limit
+        ? Date.parse(selected.rate_limit.cooldown_until)
+        : Number.NEGATIVE_INFINITY;
+      const failureUntil = failure.rate_limit
+        ? Date.parse(failure.rate_limit.cooldown_until)
+        : Number.NEGATIVE_INFINITY;
+      return failureUntil > selectedUntil ? failure : selected;
+    });
   }
   return {
     category: "PROVIDER_ERROR",
@@ -862,6 +1286,7 @@ function failureFromResult(
       "; ",
     ),
     retryable: failures.every((failure) => failure.retryable),
+    rate_limit: null,
   };
 }
 
@@ -927,6 +1352,91 @@ function failureStatus(
     return "PARTIAL";
   }
   return failure.category;
+}
+
+function emptyRetryMetadata(): HistoricalSpxCandidateRangeRetryMetadata {
+  return {
+    retry_count: 0,
+    next_retry_at: null,
+    last_error: null,
+    last_retry_after_seconds: null,
+    provider: null,
+  };
+}
+
+function rateLimitFallbackDelay(
+  retryCount: number,
+  random: () => number,
+): number {
+  const index = Math.min(
+    retryCount - 1,
+    RATE_LIMIT_FALLBACK_DELAYS_MS.length - 1,
+  );
+  const terminal = RATE_LIMIT_FALLBACK_DELAYS_MS.at(-1) ?? 0;
+  const growth =
+    retryCount <= RATE_LIMIT_FALLBACK_DELAYS_MS.length
+      ? RATE_LIMIT_FALLBACK_DELAYS_MS[index]
+      : terminal *
+        3 ** (retryCount - RATE_LIMIT_FALLBACK_DELAYS_MS.length);
+  const bounded = Math.min(growth, MAX_RATE_LIMIT_FALLBACK_MS);
+  const normalizedRandom = Math.min(1, Math.max(0, random()));
+  const multiplier =
+    1 -
+    RATE_LIMIT_JITTER_RATIO +
+    normalizedRandom * RATE_LIMIT_JITTER_RATIO * 2;
+  return Math.min(
+    MAX_RATE_LIMIT_FALLBACK_MS,
+    Math.max(0, Math.round(bounded * multiplier)),
+  );
+}
+
+function retryMetadataForFailure(
+  previous: HistoricalSpxCandidateRangeRetryMetadata,
+  failure: Failure,
+  now: number,
+  random: () => number,
+): HistoricalSpxCandidateRangeRetryMetadata {
+  const retryCount = Math.min(
+    MAX_CONTINUATION_RETRY_COUNT,
+    previous.retry_count + 1,
+  );
+  if (failure.category !== "PROVIDER_RATE_LIMIT") {
+    return {
+      retry_count: retryCount,
+      next_retry_at: null,
+      last_error: failure.category,
+      last_retry_after_seconds: null,
+      provider: null,
+    };
+  }
+
+  const providerUntil = failure.rate_limit
+    ? Date.parse(failure.rate_limit.cooldown_until)
+    : Number.NaN;
+  const fallbackDelay = rateLimitFallbackDelay(retryCount, random);
+  const nextRetryAt = Number.isFinite(providerUntil)
+    ? Math.max(now, providerUntil)
+    : now + fallbackDelay;
+  return {
+    retry_count: retryCount,
+    next_retry_at: new Date(nextRetryAt).toISOString(),
+    last_error: failure.category,
+    last_retry_after_seconds:
+      failure.rate_limit?.retry_after_seconds ??
+      Math.ceil(fallbackDelay / 1_000),
+    provider:
+      failure.rate_limit?.provider ?? "tastytrade-backtester",
+  };
+}
+
+function retryMetadataAfterSuccess(
+  previous: HistoricalSpxCandidateRangeRetryMetadata,
+): HistoricalSpxCandidateRangeRetryMetadata {
+  return {
+    ...previous,
+    next_retry_at: null,
+    last_error: null,
+  };
 }
 
 type MutableStageDiagnostic = HistoricalSpxCandidateRangeStageDiagnostic & {
@@ -1066,6 +1576,7 @@ async function runCheckpoint(
   candles: HistoricalCandidateCandles | undefined,
   plan: HistoricalSpxCandidatesRangePlan,
   runtime: Required<HistoricalSpxCandidateRangeRuntime>,
+  previousRetry: HistoricalSpxCandidateRangeRetryMetadata,
 ): Promise<HistoricalSpxCandidateRangeCheckpoint> {
   const startedAt = runtime.now();
   const deadlineAt = startedAt + plan.checkpoint_deadline_ms;
@@ -1086,6 +1597,7 @@ async function runCheckpoint(
         code: "PROVIDER_TIMEOUT",
         message: `Checkpoint exceeded its ${plan.checkpoint_deadline_ms}ms deadline.`,
         retryable: true,
+        rate_limit: null,
       };
       attemptErrors.push({ attempt, ...failure });
       return {
@@ -1097,6 +1609,12 @@ async function runCheckpoint(
         result: bestResult,
         error: failure,
         attempt_errors: attemptErrors,
+        retry: retryMetadataForFailure(
+          previousRetry,
+          failure,
+          runtime.now(),
+          runtime.random,
+        ),
         cache_fully_served: cacheFullyServed(bestResult),
         provider_access_required: providerAccessRequired(
           checkpoint,
@@ -1129,6 +1647,7 @@ async function runCheckpoint(
       const failure = failureFromResult(result);
       if (
         failure?.retryable &&
+        failure.category !== "PROVIDER_RATE_LIMIT" &&
         attempt < plan.retry_policy.max_attempts
       ) {
         attemptErrors.push({ attempt, ...failure });
@@ -1156,6 +1675,14 @@ async function runCheckpoint(
         result,
         error: failure,
         attempt_errors: attemptErrors,
+        retry: failure
+          ? retryMetadataForFailure(
+              previousRetry,
+              failure,
+              runtime.now(),
+              runtime.random,
+            )
+          : retryMetadataAfterSuccess(previousRetry),
         cache_fully_served: cacheFullyServed(result),
         provider_access_required: providerAccessRequired(
           checkpoint,
@@ -1174,6 +1701,7 @@ async function runCheckpoint(
       attemptErrors.push({ attempt, ...failure });
       if (
         failure.retryable &&
+        failure.category !== "PROVIDER_RATE_LIMIT" &&
         attempt < plan.retry_policy.max_attempts &&
         runtime.now() < deadlineAt
       ) {
@@ -1196,6 +1724,12 @@ async function runCheckpoint(
         result: bestResult,
         error: failure,
         attempt_errors: attemptErrors,
+        retry: retryMetadataForFailure(
+          previousRetry,
+          failure,
+          runtime.now(),
+          runtime.random,
+        ),
         cache_fully_served: cacheFullyServed(bestResult),
         provider_access_required: providerAccessRequired(
           checkpoint,
@@ -1266,6 +1800,180 @@ function rangeStatus(
     : "NOT_AVAILABLE";
 }
 
+type DeferredCheckpoint = ContinuationState["deferred_checkpoints"][number];
+
+function isRetryEligible(
+  checkpoint: DeferredCheckpoint,
+  now: number,
+  providerRateLimit: ProviderRateLimitMetadata | null = null,
+): boolean {
+  const checkpointRetryAt =
+    checkpoint.next_retry_at === null
+      ? 0
+      : Date.parse(checkpoint.next_retry_at);
+  const providerRetryAt =
+    checkpoint.last_error === "PROVIDER_RATE_LIMIT" &&
+    providerRateLimit !== null &&
+    (checkpoint.provider === null ||
+      checkpoint.provider === providerRateLimit.provider)
+      ? Date.parse(providerRateLimit.cooldown_until)
+      : 0;
+  return Math.max(checkpointRetryAt, providerRetryAt) <= now;
+}
+
+function applyProviderCooldown(
+  checkpoint: DeferredCheckpoint,
+  providerRateLimit: ProviderRateLimitMetadata | null,
+): DeferredCheckpoint {
+  if (
+    checkpoint.last_error !== "PROVIDER_RATE_LIMIT" ||
+    providerRateLimit === null ||
+    (checkpoint.provider !== null &&
+      checkpoint.provider !== providerRateLimit.provider)
+  ) {
+    return checkpoint;
+  }
+  const checkpointRetryAt =
+    checkpoint.next_retry_at === null
+      ? 0
+      : Date.parse(checkpoint.next_retry_at);
+  const providerRetryAt = Date.parse(providerRateLimit.cooldown_until);
+  if (providerRetryAt <= checkpointRetryAt) return checkpoint;
+  return {
+    ...checkpoint,
+    next_retry_at: providerRateLimit.cooldown_until,
+    provider: checkpoint.provider ?? providerRateLimit.provider,
+  };
+}
+
+function laterTimestamp(
+  left: string,
+  right: string,
+): string {
+  return Date.parse(right) > Date.parse(left) ? right : left;
+}
+
+function mergeProviderRateLimitState(
+  plan: HistoricalSpxCandidatesRangePlan,
+  backtester: HistoricalCandidateBacktester,
+  checkpoints: HistoricalSpxCandidateRangeCheckpoint[],
+  now: number,
+): ProviderRateLimitMetadata | null {
+  const processState = backtester.getProviderRateLimitState?.() ?? null;
+  const checkpointMetadata = checkpoints
+    .map((checkpoint) => checkpoint.error?.rate_limit ?? null)
+    .filter(
+      (entry): entry is ProviderRateLimitMetadata => entry !== null,
+    );
+  const known = [
+    plan.provider_rate_limit,
+    processState,
+    ...checkpointMetadata,
+  ].filter(
+    (entry): entry is ProviderRateLimitMetadata => entry !== null,
+  );
+  const unknownRateLimits = checkpoints.filter(
+    (checkpoint) =>
+      checkpoint.error?.category === "PROVIDER_RATE_LIMIT" &&
+      checkpoint.error.rate_limit === null,
+  );
+  const previousKey = plan.provider_rate_limit
+    ? [
+        plan.provider_rate_limit.provider,
+        plan.provider_rate_limit.last_429_at,
+        plan.provider_rate_limit.rate_limit_count,
+      ].join(":")
+    : null;
+  const currentHttp429Keys = new Set(
+    checkpointMetadata
+      .filter((metadata) => metadata.cause === "HTTP_429")
+      .map((metadata) =>
+        [
+          metadata.provider,
+          metadata.last_429_at,
+          metadata.rate_limit_count,
+        ].join(":"),
+      )
+      .filter((key) => key !== previousKey),
+  );
+  let fallbackCount =
+    (plan.provider_rate_limit?.rate_limit_count ?? 0) +
+    currentHttp429Keys.size;
+  for (const checkpoint of unknownRateLimits) {
+    fallbackCount += 1;
+    const nextRetryAt =
+      checkpoint.retry.next_retry_at ??
+      new Date(
+        now +
+          rateLimitFallbackDelay(
+            checkpoint.retry.retry_count,
+            () => 0.5,
+          ),
+      ).toISOString();
+    known.push({
+      provider:
+        checkpoint.retry.provider ?? "tastytrade-backtester",
+      cooldown_until: nextRetryAt,
+      last_429_at: new Date(now).toISOString(),
+      retry_after_seconds:
+        checkpoint.retry.last_retry_after_seconds ??
+        Math.max(
+          0,
+          Math.ceil((Date.parse(nextRetryAt) - now) / 1_000),
+        ),
+      rate_limit_count: fallbackCount,
+      remaining: null,
+      source: "FALLBACK",
+      cause: "HTTP_429",
+    });
+  }
+  if (known.length === 0) return null;
+
+  const selected = known.reduce((latest, candidate) =>
+    Date.parse(candidate.cooldown_until) >
+    Date.parse(latest.cooldown_until)
+      ? candidate
+      : latest,
+  );
+  return {
+    ...selected,
+    cooldown_until: known
+      .map((entry) => entry.cooldown_until)
+      .reduce(laterTimestamp),
+    last_429_at: known
+      .map((entry) => entry.last_429_at)
+      .reduce(laterTimestamp),
+    rate_limit_count: Math.max(
+      ...known.map((entry) => entry.rate_limit_count),
+      fallbackCount,
+    ),
+  };
+}
+
+function rateLimitDiagnostics(
+  state: ProviderRateLimitMetadata | null,
+  deferred: DeferredCheckpoint[],
+  now: number,
+): HistoricalSpxCandidateRangeRateLimitDiagnostics {
+  const retryEligible = deferred.filter((checkpoint) =>
+    isRetryEligible(checkpoint, now, state),
+  ).length;
+  return {
+    provider: state?.provider ?? null,
+    cooldown_active:
+      state !== null && Date.parse(state.cooldown_until) > now,
+    cooldown_until: state?.cooldown_until ?? null,
+    last_429_at: state?.last_429_at ?? null,
+    retry_after_seconds: state?.retry_after_seconds ?? null,
+    rate_limit_count: state?.rate_limit_count ?? 0,
+    remaining: state?.remaining ?? null,
+    source: state?.source ?? null,
+    cause: state?.cause ?? null,
+    checkpoints_retry_eligible: retryEligible,
+    checkpoints_cooling_down: deferred.length - retryEligible,
+  };
+}
+
 export async function discoverHistoricalSpxCandidatesRange(
   backtester: HistoricalCandidateBacktester,
   input: HistoricalSpxCandidatesRangeInput,
@@ -1281,13 +1989,44 @@ export async function discoverHistoricalSpxCandidatesRange(
       runtime.sleep ??
       ((milliseconds) =>
         new Promise((resolve) => setTimeout(resolve, milliseconds))),
+    random: runtime.random ?? Math.random,
   };
+  const schedulingTime = executionRuntime.now();
   const runningFirstPass = plan.unattempted_session_dates.length > 0;
-  const scheduledSessionDates = (
-    runningFirstPass
-      ? plan.unattempted_session_dates
-      : plan.deferred_session_dates
-  ).slice(0, plan.max_checkpoints_per_run);
+  const naturallyEligibleDeferred = plan.deferred_checkpoints.filter(
+    (checkpoint) =>
+      isRetryEligible(
+        checkpoint,
+        schedulingTime,
+        plan.provider_rate_limit,
+      ),
+  );
+  const coolingDeferred = plan.deferred_checkpoints.filter(
+    (checkpoint) =>
+      !isRetryEligible(
+        checkpoint,
+        schedulingTime,
+        plan.provider_rate_limit,
+      ),
+  );
+  const cacheOnly = input.evidence_cache?.mode === "CACHE_ONLY";
+  const schedulableDeferred = cacheOnly
+    ? plan.deferred_checkpoints
+    : naturallyEligibleDeferred;
+  const scheduledRetries = runningFirstPass
+    ? plan.unattempted_session_dates
+        .slice(0, plan.max_checkpoints_per_run)
+        .map((sessionDate) => ({
+          session_date: sessionDate,
+          ...emptyRetryMetadata(),
+        }))
+    : schedulableDeferred.slice(0, plan.max_checkpoints_per_run);
+  const scheduledSessionDates = scheduledRetries.map(
+    (entry) => entry.session_date,
+  );
+  const retryBySessionDate = new Map(
+    scheduledRetries.map((entry) => [entry.session_date, entry]),
+  );
   const checkpointsBySessionDate = new Map(
     prepared.checkpoints.map((checkpoint) => [
       checkpoint.session_date,
@@ -1313,8 +2052,34 @@ export async function discoverHistoricalSpxCandidatesRange(
         candles,
         plan,
         executionRuntime,
+        retryBySessionDate.get(checkpoint.session_date) ??
+          emptyRetryMetadata(),
       ),
   );
+  const responseTime = executionRuntime.now();
+  const providerRateLimit = mergeProviderRateLimitState(
+    plan,
+    backtester,
+    checkpoints,
+    responseTime,
+  );
+  if (providerRateLimit !== null) {
+    for (const checkpoint of checkpoints) {
+      if (checkpoint.error?.category !== "PROVIDER_RATE_LIMIT") continue;
+      checkpoint.retry = {
+        ...checkpoint.retry,
+        next_retry_at: providerRateLimit.cooldown_until,
+        last_retry_after_seconds:
+          providerRateLimit.retry_after_seconds,
+        provider: providerRateLimit.provider,
+      };
+      checkpoint.error = {
+        ...checkpoint.error,
+        rate_limit:
+          checkpoint.error.rate_limit ?? providerRateLimit,
+      };
+    }
+  }
 
   const completed = new Map(
     plan.previously_completed.map((entry) => [
@@ -1332,21 +2097,37 @@ export async function discoverHistoricalSpxCandidatesRange(
       completed.set(checkpoint.session_date, checkpoint.status);
     }
   }
-  const unresolvedAttemptedSessionDates = checkpoints
+  const unresolvedAttempted = checkpoints
     .filter((checkpoint) => checkpoint.error !== null)
-    .map((checkpoint) => checkpoint.session_date);
+    .map((checkpoint) => ({
+      session_date: checkpoint.session_date,
+      ...checkpoint.retry,
+    }));
   const unattemptedSessionDates = runningFirstPass
     ? plan.unattempted_session_dates.slice(toRun.length)
     : [];
-  const deferredSessionDates = runningFirstPass
-    ? [
-        ...plan.deferred_session_dates,
-        ...unresolvedAttemptedSessionDates,
-      ]
+  const unselectedDeferred = cacheOnly
+    ? schedulableDeferred.slice(toRun.length)
     : [
-        ...plan.deferred_session_dates.slice(toRun.length),
-        ...unresolvedAttemptedSessionDates,
+        ...naturallyEligibleDeferred.slice(toRun.length),
+        ...coolingDeferred,
       ];
+  const deferredCheckpoints = (
+    runningFirstPass
+      ? [
+          ...plan.deferred_checkpoints,
+          ...unresolvedAttempted,
+        ]
+      : [
+          ...unselectedDeferred,
+          ...unresolvedAttempted,
+        ]
+  ).map((checkpoint) =>
+    applyProviderCooldown(checkpoint, providerRateLimit),
+  );
+  const deferredSessionDates = deferredCheckpoints.map(
+    (checkpoint) => checkpoint.session_date,
+  );
   const pendingSessionDates = [
     ...unattemptedSessionDates,
     ...deferredSessionDates,
@@ -1365,7 +2146,8 @@ export async function discoverHistoricalSpxCandidatesRange(
       status: completed.get(sessionDate) as RangeCompletionStatus,
     })),
     unattempted_session_dates: unattemptedSessionDates,
-    deferred_session_dates: deferredSessionDates,
+    deferred_checkpoints: deferredCheckpoints,
+    provider_rate_limit: providerRateLimit,
   };
 
   const requestedByDte = new Map<string, number>();
@@ -1441,6 +2223,11 @@ export async function discoverHistoricalSpxCandidatesRange(
   const completedThisRun = checkpoints.filter(
     (checkpoint) => checkpoint.error === null,
   ).length;
+  const rateLimit = rateLimitDiagnostics(
+    providerRateLimit,
+    deferredCheckpoints,
+    executionRuntime.now(),
+  );
 
   return {
     contract_version: HISTORICAL_SPX_CANDIDATE_RANGE_CONTRACT_VERSION,
@@ -1472,6 +2259,10 @@ export async function discoverHistoricalSpxCandidatesRange(
       checkpoints_remaining: pendingSessionDates.length,
       checkpoints_unattempted: unattemptedSessionDates.length,
       checkpoints_awaiting_retry: deferredSessionDates.length,
+      checkpoints_retry_eligible:
+        rateLimit.checkpoints_retry_eligible,
+      checkpoints_cooling_down:
+        rateLimit.checkpoints_cooling_down,
     },
     coverage: {
       selector_attempts_requested: [...requestedByDte.values()].reduce(
@@ -1544,6 +2335,7 @@ export async function discoverHistoricalSpxCandidatesRange(
         (checkpoint) => checkpoint.provider_access_required,
       ).length,
     },
+    rate_limit: rateLimit,
     continuation:
       pendingSessionDates.length > 0
         ? {
@@ -1552,6 +2344,8 @@ export async function discoverHistoricalSpxCandidatesRange(
             unresolved_session_dates: pendingSessionDates,
             unattempted_session_dates: unattemptedSessionDates,
             deferred_session_dates: deferredSessionDates,
+            deferred_checkpoints: deferredCheckpoints,
+            provider_rate_limit: providerRateLimit,
           }
         : null,
     warnings: [
@@ -1559,6 +2353,7 @@ export async function discoverHistoricalSpxCandidatesRange(
       "RANGE_RESULTS_PRESERVE_SINGLE_CHECKPOINT_DISCOVERY_SEMANTICS",
       "CONTINUATION_RESULTS_ARE_INCREMENTAL",
       "CONTINUATION_PRIORITIZES_FIRST_PASS_BEFORE_DEFERRED_RETRIES",
+      "PROVIDER_RATE_LIMIT_COOLDOWNS_ARE_DURABLE_ACROSS_CONTINUATIONS",
     ],
   };
 }
