@@ -112,8 +112,8 @@ See
 
 ## MCP handoff
 
-The existing historical-candle, SPX candidate/universe, and exact-package
-tools accept `evidence_cache`; the tool count remains 17.
+The historical-candle, SPX candidate/universe, checkpoint/path package, and
+fixed-horizon package tools accept `evidence_cache`.
 
 An online read-through request uses:
 

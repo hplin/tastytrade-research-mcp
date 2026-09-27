@@ -5,6 +5,7 @@ from completed DXLink option candles:
 
 - `tastytrade_get_historical_option_package_at_checkpoint`
 - `tastytrade_get_historical_option_package_path`
+- `tastytrade_get_historical_option_package_horizons`
 
 They preserve exact OCC symbols and never use current quotes, future bars, or
 Backtester snapshots outside the requested time window.
@@ -47,7 +48,19 @@ timestamp, and explicit research limits:
 Each leg is parsed from its exact 21-character OCC symbol. The result retains
 the provider symbol, derived DXLink streamer symbol, side, strike, expiration,
 action, quantity, historical close, IV when present, bar-start timestamp,
-availability timestamp, observation age, and provider provenance.
+availability timestamp, observation age, and provider provenance. Additive
+structured fields report `reconstruction_status` and one of:
+
+- `CONTRACT_ABSENT_FROM_RECONSTRUCTED_UNIVERSE`
+- `HISTORICAL_CANDLE_UNAVAILABLE`
+- `STALE_OBSERVATION`
+- `ALIGNMENT_MISMATCH`
+- `CACHE_ERROR`
+- `PROVIDER_ERROR`
+
+Per-leg provenance includes the lifecycle, full resolution profile, provider
+failure reasons, source revision, and exact evidence-cache manifest and
+content IDs when present.
 
 `as_of` may be replaced by an unambiguous IANA `local_checkpoint`. The
 normalized checkpoint, deterministic request ID, opaque
@@ -80,6 +93,96 @@ Historical Candle events do not provide bid and ask prices. Therefore:
 - `synthetic_mid` and `synthetic_natural` remain null;
 - `execution_quality` is `VALUATION_ONLY`;
 - `usable_for_execution` is always false.
+
+Reference values additionally carry
+`reference_type: CANDLE_REFERENCE` and
+`evidence_class: VALUATION_ONLY`.
+
+## Fixed trading-session horizons
+
+The horizon tool accepts up to 50 frozen candidates and a caller-supplied,
+strictly increasing list of trading-session dates. It never manufactures a
+calendar or assumes that weekdays are sessions. For every candidate,
+`entry_date` must occur in that list and the requested session offsets must
+exist:
+
+```json
+{
+  "request": {
+    "underlying": "SPX",
+    "trading_calendar": {
+      "timezone": "America/Los_Angeles",
+      "local_time": "07:30",
+      "session_dates": [
+        "2026-08-25",
+        "2026-08-26",
+        "2026-08-27",
+        "2026-08-28",
+        "2026-08-31",
+        "2026-09-01"
+      ]
+    },
+    "horizons": [
+      "ENTRY",
+      "OUTCOME_3_TRADING_DAYS",
+      "OUTCOME_5_TRADING_DAYS"
+    ],
+    "candidates": [
+      {
+        "candidate_id": "frozen-ic-2026-08-25",
+        "family": "IRON_CONDOR",
+        "entry_date": "2026-08-25",
+        "legs": [
+          {
+            "role": "LONG_PUT",
+            "provider_symbol": "SPXW  260922P07350000",
+            "action": "BUY_TO_OPEN",
+            "lifecycle": "EXPIRED"
+          },
+          {
+            "role": "SHORT_PUT",
+            "provider_symbol": "SPXW  260922P07400000",
+            "action": "SELL_TO_OPEN",
+            "lifecycle": "EXPIRED"
+          },
+          {
+            "role": "SHORT_CALL",
+            "provider_symbol": "SPXW  260922C07900000",
+            "action": "SELL_TO_OPEN",
+            "lifecycle": "EXPIRED"
+          },
+          {
+            "role": "LONG_CALL",
+            "provider_symbol": "SPXW  260922C07950000",
+            "action": "BUY_TO_OPEN",
+            "lifecycle": "EXPIRED"
+          }
+        ]
+      }
+    ],
+    "resolution_profile": {
+      "profile_id": "HOURLY_PROVIDER_ALIGNED_RESEARCH",
+      "profile_version": "1.0.0",
+      "max_observation_age_minutes": 120,
+      "max_temporal_skew_minutes": 0
+    },
+    "candidate_construction_profile": {
+      "version": "SPX-CANDIDATE-RESEARCH-V1"
+    },
+    "phase": "REGRESSION_RESEARCH"
+  }
+}
+```
+
+The workflow queries only those frozen symbols at every horizon. It does not
+substitute a nearby strike or expiration after outcomes are known.
+
+The aggregate `coverage` object reports requested candidates and checkpoints,
+complete entry/+3/+5 packages, missing-leg counts by caller-defined role,
+structured missing-reason counts, and coverage grouped by strategy,
+expiration, entry DTE, and requested/effective resolution profile. Exact
+front/back expirations, including a 21/35-DTE Double Diagonal, are treated as
+one immutable four-leg package.
 
 ## Short-window package path
 
@@ -158,7 +261,7 @@ Backtester snapshots beginning around 12:45 PT are not used as 07:30 evidence.
 
 ## Immutable source manifests
 
-Both package tools can pass an `evidence_cache` policy to their underlying
+All package tools can pass an `evidence_cache` policy to their underlying
 historical-candle requests. Results return the exact source manifest IDs and
 content hashes used for valuation. A later run may provide those IDs with
 `CACHE_ONLY`; missing or mismatched shards fail the entire replay without a
@@ -166,3 +269,8 @@ provider call or undeclared resolution substitution. Changing only execution
 references reuses the verified candle objects while producing independent
 research-result identity. Full configuration and migration guidance is in
 [`evidence-cache.md`](evidence-cache.md).
+
+The horizon workflow accepts the same cache policy but assigns `as_of` and
+`evidence_role` separately for each checkpoint. Callers must omit those two
+fields; `ENTRY`, `OUTCOME_3_TRADING_DAYS`, and
+`OUTCOME_5_TRADING_DAYS` are assigned deterministically.

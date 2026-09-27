@@ -16,6 +16,11 @@ The suite builds the TypeScript project before running Jest and covers:
 - stale, missing, crossed, and timestamp-misaligned quote handling;
 - midpoint valuation-only semantics;
 - completed-bar historical exact-leg package valuation;
+- frozen exact-leg ENTRY/+3/+5 trading-session reconstruction with no weekday
+  inference or strike/expiration substitution;
+- per-leg contract/candle/stale/alignment/cache/provider failure taxonomy and
+  aggregate coverage by role, strategy, expiration, DTE, and resolution
+  profile;
 - checkpoint observation age and multi-leg temporal-skew rejection;
 - bounded 1-minute to 5-minute package-path fallback without resampling;
 - exact package-path gaps without interpolation or forward fill;

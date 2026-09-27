@@ -36,6 +36,7 @@ The project is intentionally separate from the official
 | `tastytrade_get_historical_spx_candidate_universe` | Return a bounded multi-strike, multi-expiration SPXW universe and optional versioned RESEARCH_ONLY DD selected-leg/matched-delta IV handoff |
 | `tastytrade_get_historical_option_package_at_checkpoint` | Reconstruct an exact-leg SPX package reference at an RFC3339 or IANA-local checkpoint with explicit age and skew controls |
 | `tastytrade_get_historical_option_package_path` | Return profile-aligned completed-candle package points and explicit gaps without interpolation |
+| `tastytrade_get_historical_option_package_horizons` | Reconstruct a frozen exact-leg candidate inventory at caller-supplied ENTRY/+3/+5 trading sessions with aggregate coverage diagnostics |
 | `tastytrade_normalize_historical_execution_evidence` | Normalize immutable exact-leg quote snapshots/windows into signed, provider-neutral simulated-execution inputs without claiming a fill |
 | `tastytrade_simulate_historical_execution` | Apply one caller-frozen, hashed execution profile to immutable exact-leg evidence and return a separate simulated fill/P&L result |
 | `tastytrade_build_historical_replay_report` | Aggregate frozen baseline/research decisions and immutable execution simulations into deterministic +3/+5-day metrics without changing grading or paper state |
@@ -71,7 +72,7 @@ runner guidance are documented in
 ## Private historical evidence cache
 
 The historical candle, SPX candidate/universe, and exact-package tools accept
-an opt-in `evidence_cache` policy. The server exposes 20 tools, including the
+an opt-in `evidence_cache` policy. The server exposes 21 tools, including the
 local-only historical quote normalizer, deterministic execution-model
 adapter, and historical replay report builder.
 `READ_WRITE` stores sanitized source observations and normalized results as
@@ -268,6 +269,21 @@ requested/native/effective aggregation, session, alignment, age/skew,
 fallback, and cohort metadata. The default checkpoint behavior remains the
 existing 5-minute compatibility path. Native-hour New York RTH valuation is
 explicit opt-in and does not silently fall into the 5-minute cohort.
+Checkpoint legs also return a structured reconstruction status and failure
+reason. Their provenance carries the requested lifecycle, resolution profile,
+provider failure reasons, source revision, and exact cache manifest/content
+IDs when available.
+
+`tastytrade_get_historical_option_package_horizons` accepts a bounded frozen
+candidate inventory and a caller-supplied ordered trading-session calendar.
+It resolves `ENTRY`, `OUTCOME_3_TRADING_DAYS`, and
+`OUTCOME_5_TRADING_DAYS` by session index rather than assuming weekdays are
+trading days. Every horizon reuses the same OCC symbols, actions, quantities,
+roles, strategy family, and resolution profile. The result keeps candle
+references labeled `VALUATION_ONLY` / `CANDLE_REFERENCE` and reports complete
+package counts, missing legs by role, missing-reason counts, and coverage by
+strategy, expiration, entry DTE, and resolution profile. Exact 21/35-DTE
+Double Diagonals are supported without changing grading or leg selection.
 
 `tastytrade_get_historical_option_package_path` emits a point only when every
 leg has an exact timestamp-aligned completed bar. It never interpolates or
