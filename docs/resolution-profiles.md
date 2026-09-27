@@ -11,9 +11,18 @@ outcomes to choose a resolution.
 | Profile | Requested | Provider native | Session | Alignment | Default use |
 | --- | --- | --- | --- | --- | --- |
 | `DEFAULT_5M` | `5m` | `5m` | `ALL`, `UTC` | `MIDNIGHT` | Compatibility behavior when no profile is supplied |
-| `HOURLY_VALUATION_RESEARCH` | `1h` | `h` | `REGULAR`, `America/New_York`, 09:30-16:00 | `SESSION` | Strict 09:30-anchored RTH research; fails closed if provider labels differ |\n| `HOURLY_PROVIDER_ALIGNED_RESEARCH` | `1h` | `h` | `REGULAR`, `America/New_York`, 09:30-16:00 | `MIDNIGHT` | Separate cohort for provider-clock hourly bars observed from DXLink options |
+| `HOURLY_VALUATION_RESEARCH` | `1h` | `h` | `REGULAR`, `America/New_York`, 09:30-16:00 | `SESSION` | Strict 09:30-anchored RTH research; fails closed if provider labels differ |
+| `HOURLY_PROVIDER_ALIGNED_RESEARCH` | `1h` | `h` | `REGULAR`, `America/New_York`, 09:30-16:00 | `MIDNIGHT` | Separate cohort for provider-clock hourly bars observed from DXLink options |
 
 Both hourly profiles request DXLink `{=h,a=s,tho=true}`. Live SPXW probes on 2026-08-27 showed DXLink can return option bars labeled on the UTC top-of-hour grid (for example 13:00-14:00Z) rather than the strict 09:30-10:30 ET grid. The server must not relabel those bars as session-aligned. Use `HOURLY_PROVIDER_ALIGNED_RESEARCH` only when that provider-clock cohort is explicitly intended; its cohort identity stays separate from strict RTH and 5-minute research.
+
+SPX index bars from the same provider request remain session-aligned (for
+example 13:30-14:30Z during Eastern daylight time). Candidate and universe
+reconstruction therefore use the strict `HOURLY_VALUATION_RESEARCH` profile
+for the supporting SPX reference while applying
+`HOURLY_PROVIDER_ALIGNED_RESEARCH` only to SPXW option evidence. Results emit
+`SPX_UNDERLYING_USES_SESSION_ALIGNED_HOURLY_COHORT`; the two source cohorts
+remain separate in cache identity and are never relabeled.
 
 The native-hour profile requests DXLink
 `{=h,a=s,tho=true}`. At a 07:30 `America/Los_Angeles` checkpoint during

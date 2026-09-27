@@ -677,6 +677,39 @@ function misalignedCandleCount(
   }).length;
 }
 
+function spxUnderlyingProfile(
+  profile: ResolutionProfile,
+): ResolutionProfile {
+  if (profile.profile_id !== "HOURLY_PROVIDER_ALIGNED_RESEARCH") {
+    return profile;
+  }
+  return normalizeResolutionProfile(
+    {
+      profile_id: "HOURLY_VALUATION_RESEARCH",
+      profile_version: profile.profile_version,
+      provider_id: profile.provider_id,
+      max_observation_age_minutes:
+        profile.max_observation_age_minutes,
+      max_temporal_skew_minutes:
+        profile.max_temporal_skew_minutes,
+      allowed_fallback_aggregations: [
+        ...profile.fallback_policy.aggregations,
+      ],
+    },
+    {
+      default_requested_aggregation: profile.requested_aggregation,
+      default_provider_id: profile.provider_id,
+      default_max_observation_age_minutes:
+        profile.max_observation_age_minutes,
+      default_max_temporal_skew_minutes:
+        profile.max_temporal_skew_minutes,
+      default_fallback_aggregations: [
+        ...profile.fallback_policy.aggregations,
+      ],
+    },
+  );
+}
+
 function forwardByExpiration(
   observations: Map<string, CandleObservation>,
   contracts: ContractSpec[],
@@ -825,6 +858,7 @@ function buildCandidate(
   observation: CandleObservation,
   underlyingPriceText: string,
   underlyingTimestamp: string,
+  underlyingProfile: ResolutionProfile,
   delta: number | null,
   forward: ForwardObservation | undefined,
 ): HistoricalSpxCandidate {
@@ -887,7 +921,7 @@ function buildCandidate(
       },
       {
         source: resolutionCandleSource(
-          plan.resolution_profile,
+          underlyingProfile,
           "SPX",
         ),
         source_timestamp: underlyingTimestamp,
@@ -958,12 +992,18 @@ export async function reconstructHistoricalSpxCandidates(
     resolutionProfile.max_observation_age_minutes * 60_000;
   const maxTemporalSkewMs =
     resolutionProfile.max_temporal_skew_minutes * 60_000;
+  const underlyingProfile = spxUnderlyingProfile(resolutionProfile);
+  const underlyingSession =
+    candleSessionForResolutionProfile(underlyingProfile);
   const session = candleSessionForResolutionProfile(resolutionProfile);
   const warnings = [
     "HISTORICAL_CONTRACT_UNIVERSE_RECONSTRUCTED_FROM_DXLINK",
     "OPTION_CANDLE_SOURCE_TIME_IS_INTERVAL_START",
     "CONTRACT_EXISTENCE_INFERRED_FROM_HISTORICAL_CANDLE",
     `OPTION_OBSERVATION_MAX_AGE_MINUTES:${resolutionProfile.max_observation_age_minutes}`,
+    ...(underlyingProfile !== resolutionProfile
+      ? ["SPX_UNDERLYING_USES_SESSION_ALIGNED_HOURLY_COHORT"]
+      : []),
   ];
   const candidates: Array<HistoricalSpxCandidate | null> = plan.items.map(
     () => null,
@@ -977,8 +1017,8 @@ export async function reconstructHistoricalSpxCandidates(
     interval,
     start_time: new Date(asOfMs - 2 * intervalMs).toISOString(),
     end_time: plan.as_of,
-    session,
-    resolution_profile: resolutionProfileInput(resolutionProfile),
+    session: underlyingSession,
+    resolution_profile: resolutionProfileInput(underlyingProfile),
     max_output_candles: CANDLE_MAX_OUTPUT,
     max_received_events: CANDLE_MAX_RECEIVED_EVENTS,
     max_buffer_bytes: CANDLE_MAX_BUFFER_BYTES,
@@ -996,13 +1036,13 @@ export async function reconstructHistoricalSpxCandidates(
     underlyingResult,
     asOfMs,
     interval,
-    resolutionProfile,
+    underlyingProfile,
     maxObservationAgeMs,
   );
   const underlyingMisaligned = misalignedCandleCount(
     underlyingResult,
     interval,
-    resolutionProfile,
+    underlyingProfile,
   );
   if (underlyingMisaligned > 0) {
     warnings.push(
@@ -1247,6 +1287,7 @@ export async function reconstructHistoricalSpxCandidates(
       selected.observation,
       underlyingPriceText,
       underlying.available_at,
+      underlyingProfile,
       selected.delta,
       selected.forward,
     );
@@ -1516,6 +1557,7 @@ function universeContract(
   observation: CandleObservation,
   underlyingPrice: string,
   underlyingTimestamp: string,
+  underlyingProfile: ResolutionProfile,
   forward: UniverseDeltaForward,
   asOfMs: number,
 ): HistoricalSpxUniverseContract {
@@ -1601,7 +1643,7 @@ function universeContract(
       },
       {
         source: resolutionCandleSource(
-          plan.resolution_profile,
+          underlyingProfile,
           "SPX",
         ),
         source_timestamp: underlyingTimestamp,
@@ -2004,6 +2046,9 @@ export async function getHistoricalSpxCandidateUniverse(
   const resolutionProfile = plan.resolution_profile;
   const interval = resolutionProfile.requested_aggregation;
   const intervalMs = resolutionMilliseconds(interval);
+  const underlyingProfile = spxUnderlyingProfile(resolutionProfile);
+  const underlyingSession =
+    candleSessionForResolutionProfile(underlyingProfile);
   const session = candleSessionForResolutionProfile(resolutionProfile);
   const warnings = [
     "HISTORICAL_CONTRACT_UNIVERSE_RECONSTRUCTED_FROM_DXLINK",
@@ -2011,6 +2056,9 @@ export async function getHistoricalSpxCandidateUniverse(
     "OPTION_CANDLE_SOURCE_TIME_IS_INTERVAL_START",
     `OPTION_OBSERVATION_MAX_AGE_MINUTES:${plan.max_observation_age_minutes}`,
     "HISTORICAL_BID_ASK_NOT_AVAILABLE",
+    ...(underlyingProfile !== resolutionProfile
+      ? ["SPX_UNDERLYING_USES_SESSION_ALIGNED_HOURLY_COHORT"]
+      : []),
   ];
   const providerErrors: UniverseProviderError[] = [];
   const cacheResults: HistoricalCandlesResult[] = [];
@@ -2024,8 +2072,8 @@ export async function getHistoricalSpxCandidateUniverse(
       interval,
       start_time: new Date(asOfMs - 2 * intervalMs).toISOString(),
       end_time: plan.as_of,
-      session,
-      resolution_profile: resolutionProfileInput(resolutionProfile),
+      session: underlyingSession,
+      resolution_profile: resolutionProfileInput(underlyingProfile),
       max_output_candles: CANDLE_MAX_OUTPUT,
       max_received_events: CANDLE_MAX_RECEIVED_EVENTS,
       max_buffer_bytes: CANDLE_MAX_BUFFER_BYTES,
@@ -2059,13 +2107,13 @@ export async function getHistoricalSpxCandidateUniverse(
     underlyingResult,
     asOfMs,
     interval,
-    resolutionProfile,
+    underlyingProfile,
     plan.max_observation_age_minutes * 60_000,
   );
   const underlyingMisaligned = misalignedCandleCount(
     underlyingResult,
     interval,
-    resolutionProfile,
+    underlyingProfile,
   );
   if (underlyingMisaligned > 0) {
     warnings.push(
@@ -2207,6 +2255,7 @@ export async function getHistoricalSpxCandidateUniverse(
         observation,
         underlyingPrice,
         underlying.available_at,
+        underlyingProfile,
         universeDeltaForward(
           forwards.get(contract.expiration_date),
           underlying.price,
@@ -2361,7 +2410,7 @@ export async function getHistoricalSpxCandidateUniverse(
         documented_contract: true,
       },
       {
-        source: resolutionCandleSource(resolutionProfile, "SPX"),
+        source: resolutionCandleSource(underlyingProfile, "SPX"),
         source_timestamp: underlying.available_at,
         fields: ["underlying_price"],
         documented_contract: true,

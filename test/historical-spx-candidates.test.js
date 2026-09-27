@@ -677,6 +677,52 @@ describe("historical SPX candidate discovery", () => {
     ).toBe(false);
   });
 
+  test("uses a session-aligned SPX reference with provider-clock hourly options", async () => {
+    const source = structuredClone(pathBFixture);
+    source.underlying.candle.source_time = "2026-08-25T13:30:00.000Z";
+    for (const option of source.options) {
+      option.candle.source_time = "2026-08-25T13:00:00.000Z";
+    }
+    const candles = fixturePathBCandles(source);
+
+    const result = await discoverHistoricalSpxCandidates(
+      fixtureBacktester(entryTimeIgnoredFixture),
+      {
+        ...PATH_B_REQUEST,
+        resolution_profile: {
+          profile_id: "HOURLY_PROVIDER_ALIGNED_RESEARCH",
+          profile_version: "1.0.0",
+          max_observation_age_minutes: 120,
+          max_temporal_skew_minutes: 0,
+        },
+      },
+      candles,
+    );
+
+    expect(result.status).toBe("COMPLETE");
+    expect(
+      result.contracts.every(
+        (candidate) =>
+          candidate.bar_start === "2026-08-25T13:00:00.000Z" &&
+          candidate.bar_end === "2026-08-25T14:00:00.000Z",
+      ),
+    ).toBe(true);
+    expect(result.warnings).toContain(
+      "SPX_UNDERLYING_USES_SESSION_ALIGNED_HOURLY_COHORT",
+    );
+    expect(
+      candles.getHistoricalCandles.mock.calls[0][0].resolution_profile
+        .profile_id,
+    ).toBe("HOURLY_VALUATION_RESEARCH");
+    expect(
+      candles.getHistoricalCandlesBatch.mock.calls.every(
+        ([input]) =>
+          input.resolution_profile.profile_id ===
+          "HOURLY_PROVIDER_ALIGNED_RESEARCH",
+      ),
+    ).toBe(true);
+  });
+
   test("fails reconstructed delta closed when historical IV is unavailable", async () => {
     const source = structuredClone(pathBFixture);
     for (const option of source.options) {
