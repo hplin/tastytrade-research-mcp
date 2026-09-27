@@ -33,6 +33,7 @@ The project is intentionally separate from the official
 | --- | --- |
 | `tastytrade_price_option_package` | Price verticals, iron condors, and double diagonals with explicit native/synthetic provenance |
 | `tastytrade_discover_historical_spx_candidates` | Reconstruct timestamp-safe historical SPXW candidates under a versioned resolution profile, with exact-timestamp Backtester fallback |
+| `tastytrade_discover_historical_spx_candidates_range` | Run the same candidate discovery over an explicit trading calendar with bounded concurrency, deadlines, immutable-cache diagnostics, and resumable partial progress |
 | `tastytrade_get_historical_spx_candidate_universe` | Return a bounded multi-strike, multi-expiration SPXW universe and optional versioned RESEARCH_ONLY DD selected-leg/matched-delta IV handoff |
 | `tastytrade_get_historical_option_package_at_checkpoint` | Reconstruct an exact-leg SPX package reference at an RFC3339 or IANA-local checkpoint with explicit age and skew controls |
 | `tastytrade_get_historical_option_package_path` | Return profile-aligned completed-candle package points and explicit gaps without interpolation |
@@ -72,7 +73,7 @@ runner guidance are documented in
 ## Private historical evidence cache
 
 The historical candle, SPX candidate/universe, and exact-package tools accept
-an opt-in `evidence_cache` policy. The server exposes 21 tools, including the
+an opt-in `evidence_cache` policy. The server exposes 22 tools, including the
 local-only historical quote normalizer, deterministic execution-model
 adapter, and historical replay report builder.
 `READ_WRITE` stores sanitized source observations and normalized results as
@@ -170,6 +171,12 @@ entry decisions.
 `tastytrade_discover_historical_spx_candidates` is the
 `REGRESSION_RESEARCH` bridge between timestamp-safe selector evidence and
 exact contract identity.
+`tastytrade_discover_historical_spx_candidates_range` applies that same
+single-checkpoint contract to an explicit caller-supplied trading calendar.
+It preserves chronological output order while using a bounded worker pool,
+isolates checkpoint failures, retries only transient provider failures, and
+returns an opaque continuation cursor for unresolved or deferred sessions.
+Operational settings do not alter the logical batch request ID.
 
 The official option-chain and REST quote endpoints do not document an
 historical `as_of` parameter. Backtester logs currently expose exact selected

@@ -10,6 +10,7 @@ import {
 } from "@modelcontextprotocol/sdk/types.js";
 import {
   TastytradeBacktesterClient,
+  type BacktesterRequestOptions,
   type JsonObject,
 } from "./backtester-client.js";
 import {
@@ -27,6 +28,10 @@ import {
   discoverHistoricalSpxCandidates,
   type HistoricalSpxCandidatesInput,
 } from "./historical-spx-candidates.js";
+import {
+  discoverHistoricalSpxCandidatesRange,
+  type HistoricalSpxCandidatesRangeInput,
+} from "./historical-spx-candidate-range.js";
 import {
   getHistoricalSpxCandidateUniverse,
   type HistoricalSpxCandidateUniverseInput,
@@ -603,6 +608,111 @@ const HISTORICAL_SPX_CANDIDATES_SCHEMA = {
       oneOf: [
         { required: ["as_of"], not: { required: ["local_checkpoint"] } },
         { required: ["local_checkpoint"], not: { required: ["as_of"] } },
+      ],
+      additionalProperties: false,
+    },
+  },
+  required: ["request"],
+  additionalProperties: false,
+} as const;
+
+const HISTORICAL_SPX_CANDIDATES_RANGE_SCHEMA = {
+  type: "object",
+  properties: {
+    request: {
+      type: "object",
+      properties: {
+        underlying:
+          HISTORICAL_SPX_CANDIDATES_SCHEMA.properties.request.properties
+            .underlying,
+        start_date: DATE_SCHEMA,
+        end_date: DATE_SCHEMA,
+        trading_calendar: {
+          type: "object",
+          properties: {
+            timezone: LOCAL_CHECKPOINT_SCHEMA.properties.timezone,
+            local_time: LOCAL_CHECKPOINT_SCHEMA.properties.local_time,
+            session_dates: {
+              type: "array",
+              minItems: 1,
+              maxItems: 400,
+              uniqueItems: true,
+              items: DATE_SCHEMA,
+            },
+          },
+          required: ["timezone", "local_time", "session_dates"],
+          additionalProperties: false,
+        },
+        min_dte:
+          HISTORICAL_SPX_CANDIDATES_SCHEMA.properties.request.properties
+            .min_dte,
+        max_dte:
+          HISTORICAL_SPX_CANDIDATES_SCHEMA.properties.request.properties
+            .max_dte,
+        sides:
+          HISTORICAL_SPX_CANDIDATES_SCHEMA.properties.request.properties.sides,
+        selector_grid:
+          HISTORICAL_SPX_CANDIDATES_SCHEMA.properties.request.properties
+            .selector_grid,
+        lookback_calendar_days:
+          HISTORICAL_SPX_CANDIDATES_SCHEMA.properties.request.properties
+            .lookback_calendar_days,
+        resolution_profile:
+          HISTORICAL_SPX_CANDIDATES_SCHEMA.properties.request.properties
+            .resolution_profile,
+        candidate_construction_profile:
+          HISTORICAL_SPX_CANDIDATES_SCHEMA.properties.request.properties
+            .candidate_construction_profile,
+        evidence_cache: HORIZON_EVIDENCE_CACHE_SCHEMA,
+        phase:
+          HISTORICAL_SPX_CANDIDATES_SCHEMA.properties.request.properties.phase,
+        references:
+          HISTORICAL_SPX_CANDIDATES_SCHEMA.properties.request.properties
+            .references,
+        max_concurrency: {
+          type: "integer",
+          minimum: 1,
+          maximum: 4,
+        },
+        checkpoint_deadline_ms: {
+          type: "integer",
+          minimum: 1,
+          maximum: 300000,
+        },
+        max_checkpoints_per_run: {
+          type: "integer",
+          minimum: 1,
+          maximum: 50,
+        },
+        retry_policy: {
+          type: "object",
+          properties: {
+            max_attempts: {
+              type: "integer",
+              minimum: 1,
+              maximum: 3,
+            },
+            backoff_ms: {
+              type: "integer",
+              minimum: 0,
+              maximum: 10000,
+            },
+          },
+          additionalProperties: false,
+        },
+        continuation_cursor: {
+          type: "string",
+          minLength: 1,
+          maxLength: 32768,
+        },
+      },
+      required: [
+        "underlying",
+        "start_date",
+        "end_date",
+        "trading_calendar",
+        "selector_grid",
+        "phase",
       ],
       additionalProperties: false,
     },
@@ -1547,6 +1657,12 @@ export const TOOLS: Tool[] = [
     inputSchema: HISTORICAL_SPX_CANDIDATES_SCHEMA,
   },
   {
+    name: "tastytrade_discover_historical_spx_candidates_range",
+    description:
+      "Discover checkpoint-safe historical SPX candidates across an explicit caller-supplied trading calendar. Uses bounded concurrency and per-checkpoint deadlines, preserves ordered single-checkpoint results, retries only transient provider failures, and returns resumable partial progress plus aggregate immutable-cache diagnostics.",
+    inputSchema: HISTORICAL_SPX_CANDIDATES_RANGE_SCHEMA,
+  },
+  {
     name: "tastytrade_get_historical_spx_candidate_universe",
     description:
       "Return a bounded timestamp-safe SPXW contract universe with explicit versioned resolution/cohort metadata and optional private immutable source manifests. An optional versioned DD IV request attaches separate RESEARCH_ONLY selected-leg, matched-delta, and matched-forward-moneyness handoff cohorts without changing production term_structure, grading, routing, fills, or P&L.",
@@ -1634,11 +1750,23 @@ const TOOL_VALIDATORS = new Map<string, ValidateFunction>(
 export type BacktesterService = {
   getAvailableDates(): Promise<unknown>;
   listBacktests(): Promise<unknown>;
-  createBacktest(request: JsonObject): Promise<unknown>;
-  getBacktest(id: string): Promise<unknown>;
-  getBacktestLogs(id: string): Promise<unknown>;
+  createBacktest(
+    request: JsonObject,
+    options?: BacktesterRequestOptions,
+  ): Promise<unknown>;
+  getBacktest(
+    id: string,
+    options?: BacktesterRequestOptions,
+  ): Promise<unknown>;
+  getBacktestLogs(
+    id: string,
+    options?: BacktesterRequestOptions,
+  ): Promise<unknown>;
   cancelBacktest(id: string): Promise<unknown>;
-  simulateTrade(request: JsonObject): Promise<unknown>;
+  simulateTrade(
+    request: JsonObject,
+    options?: BacktesterRequestOptions,
+  ): Promise<unknown>;
 };
 
 export type HistoricalCandlesService = {
@@ -1777,6 +1905,14 @@ export function createResearchServer(
           await discoverHistoricalSpxCandidates(
             backtester,
             requestArg<HistoricalSpxCandidatesInput>(args),
+            reconstructionCandles,
+          ),
+        );
+      case "tastytrade_discover_historical_spx_candidates_range":
+        return toolResult(
+          await discoverHistoricalSpxCandidatesRange(
+            backtester,
+            requestArg<HistoricalSpxCandidatesRangeInput>(args),
             reconstructionCandles,
           ),
         );

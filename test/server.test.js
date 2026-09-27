@@ -81,11 +81,12 @@ describe("MCP research server", () => {
     await client.connect(clientTransport);
     try {
       const tools = await client.listTools();
-      expect(tools.tools).toHaveLength(21);
+      expect(tools.tools).toHaveLength(22);
       expect(tools.tools.map((tool) => tool.name)).toEqual(
         expect.arrayContaining([
           "tastytrade_price_option_package",
           "tastytrade_discover_historical_spx_candidates",
+          "tastytrade_discover_historical_spx_candidates_range",
           "tastytrade_get_historical_spx_candidate_universe",
           "tastytrade_get_historical_option_package_at_checkpoint",
           "tastytrade_get_historical_option_package_path",
@@ -125,6 +126,24 @@ describe("MCP research server", () => {
         local_checkpoint: expect.any(Object),
         resolution_profile: expect.any(Object),
         candidate_construction_profile: expect.any(Object),
+        evidence_cache: expect.any(Object),
+      });
+      const candidateRangeTool = tools.tools.find(
+        (tool) =>
+          tool.name ===
+          "tastytrade_discover_historical_spx_candidates_range",
+      );
+      expect(
+        candidateRangeTool.inputSchema.properties.request.properties,
+      ).toMatchObject({
+        start_date: expect.any(Object),
+        end_date: expect.any(Object),
+        trading_calendar: expect.any(Object),
+        max_concurrency: { maximum: 4 },
+        checkpoint_deadline_ms: { maximum: 300000 },
+        max_checkpoints_per_run: { maximum: 50 },
+        retry_policy: expect.any(Object),
+        continuation_cursor: { maxLength: 32768 },
         evidence_cache: expect.any(Object),
       });
       const universeTool = tools.tools.find(
@@ -508,6 +527,64 @@ describe("MCP research server", () => {
           ([request]) => request.instruments.length <= 20,
         ),
       ).toBe(true);
+
+      const candidateRange = textResult(
+        await client.callTool({
+          name: "tastytrade_discover_historical_spx_candidates_range",
+          arguments: {
+            request: {
+              underlying: "SPX",
+              start_date: "2026-04-15",
+              end_date: "2026-04-15",
+              trading_calendar: {
+                timezone: "America/Los_Angeles",
+                local_time: "07:30",
+                session_dates: ["2026-04-15"],
+              },
+              sides: ["PUT"],
+              selector_grid: [
+                {
+                  method: "DELTA",
+                  value: "20",
+                  days_until_expiration: 28,
+                },
+              ],
+              resolution_profile: {
+                profile_id: "HOURLY_VALUATION_RESEARCH",
+                profile_version: "1.0.0",
+              },
+              candidate_construction_profile: {
+                version: "candidate-construction/7",
+                grading: { external: true },
+              },
+              phase: "REGRESSION_RESEARCH",
+              max_concurrency: 1,
+              checkpoint_deadline_ms: 5000,
+              retry_policy: {
+                max_attempts: 1,
+                backoff_ms: 0,
+              },
+            },
+          },
+        }),
+      );
+      expect(candidateRange).toMatchObject({
+        status: "NOT_AVAILABLE",
+        progress: {
+          trading_sessions_requested: 1,
+          checkpoints_attempted: 1,
+          checkpoints_completed: 1,
+          checkpoints_remaining: 0,
+        },
+        checkpoints: [
+          {
+            session_date: "2026-04-15",
+            scheduled_checkpoint: "2026-04-15T14:30:00.000Z",
+            status: "NOT_AVAILABLE",
+          },
+        ],
+        continuation: null,
+      });
 
       const universe = textResult(
         await client.callTool({

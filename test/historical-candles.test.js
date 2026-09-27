@@ -1008,6 +1008,38 @@ describe("DXLink candle normalization", () => {
     expect(getSocket().closeCalls).toHaveLength(1);
   });
 
+  test("aborts an active snapshot and releases the subscription", async () => {
+    const { client, getSocket } = clientWithRows(null);
+    const controller = new AbortController();
+    const request = client.getHistoricalCandles({
+      symbol: "SPY",
+      instrument_type: "EQUITY",
+      interval: "1m",
+      start_time: "2026-09-24T14:00:00.000Z",
+      end_time: "2026-09-24T14:01:00.000Z",
+      deadline_ms: 1000,
+      max_buffer_bytes: 1_000_000,
+      signal: controller.signal,
+    });
+    const rejection = expect(request).rejects.toMatchObject({
+      code: "PROVIDER_TIMEOUT",
+      retryable: true,
+    });
+    await new Promise((resolve) => setTimeout(resolve, 1));
+    controller.abort();
+
+    await rejection;
+    expect(getSocket().sent).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          type: "FEED_SUBSCRIPTION",
+          remove: [{ type: "Candle", symbol: "SPY{=m}" }],
+        }),
+      ]),
+    );
+    expect(getSocket().closeCalls).toHaveLength(1);
+  });
+
   test("rejects ambiguous legacy and explicit budget combinations", async () => {
     const { client } = clientWithRows([]);
 

@@ -58,6 +58,33 @@ export type HistoricalCandidateCandles = {
   ): Promise<HistoricalCandlesResult[]>;
 };
 
+export type HistoricalSpxReconstructionExecutionOptions = {
+  deadline_at_ms?: number;
+  signal?: AbortSignal;
+};
+
+export class HistoricalSpxReconstructionTimeoutError extends Error {
+  readonly code = "PROVIDER_TIMEOUT";
+  readonly retryable = true;
+
+  constructor() {
+    super("Historical SPX candidate reconstruction exceeded its deadline.");
+    this.name = "HistoricalSpxReconstructionTimeoutError";
+  }
+}
+
+function assertReconstructionActive(
+  execution: HistoricalSpxReconstructionExecutionOptions,
+): void {
+  if (
+    execution.signal?.aborted ||
+    (execution.deadline_at_ms !== undefined &&
+      Date.now() >= execution.deadline_at_ms)
+  ) {
+    throw new HistoricalSpxReconstructionTimeoutError();
+  }
+}
+
 export type HistoricalSpxReconstruction = {
   candidates: Array<HistoricalSpxCandidate | null>;
   warnings: string[];
@@ -969,8 +996,10 @@ function buildCandidate(
 export async function reconstructHistoricalSpxCandidates(
   plan: HistoricalSpxCandidatesPlan,
   candles: HistoricalCandidateCandles,
+  execution: HistoricalSpxReconstructionExecutionOptions = {},
 ): Promise<HistoricalSpxReconstruction> {
   const asOfMs = Date.parse(plan.as_of);
+  assertReconstructionActive(execution);
   const resolutionProfile = plan.resolution_profile;
   const interval = resolutionProfile.requested_aggregation;
   const intervalMs = resolutionMilliseconds(interval);
@@ -1009,7 +1038,9 @@ export async function reconstructHistoricalSpxCandidates(
     max_received_events: CANDLE_MAX_RECEIVED_EVENTS,
     max_buffer_bytes: CANDLE_MAX_BUFFER_BYTES,
     evidence_cache: plan.evidence_cache,
+    ...(execution.signal ? { signal: execution.signal } : {}),
   });
+  assertReconstructionActive(execution);
   cacheResults.push(underlyingResult);
   const underlyingContract = contractSpec(
     plan.session_date,
@@ -1145,6 +1176,7 @@ export async function reconstructHistoricalSpxCandidates(
     asOfMs - maxObservationAgeMs - intervalMs,
   ).toISOString();
   for (let offset = 0; offset < contracts.length; offset += OPTION_BATCH_SIZE) {
+    assertReconstructionActive(execution);
     const batch = contracts.slice(offset, offset + OPTION_BATCH_SIZE);
     const results = await candles.getHistoricalCandlesBatch({
       instruments: batch.map((contract) => ({
@@ -1161,7 +1193,9 @@ export async function reconstructHistoricalSpxCandidates(
       max_received_events: CANDLE_MAX_RECEIVED_EVENTS,
       max_buffer_bytes: CANDLE_MAX_BUFFER_BYTES,
       evidence_cache: plan.evidence_cache,
+      ...(execution.signal ? { signal: execution.signal } : {}),
     });
+    assertReconstructionActive(execution);
     if (results.length !== batch.length) {
       throw new Error(
         `DXLink option batch returned ${results.length} results for ${batch.length} contracts.`,

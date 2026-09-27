@@ -4,6 +4,10 @@ import {
   discoverHistoricalSpxCandidates,
   prepareHistoricalSpxCandidates,
 } from "../dist/historical-spx-candidates.js";
+import {
+  discoverHistoricalSpxCandidatesRange,
+  prepareHistoricalSpxCandidatesRange,
+} from "../dist/historical-spx-candidate-range.js";
 
 function loadFixture(name) {
   return JSON.parse(
@@ -70,6 +74,49 @@ const PATH_B_REQUEST = {
   lookback_calendar_days: 0,
   phase: "REGRESSION_RESEARCH",
   references: { checkpoint_id: "spx-2026-08-25-0730-pt" },
+};
+
+const RANGE_REQUEST = {
+  underlying: "SPX",
+  start_date: "2026-08-24",
+  end_date: "2026-08-28",
+  trading_calendar: {
+    timezone: "America/Los_Angeles",
+    local_time: "07:30",
+    session_dates: [
+      "2026-08-24",
+      "2026-08-25",
+      "2026-08-27",
+      "2026-08-28",
+    ],
+  },
+  min_dte: 21,
+  max_dte: 35,
+  sides: ["CALL"],
+  selector_grid: [
+    {
+      method: "DELTA",
+      value: "20",
+      days_until_expiration: 28,
+    },
+  ],
+  lookback_calendar_days: 0,
+  resolution_profile: {
+    profile_id: "HOURLY_PROVIDER_ALIGNED_RESEARCH",
+    profile_version: "1.0.0",
+  },
+  candidate_construction_profile: {
+    version: "SPX-CANDIDATE-RESEARCH-V1",
+  },
+  phase: "REGRESSION_RESEARCH",
+  references: { checkpoint_id: "spx-august-range" },
+  max_concurrency: 2,
+  checkpoint_deadline_ms: 5_000,
+  max_checkpoints_per_run: 50,
+  retry_policy: {
+    max_attempts: 2,
+    backoff_ms: 0,
+  },
 };
 
 function fixtureBacktester(source = fixture, logs = source.logs) {
@@ -147,6 +194,86 @@ function fixturePathBCandles(source = pathBFixture) {
         );
       }),
     ),
+  };
+}
+
+function rangeCandidateResult(input, overrides = {}) {
+  const asOf =
+    input.as_of ??
+    `${input.local_checkpoint.local_date}T14:30:00.000Z`;
+  const localDate =
+    input.local_checkpoint?.local_date ?? asOf.slice(0, 10);
+  const status = overrides.status ?? "COMPLETE";
+  const contracts =
+    overrides.contracts ??
+    (status === "NOT_AVAILABLE"
+      ? []
+      : [
+          {
+            provider_symbol: `SPXW-${localDate}`,
+            option_side: "CALL",
+            requested_dte: 28,
+          },
+        ]);
+  return {
+    contract_version: "1.0.0",
+    request_id: `checkpoint-${localDate}`,
+    status,
+    evidence_type: "HISTORICAL_SELECTOR_CANDIDATE_SET",
+    evidence_phase: "REGRESSION_RESEARCH",
+    as_of: asOf,
+    checkpoint: input.local_checkpoint
+      ? {
+          kind: "IANA_LOCAL",
+          instant: asOf,
+          timezone: "America/Los_Angeles",
+          local_date: localDate,
+          local_time: "07:30:00",
+        }
+      : {
+          kind: "RFC3339",
+          instant: asOf,
+          timezone: null,
+          local_date: null,
+          local_time: null,
+        },
+    retrieved_at: asOf,
+    underlying: "SPX",
+    requested_dte_range: { min: 21, max: 35 },
+    lookback_calendar_days: 0,
+    contracts,
+    surface: {
+      atm_iv: null,
+      skew: null,
+      term_structure: null,
+    },
+    provenance: [],
+    capabilities: {},
+    attempts:
+      overrides.attempts ??
+      [
+        {
+          option_side: "CALL",
+          selector: {
+            method: "DELTA",
+            value: "20",
+            days_until_expiration: 28,
+          },
+          backtest_id: null,
+          status:
+            contracts.length > 0
+              ? "RECONSTRUCTED_CANDIDATE_FOUND"
+              : "NO_ELIGIBLE_TRIAL",
+          error: null,
+        },
+      ],
+    resolution_profile: {},
+    candidate_construction_profile: {
+      version: "SPX-CANDIDATE-RESEARCH-V1",
+    },
+    references: input.references ?? {},
+    warnings: overrides.warnings ?? [],
+    evidence_cache: overrides.evidence_cache ?? null,
   };
 }
 
@@ -767,6 +894,726 @@ describe("historical SPX candidate discovery", () => {
       occ_symbol: "SPXW  260922C07925000",
       selected_at: PATH_B_REQUEST.as_of,
       observation_age_ms: 0,
+    });
+  });
+
+  test("preserves structured transient provider metadata", async () => {
+    const rateLimit = Object.assign(
+      new Error("Request failed with status code 429"),
+      {
+        code: "ERR_BAD_REQUEST",
+        response: { status: 429 },
+      },
+    );
+    const result = await discoverHistoricalSpxCandidates(
+      {
+        createBacktest: jest.fn(async () => {
+          throw rateLimit;
+        }),
+        getBacktest: jest.fn(),
+        getBacktestLogs: jest.fn(),
+        simulateTrade: jest.fn(),
+      },
+      CHECKPOINT_REQUEST,
+    );
+
+    expect(result.attempts[0]).toMatchObject({
+      status: "PROVIDER_ERROR",
+      error: "Request failed with status code 429",
+      provider_error: {
+        code: "ERR_BAD_REQUEST",
+        http_status: 429,
+        retryable: true,
+      },
+    });
+  });
+
+  describe("historical SPX candidate range discovery", () => {
+    test("expands only the caller-supplied trading sessions with stable logical identity", () => {
+      const plan = prepareHistoricalSpxCandidatesRange(RANGE_REQUEST);
+      const operationallyDifferent =
+        prepareHistoricalSpxCandidatesRange({
+          ...RANGE_REQUEST,
+          max_concurrency: 4,
+          checkpoint_deadline_ms: 60_000,
+          max_checkpoints_per_run: 2,
+          retry_policy: {
+            max_attempts: 1,
+            backoff_ms: 1_000,
+          },
+        });
+
+      expect(plan.request_id).toMatch(/^[a-f0-9]{64}$/);
+      expect(plan.request_id).toBe(operationallyDifferent.request_id);
+      expect(
+        plan.checkpoints.map((checkpoint) => ({
+          session_date: checkpoint.session_date,
+          scheduled_checkpoint: checkpoint.scheduled_checkpoint,
+        })),
+      ).toEqual([
+        {
+          session_date: "2026-08-24",
+          scheduled_checkpoint: "2026-08-24T14:30:00.000Z",
+        },
+        {
+          session_date: "2026-08-25",
+          scheduled_checkpoint: "2026-08-25T14:30:00.000Z",
+        },
+        {
+          session_date: "2026-08-27",
+          scheduled_checkpoint: "2026-08-27T14:30:00.000Z",
+        },
+        {
+          session_date: "2026-08-28",
+          scheduled_checkpoint: "2026-08-28T14:30:00.000Z",
+        },
+      ]);
+      expect(plan.max_concurrency).toBe(2);
+      expect(plan.retry_policy).toEqual({
+        max_attempts: 2,
+        backoff_ms: 0,
+      });
+      expect(plan.checkpoints).toHaveLength(4);
+    });
+
+    test("rejects inferred, ambiguous, or pre-contextualized range inputs", () => {
+      expect(() =>
+        prepareHistoricalSpxCandidatesRange({
+          ...RANGE_REQUEST,
+          trading_calendar: {
+            ...RANGE_REQUEST.trading_calendar,
+            session_dates: ["2026-08-25", "2026-08-24"],
+          },
+        }),
+      ).toThrow("strictly increasing");
+      expect(() =>
+        prepareHistoricalSpxCandidatesRange({
+          ...RANGE_REQUEST,
+          evidence_cache: {
+            mode: "READ_WRITE",
+            as_of: "2026-08-24T14:30:00.000Z",
+          },
+        }),
+      ).toThrow("assigns evidence_cache.as_of");
+      expect(() =>
+        prepareHistoricalSpxCandidatesRange({
+          ...RANGE_REQUEST,
+          start_date: "2026-08-26",
+          end_date: "2026-08-26",
+        }),
+      ).toThrow("does not contain a trading session");
+    });
+
+    test("uses bounded workers and preserves deterministic checkpoint order", async () => {
+      let active = 0;
+      let maximumActive = 0;
+      const completionOrder = [];
+      const delays = new Map([
+        ["2026-08-24", 30],
+        ["2026-08-25", 5],
+        ["2026-08-27", 20],
+        ["2026-08-28", 1],
+      ]);
+      const discover = jest.fn(async (_backtester, input, _candles, options) => {
+        active += 1;
+        maximumActive = Math.max(maximumActive, active);
+        expect(options.deadline_ms).toBeGreaterThan(0);
+        expect(options.deadline_ms).toBeLessThanOrEqual(5_000);
+        expect(input.evidence_cache).toMatchObject({
+          mode: "READ_WRITE",
+          as_of: input.as_of,
+          evidence_role: "ENTRY",
+        });
+        await new Promise((resolve) =>
+          setTimeout(
+            resolve,
+            delays.get(input.as_of.slice(0, 10)),
+          ),
+        );
+        active -= 1;
+        completionOrder.push(input.as_of.slice(0, 10));
+        return rangeCandidateResult(input);
+      });
+
+      const result = await discoverHistoricalSpxCandidatesRange(
+        {},
+        {
+          ...RANGE_REQUEST,
+          evidence_cache: {
+            mode: "READ_WRITE",
+            dataset_id: "fixture-candles",
+          },
+        },
+        undefined,
+        { discover },
+      );
+
+      expect(maximumActive).toBe(2);
+      expect(completionOrder).not.toEqual(
+        RANGE_REQUEST.trading_calendar.session_dates,
+      );
+      expect(
+        result.checkpoints.map((checkpoint) => checkpoint.session_date),
+      ).toEqual(RANGE_REQUEST.trading_calendar.session_dates);
+      expect(
+        result.checkpoints.every(
+          (checkpoint) =>
+            checkpoint.status === "AVAILABLE" &&
+            checkpoint.attempt_count === 1,
+        ),
+      ).toBe(true);
+      expect(result.status).toBe("COMPLETE");
+      expect(result.progress).toMatchObject({
+        trading_sessions_requested: 4,
+        checkpoints_previously_completed: 0,
+        checkpoints_attempted: 4,
+        checkpoints_completed_this_run: 4,
+        checkpoints_remaining: 0,
+      });
+      expect(result.coverage).toMatchObject({
+        selector_attempts_requested: 4,
+        selector_attempts_attempted: 4,
+        selectors_found: 4,
+        checkpoints_available: 4,
+        checkpoints_failed: 0,
+      });
+      expect(result.continuation).toBeNull();
+    });
+
+    test("preserves partial progress, retries only transient failures, and resumes unresolved checkpoints", async () => {
+      const calls = new Map();
+      const discover = jest.fn(async (_backtester, input) => {
+        const date = input.as_of.slice(0, 10);
+        calls.set(date, (calls.get(date) ?? 0) + 1);
+        if (date === "2026-08-25" && calls.get(date) === 1) {
+          throw Object.assign(new Error("provider returned 429"), {
+            code: "RATE_LIMITED",
+            retryable: true,
+          });
+        }
+        if (date === "2026-08-27") {
+          throw Object.assign(new Error("provider timed out"), {
+            code: "ETIMEDOUT",
+            retryable: true,
+          });
+        }
+        return rangeCandidateResult(input, {
+          evidence_cache: {
+            contract_version: "1.0.0",
+            manifest_ids: [`sha256:${date.endsWith("24") ? "1".repeat(64) : "2".repeat(64)}`],
+            normalized_content_ids: [],
+            provider_payload_content_ids: [],
+            cache_hits: date.endsWith("24") ? 1 : 0,
+            cache_misses: date.endsWith("24") ? 0 : 1,
+            cache_only_hits: 0,
+            refreshes: 0,
+            retryable_failures: 0,
+            retryable_failure_hits: 0,
+            provider_calls_avoided: date.endsWith("24") ? 1 : 0,
+            bytes_read: 0,
+            bytes_written: 0,
+          },
+        });
+      });
+      const request = {
+        ...RANGE_REQUEST,
+        end_date: "2026-08-27",
+        max_concurrency: 1,
+      };
+
+      const first = await discoverHistoricalSpxCandidatesRange(
+        {},
+        request,
+        undefined,
+        { discover },
+      );
+
+      expect(
+        first.checkpoints.map((checkpoint) => ({
+          session_date: checkpoint.session_date,
+          status: checkpoint.status,
+          attempt_count: checkpoint.attempt_count,
+        })),
+      ).toEqual([
+        {
+          session_date: "2026-08-24",
+          status: "AVAILABLE",
+          attempt_count: 1,
+        },
+        {
+          session_date: "2026-08-25",
+          status: "AVAILABLE",
+          attempt_count: 2,
+        },
+        {
+          session_date: "2026-08-27",
+          status: "PROVIDER_TIMEOUT",
+          attempt_count: 2,
+        },
+      ]);
+      expect(first.status).toBe("PARTIAL");
+      expect(first.coverage).toMatchObject({
+        checkpoints_available: 2,
+        checkpoints_failed: 1,
+        provider_timeout_count: 1,
+        checkpoint_retry_count: 2,
+        checkpoints_fully_served_from_cache: 1,
+        checkpoints_requiring_provider_access: 2,
+        cache: {
+          cache_hits: 1,
+          cache_misses: 1,
+          provider_calls_avoided: 1,
+        },
+      });
+      expect(first.continuation).toMatchObject({
+        unresolved_session_dates: ["2026-08-27"],
+        completed_session_dates: ["2026-08-24", "2026-08-25"],
+      });
+
+      const resumeDiscover = jest.fn(async (_backtester, input) =>
+        rangeCandidateResult(input),
+      );
+      const resumed = await discoverHistoricalSpxCandidatesRange(
+        {},
+        {
+          ...request,
+          continuation_cursor: first.continuation.cursor,
+        },
+        undefined,
+        { discover: resumeDiscover },
+      );
+
+      expect(resumeDiscover).toHaveBeenCalledTimes(1);
+      expect(
+        resumeDiscover.mock.calls[0][1].as_of.slice(0, 10),
+      ).toBe("2026-08-27");
+      expect(resumed.progress).toMatchObject({
+        checkpoints_previously_completed: 2,
+        checkpoints_attempted: 1,
+        checkpoints_completed_this_run: 1,
+        checkpoints_remaining: 0,
+      });
+      expect(resumed.status).toBe("COMPLETE");
+      expect(resumed.continuation).toBeNull();
+    });
+
+    test("limits each invocation and keeps deferred checkpoints in the continuation cursor", async () => {
+      const discover = jest.fn(async (_backtester, input) =>
+        rangeCandidateResult(input),
+      );
+      const first = await discoverHistoricalSpxCandidatesRange(
+        {},
+        {
+          ...RANGE_REQUEST,
+          max_checkpoints_per_run: 2,
+        },
+        undefined,
+        { discover },
+      );
+
+      expect(discover).toHaveBeenCalledTimes(2);
+      expect(first.progress).toMatchObject({
+        trading_sessions_requested: 4,
+        checkpoints_attempted: 2,
+        checkpoints_deferred: 2,
+        checkpoints_remaining: 2,
+      });
+      expect(first.continuation.unresolved_session_dates).toEqual([
+        "2026-08-27",
+        "2026-08-28",
+      ]);
+
+      const secondDiscover = jest.fn(async (_backtester, input) =>
+        rangeCandidateResult(input),
+      );
+      const second = await discoverHistoricalSpxCandidatesRange(
+        {},
+        {
+          ...RANGE_REQUEST,
+          continuation_cursor: first.continuation.cursor,
+        },
+        undefined,
+        { discover: secondDiscover },
+      );
+
+      expect(
+        secondDiscover.mock.calls.map(
+          ([, input]) => input.as_of.slice(0, 10),
+        ),
+      ).toEqual(["2026-08-27", "2026-08-28"]);
+      expect(second.progress.checkpoints_previously_completed).toBe(2);
+      expect(second.progress.checkpoints_remaining).toBe(0);
+      expect(second.continuation).toBeNull();
+    });
+
+    test("rejects cursor tampering and logical-request changes before discovery", async () => {
+      const discover = jest.fn(async (_backtester, input) =>
+        rangeCandidateResult(input),
+      );
+      const first = await discoverHistoricalSpxCandidatesRange(
+        {},
+        {
+          ...RANGE_REQUEST,
+          max_checkpoints_per_run: 1,
+        },
+        undefined,
+        { discover },
+      );
+      const cursor = first.continuation.cursor;
+      discover.mockClear();
+
+      await expect(
+        discoverHistoricalSpxCandidatesRange(
+          {},
+          {
+            ...RANGE_REQUEST,
+            max_checkpoints_per_run: 1,
+            continuation_cursor: `${cursor.slice(0, -1)}${
+              cursor.endsWith("0") ? "1" : "0"
+            }`,
+          },
+          undefined,
+          { discover },
+        ),
+      ).rejects.toThrow("integrity check");
+      await expect(
+        discoverHistoricalSpxCandidatesRange(
+          {},
+          {
+            ...RANGE_REQUEST,
+            selector_grid: [
+              {
+                method: "DELTA",
+                value: "25",
+                days_until_expiration: 28,
+              },
+            ],
+            max_checkpoints_per_run: 1,
+            continuation_cursor: cursor,
+          },
+          undefined,
+          { discover },
+        ),
+      ).rejects.toThrow("does not match");
+      expect(discover).not.toHaveBeenCalled();
+    });
+
+    test("does not retry non-transient provider failures", async () => {
+      const discover = jest.fn(async () => {
+        throw Object.assign(new Error("provider rejected the request"), {
+          code: "BAD_REQUEST",
+          retryable: false,
+        });
+      });
+      const result = await discoverHistoricalSpxCandidatesRange(
+        {},
+        {
+          ...RANGE_REQUEST,
+          end_date: "2026-08-24",
+          retry_policy: {
+            max_attempts: 3,
+            backoff_ms: 0,
+          },
+        },
+        undefined,
+        { discover },
+      );
+
+      expect(discover).toHaveBeenCalledTimes(1);
+      expect(result.checkpoints[0]).toMatchObject({
+        status: "PROVIDER_ERROR",
+        attempt_count: 1,
+        error: {
+          code: "BAD_REQUEST",
+          retryable: false,
+        },
+      });
+      expect(result.continuation.unresolved_session_dates).toEqual([
+        "2026-08-24",
+      ]);
+    });
+
+    test("retries structured rate limits returned by single discovery", async () => {
+      let attempt = 0;
+      const discover = jest.fn(async (_backtester, input) => {
+        attempt += 1;
+        if (attempt === 1) {
+          return rangeCandidateResult(input, {
+            status: "NOT_AVAILABLE",
+            contracts: [],
+            attempts: [
+              {
+                option_side: "CALL",
+                selector: {
+                  method: "DELTA",
+                  value: "20",
+                  days_until_expiration: 28,
+                },
+                backtest_id: null,
+                status: "PROVIDER_ERROR",
+                error: "Request failed with status code 429",
+                provider_error: {
+                  code: "ERR_BAD_REQUEST",
+                  http_status: 429,
+                  retryable: true,
+                },
+              },
+            ],
+          });
+        }
+        return rangeCandidateResult(input);
+      });
+      const result = await discoverHistoricalSpxCandidatesRange(
+        {},
+        {
+          ...RANGE_REQUEST,
+          end_date: "2026-08-24",
+        },
+        undefined,
+        { discover },
+      );
+
+      expect(discover).toHaveBeenCalledTimes(2);
+      expect(result.checkpoints[0]).toMatchObject({
+        status: "AVAILABLE",
+        attempt_count: 2,
+      });
+      expect(result.coverage.checkpoint_retry_count).toBe(1);
+    });
+
+    test("retains partial evidence when a later retry times out", async () => {
+      let attempt = 0;
+      const discover = jest.fn(async (_backtester, input) => {
+        attempt += 1;
+        if (attempt === 1) {
+          return rangeCandidateResult(input, {
+            status: "PARTIAL",
+            attempts: [
+              {
+                option_side: "CALL",
+                selector: {
+                  method: "DELTA",
+                  value: "20",
+                  days_until_expiration: 28,
+                },
+                backtest_id: null,
+                status: "RECONSTRUCTED_CANDIDATE_FOUND",
+                error: null,
+              },
+              {
+                option_side: "PUT",
+                selector: {
+                  method: "DELTA",
+                  value: "20",
+                  days_until_expiration: 28,
+                },
+                backtest_id: null,
+                status: "PROVIDER_ERROR",
+                error: "provider timed out",
+                provider_error: {
+                  code: "ETIMEDOUT",
+                  http_status: null,
+                  retryable: true,
+                },
+              },
+            ],
+          });
+        }
+        throw Object.assign(new Error("provider timed out again"), {
+          code: "ETIMEDOUT",
+          retryable: true,
+        });
+      });
+      const result = await discoverHistoricalSpxCandidatesRange(
+        {},
+        {
+          ...RANGE_REQUEST,
+          end_date: "2026-08-24",
+        },
+        undefined,
+        { discover },
+      );
+
+      expect(result.checkpoints[0]).toMatchObject({
+        status: "PARTIAL",
+        attempt_count: 2,
+        result: {
+          status: "PARTIAL",
+          contracts: [{ provider_symbol: "SPXW-2026-08-24" }],
+        },
+        error: {
+          category: "PROVIDER_TIMEOUT",
+          retryable: true,
+        },
+      });
+      expect(result.continuation.unresolved_session_dates).toEqual([
+        "2026-08-24",
+      ]);
+    });
+
+    test("counts Backtester fallback as provider access on cache hits", async () => {
+      const discover = jest.fn(async (_backtester, input) =>
+        rangeCandidateResult(input, {
+          attempts: [
+            {
+              option_side: "CALL",
+              selector: {
+                method: "DELTA",
+                value: "20",
+                days_until_expiration: 28,
+              },
+              backtest_id: "job-1",
+              status: "CANDIDATE_FOUND",
+              error: null,
+            },
+          ],
+          evidence_cache: {
+            contract_version: "1.0.0",
+            manifest_ids: [`sha256:${"1".repeat(64)}`],
+            normalized_content_ids: [],
+            provider_payload_content_ids: [],
+            cache_hits: 1,
+            cache_misses: 0,
+            cache_only_hits: 0,
+            refreshes: 0,
+            retryable_failures: 0,
+            retryable_failure_hits: 0,
+            provider_calls_avoided: 1,
+            bytes_read: 1,
+            bytes_written: 0,
+          },
+        }),
+      );
+      const result = await discoverHistoricalSpxCandidatesRange(
+        {},
+        {
+          ...RANGE_REQUEST,
+          end_date: "2026-08-24",
+        },
+        undefined,
+        { discover },
+      );
+
+      expect(result.checkpoints[0]).toMatchObject({
+        cache_fully_served: false,
+        provider_access_required: true,
+      });
+      expect(result.coverage).toMatchObject({
+        checkpoints_fully_served_from_cache: 0,
+        checkpoints_requiring_provider_access: 1,
+      });
+    });
+
+    test("matches the successful single-checkpoint discovery contract exactly", async () => {
+      const single = await discoverHistoricalSpxCandidates(
+        fixtureBacktester(entryTimeIgnoredFixture),
+        {
+          ...PATH_B_REQUEST,
+          references: { checkpoint_id: "spx-range-parity" },
+        },
+        fixturePathBCandles(),
+      );
+      const range = await discoverHistoricalSpxCandidatesRange(
+        fixtureBacktester(entryTimeIgnoredFixture),
+        {
+          ...RANGE_REQUEST,
+          start_date: "2026-08-25",
+          end_date: "2026-08-25",
+          trading_calendar: {
+            timezone: "America/Los_Angeles",
+            local_time: "07:30",
+            session_dates: ["2026-08-25"],
+          },
+          sides: PATH_B_REQUEST.sides,
+          selector_grid: PATH_B_REQUEST.selector_grid,
+          resolution_profile: undefined,
+          candidate_construction_profile: undefined,
+          references: { checkpoint_id: "spx-range-parity" },
+          checkpoint_deadline_ms: 120_000,
+          retry_policy: {
+            max_attempts: 1,
+            backoff_ms: 0,
+          },
+        },
+        fixturePathBCandles(),
+      );
+
+      expect(range.checkpoints).toHaveLength(1);
+      expect(range.checkpoints[0]).toMatchObject({
+        session_date: "2026-08-25",
+        scheduled_checkpoint: "2026-08-25T14:30:00.000Z",
+        status: "AVAILABLE",
+        result: single,
+      });
+    });
+
+    test("bounds single-checkpoint provider work with the range deadline", async () => {
+      const never = new Promise(() => {});
+      const backtester = {
+        createBacktest: jest.fn(() => never),
+        getBacktest: jest.fn(() => never),
+        getBacktestLogs: jest.fn(() => never),
+        simulateTrade: jest.fn(() => never),
+      };
+
+      await expect(
+        discoverHistoricalSpxCandidates(
+          backtester,
+          CHECKPOINT_REQUEST,
+          undefined,
+          { deadline_ms: 20 },
+        ),
+      ).rejects.toMatchObject({
+        code: "PROVIDER_TIMEOUT",
+        retryable: true,
+      });
+      expect(backtester.createBacktest).toHaveBeenCalledWith(
+        expect.any(Object),
+        expect.objectContaining({
+          timeout_ms: expect.any(Number),
+          signal: expect.any(AbortSignal),
+        }),
+      );
+      expect(backtester.createBacktest.mock.calls[0][1].signal.aborted).toBe(
+        true,
+      );
+    });
+
+    test("does not start option batches after an underlying timeout", async () => {
+      const candles = {
+        getHistoricalCandles: jest.fn(
+          (request) =>
+            new Promise((resolve) => {
+              setTimeout(
+                () =>
+                  resolve({
+                    candles: [],
+                    snapshot_complete: false,
+                    snapshot_truncated: false,
+                  }),
+                40,
+              );
+              expect(request.deadline_ms).toBeUndefined();
+            }),
+        ),
+        getHistoricalCandlesBatch: jest.fn(),
+      };
+
+      await expect(
+        discoverHistoricalSpxCandidates(
+          fixtureBacktester(entryTimeIgnoredFixture),
+          PATH_B_REQUEST,
+          candles,
+          { deadline_ms: 10 },
+        ),
+      ).rejects.toMatchObject({
+        code: "PROVIDER_TIMEOUT",
+      });
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      expect(candles.getHistoricalCandlesBatch).not.toHaveBeenCalled();
+      expect(
+        candles.getHistoricalCandles.mock.calls[0][0].signal.aborted,
+      ).toBe(true);
     });
   });
 

@@ -2692,6 +2692,7 @@ function singleToBatch(
     timeout_ms: request.timeout_ms,
     max_candles: request.max_candles,
     evidence_cache: request.evidence_cache,
+    ...(request.signal ? { signal: request.signal } : {}),
   };
 }
 
@@ -2787,6 +2788,7 @@ export class CachedHistoricalCandlesService {
           max_buffer_bytes: request.max_buffer_bytes,
           timeout_ms: request.timeout_ms,
           max_candles: request.max_candles,
+          ...(request.signal ? { signal: request.signal } : {}),
         }),
       ),
     ];

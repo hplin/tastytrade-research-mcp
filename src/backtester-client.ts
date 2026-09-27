@@ -4,6 +4,11 @@ import { TastytradeOAuthClient } from "./oauth-client.js";
 
 export type JsonObject = Record<string, unknown>;
 
+export type BacktesterRequestOptions = {
+  timeout_ms?: number;
+  signal?: AbortSignal;
+};
+
 export class TastytradeBacktesterClient {
   private readonly http: AxiosInstance;
 
@@ -25,54 +30,81 @@ export class TastytradeBacktesterClient {
     return { Authorization: `Bearer ${token}` };
   }
 
-  async getAvailableDates(): Promise<unknown> {
+  private async requestConfig(options?: BacktesterRequestOptions) {
+    return {
+      headers: await this.headers(),
+      ...(options?.timeout_ms === undefined
+        ? {}
+        : { timeout: options.timeout_ms }),
+      ...(options?.signal === undefined ? {} : { signal: options.signal }),
+    };
+  }
+
+  async getAvailableDates(
+    options?: BacktesterRequestOptions,
+  ): Promise<unknown> {
     const response = await this.http.get("/available-dates", {
-      headers: await this.headers(),
+      ...(await this.requestConfig(options)),
     });
     return response.data;
   }
 
-  async listBacktests(): Promise<unknown> {
+  async listBacktests(options?: BacktesterRequestOptions): Promise<unknown> {
     const response = await this.http.get("/backtests", {
-      headers: await this.headers(),
+      ...(await this.requestConfig(options)),
     });
     return response.data;
   }
 
-  async createBacktest(request: JsonObject): Promise<unknown> {
+  async createBacktest(
+    request: JsonObject,
+    options?: BacktesterRequestOptions,
+  ): Promise<unknown> {
     const response = await this.http.post("/backtests", request, {
-      headers: await this.headers(),
+      ...(await this.requestConfig(options)),
     });
     return response.data;
   }
 
-  async getBacktest(id: string): Promise<unknown> {
+  async getBacktest(
+    id: string,
+    options?: BacktesterRequestOptions,
+  ): Promise<unknown> {
     const response = await this.http.get(`/backtests/${encodeURIComponent(id)}`, {
-      headers: await this.headers(),
+      ...(await this.requestConfig(options)),
     });
     return response.data;
   }
 
-  async getBacktestLogs(id: string): Promise<unknown> {
+  async getBacktestLogs(
+    id: string,
+    options?: BacktesterRequestOptions,
+  ): Promise<unknown> {
     const response = await this.http.get(
       `/backtests/${encodeURIComponent(id)}/logs`,
-      { headers: await this.headers() },
+      await this.requestConfig(options),
     );
     return response.data;
   }
 
-  async cancelBacktest(id: string): Promise<unknown> {
+  async cancelBacktest(
+    id: string,
+    options?: BacktesterRequestOptions,
+  ): Promise<unknown> {
     const response = await this.http.post(
       `/backtests/${encodeURIComponent(id)}/cancel`,
       {},
-      { headers: await this.headers() },
+      await this.requestConfig(options),
     );
     return response.data;
   }
 
-  async simulateTrade(request: JsonObject): Promise<unknown> {
+  async simulateTrade(
+    request: JsonObject,
+    options?: BacktesterRequestOptions,
+  ): Promise<unknown> {
     const response = await this.http.post("/simulate-trade", request, {
-      headers: await this.headers(),
+      ...(await this.requestConfig(options)),
     });
     return response.data;
   }
