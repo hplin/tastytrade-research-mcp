@@ -1,5 +1,8 @@
 import { createHash } from "node:crypto";
-import type { JsonObject } from "./backtester-client.js";
+import type {
+  BacktesterRequestOptions,
+  JsonObject,
+} from "./backtester-client.js";
 import {
   normalizeBacktestSelector,
   type BacktestStrikeSelector,
@@ -108,6 +111,11 @@ export type HistoricalCandidateAttempt = {
     | "INVALID_PROVIDER_LOGS"
     | "PROVIDER_ERROR";
   error: string | null;
+  provider_error?: {
+    code: string | null;
+    http_status: number | null;
+    retryable: boolean;
+  };
 };
 
 export type HistoricalSpxCandidatesResult = {
@@ -159,11 +167,37 @@ export type HistoricalSpxCandidatesResult = {
 };
 
 export type HistoricalCandidateBacktester = {
-  createBacktest(request: JsonObject): Promise<unknown>;
-  getBacktest(id: string): Promise<unknown>;
-  getBacktestLogs(id: string): Promise<unknown>;
-  simulateTrade(request: JsonObject): Promise<unknown>;
+  createBacktest(
+    request: JsonObject,
+    options?: BacktesterRequestOptions,
+  ): Promise<unknown>;
+  getBacktest(
+    id: string,
+    options?: BacktesterRequestOptions,
+  ): Promise<unknown>;
+  getBacktestLogs(
+    id: string,
+    options?: BacktesterRequestOptions,
+  ): Promise<unknown>;
+  simulateTrade(
+    request: JsonObject,
+    options?: BacktesterRequestOptions,
+  ): Promise<unknown>;
 };
+
+export type HistoricalSpxCandidateExecutionOptions = {
+  deadline_ms?: number;
+};
+
+export class HistoricalSpxCandidateProviderTimeoutError extends Error {
+  readonly code = "PROVIDER_TIMEOUT";
+  readonly retryable = true;
+
+  constructor(message: string) {
+    super(message);
+    this.name = "HistoricalSpxCandidateProviderTimeoutError";
+  }
+}
 
 export type CandidatePlanItem = {
   option_side: OptionSide;
@@ -208,7 +242,13 @@ const MAX_LOOKBACK_CALENDAR_DAYS = 30;
 const MAX_CANDIDATE_REQUESTS = 12;
 const MAX_POLL_ATTEMPTS = 30;
 const POLL_INTERVAL_MS = 1_000;
+const MAX_EXECUTION_DEADLINE_MS = 300_000;
 const NEW_YORK_TIMEZONE = "America/New_York";
+
+type ExecutionDeadline = {
+  deadline_at: number;
+  signal: AbortSignal;
+};
 
 const LIMITATION_WARNINGS = [
   "HISTORICAL_SELECTOR_CANDIDATE_SET_NOT_FULL_CHAIN",
@@ -543,9 +583,59 @@ function sleep(milliseconds: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
 }
 
+function remainingDeadlineMs(deadline: ExecutionDeadline): number {
+  const remaining = deadline.deadline_at - Date.now();
+  if (remaining <= 0) {
+    throw new HistoricalSpxCandidateProviderTimeoutError(
+      "Historical SPX candidate provider work exceeded its deadline.",
+    );
+  }
+  return remaining;
+}
+
+function providerRequestOptions(
+  deadline: ExecutionDeadline,
+): BacktesterRequestOptions {
+  return {
+    timeout_ms: remainingDeadlineMs(deadline),
+    signal: deadline.signal,
+  };
+}
+
+async function deadlineSleep(
+  milliseconds: number,
+  deadline?: ExecutionDeadline,
+): Promise<void> {
+  if (!deadline) {
+    await sleep(milliseconds);
+    return;
+  }
+  const duration = Math.min(milliseconds, remainingDeadlineMs(deadline));
+  await new Promise<void>((resolve, reject) => {
+    const finish = () => {
+      deadline.signal.removeEventListener("abort", abort);
+      resolve();
+    };
+    const timer = setTimeout(finish, duration);
+    const abort = () => {
+      clearTimeout(timer);
+      deadline.signal.removeEventListener("abort", abort);
+      reject(
+        new HistoricalSpxCandidateProviderTimeoutError(
+          "Historical SPX candidate provider work exceeded its deadline.",
+        ),
+      );
+    };
+    deadline.signal.addEventListener("abort", abort, { once: true });
+    if (deadline.signal.aborted) abort();
+  });
+  remainingDeadlineMs(deadline);
+}
+
 async function waitForCompletedBacktest(
   backtester: HistoricalCandidateBacktester,
   initial: unknown,
+  deadline?: ExecutionDeadline,
 ): Promise<{ id: string; response: unknown }> {
   const id = backtestId(initial);
   if (!id) throw new Error("Backtester create response did not include an id.");
@@ -555,14 +645,16 @@ async function waitForCompletedBacktest(
   }
 
   for (let attempt = 0; attempt < MAX_POLL_ATTEMPTS; attempt += 1) {
-    current = await backtester.getBacktest(id);
+    current = deadline
+      ? await backtester.getBacktest(id, providerRequestOptions(deadline))
+      : await backtester.getBacktest(id);
     const status = backtestStatus(current);
     if (status === "completed") return { id, response: current };
     if (status !== null && status !== "pending" && status !== "running") {
       throw new Error(`Backtest ${id} returned unsupported status: ${status}.`);
     }
     if (attempt < MAX_POLL_ATTEMPTS - 1) {
-      await sleep(POLL_INTERVAL_MS);
+      await deadlineSleep(POLL_INTERVAL_MS, deadline);
     }
   }
   throw new Error(`Backtest ${id} did not complete within 30 seconds.`);
@@ -865,8 +957,9 @@ function exactSimulationSnapshot(
 async function enrichCandidate(
   backtester: HistoricalCandidateBacktester,
   candidate: HistoricalSpxCandidate,
+  deadline?: ExecutionDeadline,
 ): Promise<HistoricalSpxCandidate> {
-  const raw = await backtester.simulateTrade({
+  const request = {
     underlying: "SPX",
     startTime: candidate.selected_at,
     endTime: candidate.selected_at,
@@ -877,7 +970,13 @@ async function enrichCandidate(
         quantity: 1,
       },
     ],
-  });
+  };
+  const raw = deadline
+    ? await backtester.simulateTrade(
+        request,
+        providerRequestOptions(deadline),
+      )
+    : await backtester.simulateTrade(request);
   const snapshot = exactSimulationSnapshot(raw, candidate.selected_at);
   if (!snapshot) {
     return {
@@ -937,10 +1036,63 @@ function errorMessage(error: unknown): string {
   return String(error);
 }
 
-export async function discoverHistoricalSpxCandidates(
+function providerErrorMetadata(error: unknown): {
+  code: string | null;
+  http_status: number | null;
+  retryable: boolean;
+} {
+  const code =
+    error &&
+    typeof error === "object" &&
+    typeof (error as { code?: unknown }).code === "string"
+      ? (error as { code: string }).code
+      : null;
+  const httpStatus =
+    error &&
+    typeof error === "object" &&
+    typeof (error as { response?: { status?: unknown } }).response?.status ===
+      "number"
+      ? (error as { response: { status: number } }).response.status
+      : null;
+  const normalizedCode = code?.toUpperCase() ?? "";
+  const explicitlyRetryable =
+    error &&
+    typeof error === "object" &&
+    (error as { retryable?: unknown }).retryable === true;
+  return {
+    code,
+    http_status: httpStatus,
+    retryable: Boolean(
+      explicitlyRetryable ||
+        httpStatus === 408 ||
+        httpStatus === 429 ||
+        (httpStatus !== null && httpStatus >= 500) ||
+        [
+          "ETIMEDOUT",
+          "ECONNABORTED",
+          "ECONNRESET",
+          "EAI_AGAIN",
+          "ERR_CANCELED",
+          "PROVIDER_TIMEOUT",
+        ].includes(normalizedCode),
+    ),
+  };
+}
+
+function isProviderTimeoutError(error: unknown): boolean {
+  return (
+    error instanceof HistoricalSpxCandidateProviderTimeoutError ||
+    (error !== null &&
+      typeof error === "object" &&
+      (error as { code?: unknown }).code === "PROVIDER_TIMEOUT")
+  );
+}
+
+async function discoverHistoricalSpxCandidatesWithinDeadline(
   backtester: HistoricalCandidateBacktester,
   input: HistoricalSpxCandidatesInput,
   candles?: HistoricalCandidateCandles,
+  deadline?: ExecutionDeadline,
 ): Promise<HistoricalSpxCandidatesResult> {
   const plan = prepareHistoricalSpxCandidates(input);
   const contracts: HistoricalSpxCandidate[] = [];
@@ -962,14 +1114,19 @@ export async function discoverHistoricalSpxCandidates(
 
   if (candles) {
     try {
-      const reconstruction = await reconstructHistoricalSpxCandidates(
-        plan,
-        candles,
-      );
+      const reconstruction = deadline
+        ? await reconstructHistoricalSpxCandidates(plan, candles, {
+            deadline_at_ms: deadline.deadline_at,
+            signal: deadline.signal,
+          })
+        : await reconstructHistoricalSpxCandidates(plan, candles);
       reconstructedCandidates = reconstruction.candidates;
       warnings.push(...reconstruction.warnings);
       evidenceCacheSummary = reconstruction.evidence_cache;
     } catch (error) {
+      if (isProviderTimeoutError(error)) {
+        throw error;
+      }
       if (cacheOnly || error instanceof EvidenceCacheError) {
         throw error;
       }
@@ -1014,10 +1171,24 @@ export async function discoverHistoricalSpxCandidates(
     }
     let id: string | null = null;
     try {
-      const created = await backtester.createBacktest(item.backtest_request);
-      const completed = await waitForCompletedBacktest(backtester, created);
+      const created = deadline
+        ? await backtester.createBacktest(
+            item.backtest_request,
+            providerRequestOptions(deadline),
+          )
+        : await backtester.createBacktest(item.backtest_request);
+      const completed = await waitForCompletedBacktest(
+        backtester,
+        created,
+        deadline,
+      );
       id = completed.id;
-      const logs = await backtester.getBacktestLogs(id);
+      const logs = deadline
+        ? await backtester.getBacktestLogs(
+            id,
+            providerRequestOptions(deadline),
+          )
+        : await backtester.getBacktestLogs(id);
       const extraction = extractCandidate(logs, item, id, plan);
       if (extraction.future_trials_excluded > 0) {
         warnings.push(
@@ -1049,8 +1220,11 @@ export async function discoverHistoricalSpxCandidates(
 
       let candidate = extraction.candidate;
       try {
-        candidate = await enrichCandidate(backtester, candidate);
+        candidate = await enrichCandidate(backtester, candidate, deadline);
       } catch (error) {
+        if (isProviderTimeoutError(error)) {
+          throw error;
+        }
         candidate = {
           ...candidate,
           warnings: [
@@ -1068,7 +1242,11 @@ export async function discoverHistoricalSpxCandidates(
         error: null,
       });
     } catch (error) {
+      if (isProviderTimeoutError(error)) {
+        throw error;
+      }
       const message = errorMessage(error);
+      const providerError = providerErrorMetadata(error);
       warnings.push(`${attemptKey(item)}:PROVIDER_ERROR:${message}`);
       attempts.push({
         option_side: item.option_side,
@@ -1076,6 +1254,7 @@ export async function discoverHistoricalSpxCandidates(
         backtest_id: id,
         status: "PROVIDER_ERROR",
         error: message,
+        provider_error: providerError,
       });
     }
   }
@@ -1185,4 +1364,59 @@ export async function discoverHistoricalSpxCandidates(
     warnings: [...new Set(warnings)],
     evidence_cache: evidenceCacheSummary,
   };
+}
+
+export async function discoverHistoricalSpxCandidates(
+  backtester: HistoricalCandidateBacktester,
+  input: HistoricalSpxCandidatesInput,
+  candles?: HistoricalCandidateCandles,
+  execution: HistoricalSpxCandidateExecutionOptions = {},
+): Promise<HistoricalSpxCandidatesResult> {
+  if (execution.deadline_ms === undefined) {
+    return discoverHistoricalSpxCandidatesWithinDeadline(
+      backtester,
+      input,
+      candles,
+    );
+  }
+  if (
+    !Number.isSafeInteger(execution.deadline_ms) ||
+    execution.deadline_ms < 1 ||
+    execution.deadline_ms > MAX_EXECUTION_DEADLINE_MS
+  ) {
+    throw new Error(
+      `deadline_ms must be an integer from 1 through ${MAX_EXECUTION_DEADLINE_MS}.`,
+    );
+  }
+
+  const controller = new AbortController();
+  const deadline: ExecutionDeadline = {
+    deadline_at: Date.now() + execution.deadline_ms,
+    signal: controller.signal,
+  };
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  const timeoutPromise = new Promise<never>((_resolve, reject) => {
+    timeout = setTimeout(() => {
+      reject(
+        new HistoricalSpxCandidateProviderTimeoutError(
+          `Historical SPX candidate provider work exceeded its ${execution.deadline_ms}ms deadline.`,
+        ),
+      );
+      controller.abort();
+    }, execution.deadline_ms);
+  });
+
+  try {
+    return await Promise.race([
+      discoverHistoricalSpxCandidatesWithinDeadline(
+        backtester,
+        input,
+        candles,
+        deadline,
+      ),
+      timeoutPromise,
+    ]);
+  } finally {
+    if (timeout !== undefined) clearTimeout(timeout);
+  }
 }

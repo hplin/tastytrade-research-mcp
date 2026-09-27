@@ -76,6 +76,10 @@ The suite builds the TypeScript project before running Jest and covers:
 - double-diagonal aggregate Backtester limitations;
 - Backtester simulation normalization;
 - checkpoint-safe SPX selector candidate discovery;
+- explicit-calendar SPX range discovery with bounded workers, hard
+  checkpoint deadlines, transient retry, ordered partial progress,
+  continuation without completed-checkpoint replay, and aggregate cache
+  diagnostics;
 - exact provider identity recovery from captured Backtester logs;
 - strict exclusion of stale and future selector trials that do not occur
   exactly at `as_of`;

@@ -146,6 +146,138 @@ cohort; native-hour New York RTH reconstruction requires the explicit
 request ID. Its grading, bucket, and final selection fields are not
 interpreted by this MCP.
 
+## Date-range discovery
+
+`tastytrade_discover_historical_spx_candidates_range` coordinates the same
+single-checkpoint discovery contract across an explicit trading calendar. It
+does not infer weekdays or exchange holidays. The caller supplies every
+eligible session:
+
+```json
+{
+  "request": {
+    "underlying": "SPX",
+    "start_date": "2026-08-03",
+    "end_date": "2026-08-31",
+    "trading_calendar": {
+      "timezone": "America/Los_Angeles",
+      "local_time": "07:30",
+      "session_dates": [
+        "2026-08-03",
+        "2026-08-04",
+        "2026-08-05",
+        "2026-08-06",
+        "2026-08-07"
+      ]
+    },
+    "min_dte": 21,
+    "max_dte": 35,
+    "sides": ["CALL", "PUT"],
+    "selector_grid": [
+      {
+        "method": "DELTA",
+        "value": 20,
+        "days_until_expiration": 21
+      },
+      {
+        "method": "PERCENTAGE_OTM",
+        "value": 0.01,
+        "days_until_expiration": 21
+      }
+    ],
+    "resolution_profile": {
+      "profile_id": "HOURLY_PROVIDER_ALIGNED_RESEARCH",
+      "profile_version": "1.0.0"
+    },
+    "candidate_construction_profile": {
+      "version": "SPX-CANDIDATE-RESEARCH-V1"
+    },
+    "phase": "REGRESSION_RESEARCH",
+    "max_concurrency": 2,
+    "checkpoint_deadline_ms": 60000,
+    "max_checkpoints_per_run": 25,
+    "retry_policy": {
+      "max_attempts": 2,
+      "backoff_ms": 250
+    },
+    "evidence_cache": {
+      "mode": "READ_WRITE",
+      "dataset_id": "dxlink-candles"
+    }
+  }
+}
+```
+
+The date bounds select from `trading_calendar.session_dates`; an empty
+intersection is invalid. Session dates must be unique and strictly
+increasing. Each selected local checkpoint is resolved before provider work
+begins, so ambiguous or nonexistent local times fail the whole input without
+discarding provider evidence from an already-started run.
+
+The range coordinator:
+
+- runs at most four checkpoint workers and at most 50 checkpoints per
+  invocation;
+- applies one hard deadline to the complete reconstruction/Backtester retry
+  sequence for each checkpoint; its abort signal is operational metadata and
+  does not enter immutable candle-cache fingerprints;
+- retries only timeout or rate-limit failures, up to three attempts;
+- emits checkpoint results in calendar order even when workers complete out
+  of order;
+- preserves the complete single-checkpoint result unchanged under each
+  checkpoint;
+- reports `AVAILABLE`, `PARTIAL`, `NOT_AVAILABLE`, `PROVIDER_TIMEOUT`,
+  `PROVIDER_RATE_LIMIT`, `PROVIDER_ERROR`, or `CACHE_ERROR`;
+- aggregates selector coverage by DTE and side, failure counts, retries, and
+  immutable-cache summaries; and
+- reports how many checkpoints were fully served from cache or required
+  provider access.
+
+The logical `request_id` includes the normalized date range, complete
+calendar, resolved checkpoints, selector/DTE configuration, resolution and
+candidate-construction profiles, and references. It intentionally excludes
+worker count, deadline, retry tuning, invocation limit, and continuation
+state.
+
+When work remains, `continuation` contains an opaque integrity-checked cursor,
+the completed session dates, and the unresolved session dates. Supply the
+cursor unchanged as `continuation_cursor` with the same logical request.
+Completed checkpoints are not called again. Results from a resumed invocation
+are incremental: retain the completed checkpoint payloads from earlier
+responses and append the newly completed payloads. Changing a logical input
+causes cursor validation to fail.
+
+`evidence_cache.as_of` and `evidence_cache.evidence_role` are assigned per
+checkpoint and therefore cannot be supplied at range level. `CACHE_ONLY`
+continues to forbid Backtester fallback. Exact manifest fingerprints and
+single-checkpoint anti-lookahead rules are unchanged.
+
+## 2026-08 range acceptance
+
+The 2026-09-27 live acceptance submitted all 21 explicit sessions from
+2026-08-03 through 2026-08-31 as one logical batch at 07:30
+`America/Los_Angeles`. It requested CALL and PUT Delta-20 and 1%-OTM
+selectors at 21, 28, and 35 DTE: 252 selector attempts.
+
+The first `READ_WRITE` invocation preserved 169 reconstructed candidates and
+returned three `AVAILABLE` plus 18 `PARTIAL` checkpoints. Five checkpoints
+were terminal; the other 16 retained their partial evidence and continuation
+state after Backtester returned HTTP 429. Continuation rounds attempted only
+those 16 unresolved dates and did not repeat the five completed dates.
+
+The immutable candle evidence then replayed all 21 sessions in one
+`CACHE_ONLY` invocation:
+
+- all 21 checkpoints completed with no continuation;
+- the same three `AVAILABLE`, 18 `PARTIAL`, and 169 candidates were retained;
+- 399 exact cache requests were hits and 399 provider calls were avoided;
+- no candle-provider or Backtester call occurred; and
+- all 21 checkpoints reported fully cache-served with zero requiring provider
+  access.
+
+The private manifests and full acceptance payload remain outside the
+repository.
+
 ## 2026-08-25 07:30 PT validation
 
 The live four-selector smoke test completed without creating Backtester jobs:

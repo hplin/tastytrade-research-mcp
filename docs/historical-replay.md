@@ -9,6 +9,33 @@ changing candidate selection, grading, or paper state.
 The output contract is `1.0.0`; its machine-readable schema is
 [`historical-replay.schema.json`](historical-replay.schema.json).
 
+## Monthly and multi-month candidate acquisition
+
+Use `tastytrade_discover_historical_spx_candidates_range` to acquire the
+frozen checkpoint-level candidate inputs for a monthly or approximately
+six-month replay. Supply the authoritative trading-session list explicitly;
+the MCP never infers sessions from weekdays.
+
+The request may cover the full study window while
+`max_checkpoints_per_run` bounds one invocation. If a provider timeout,
+rate-limit, cache error, or invocation limit leaves work unresolved, retain
+the completed checkpoint payloads and call the same logical request again
+with the returned opaque `continuation_cursor`. The resumed response is
+incremental and does not repeat completed checkpoints.
+
+Use `READ_WRITE` to build immutable source evidence and retain the aggregate
+manifest IDs. A deterministic replay supplies those exact IDs with
+`CACHE_ONLY`; this preserves request fingerprints and disables Backtester
+fallback. Keep distinct checkpoint populations separate when extending a
+study beyond the 07:30 `INITIAL` population.
+
+The 2026-09-27 August acceptance resolved all 21 sessions in one logical
+request. Provider rate limiting left 16 partial checkpoints resumable while
+preserving 169 reconstructed candidates; continuation did not repeat the five
+terminal checkpoints. A subsequent full-range `CACHE_ONLY` invocation
+completed all 21 checkpoints from 399 immutable cache hits, avoided 399
+provider calls, and made no candle-provider or Backtester request.
+
 ## Frozen inputs
 
 Freeze these values before retrieving or inspecting forward outcome evidence:
@@ -123,20 +150,23 @@ earlier frozen report. The equivalent MCP call is
 
 A Skills or regression runner should execute the chain in this order:
 
-1. obtain both frozen policy outputs from the authoritative grader;
-2. preserve every accepted candidate in their union, plus missing/rejected
+1. acquire the complete timestamp-safe candidate set with
+   `tastytrade_discover_historical_spx_candidates_range`, resuming only its
+   unresolved checkpoints;
+2. obtain both frozen policy outputs from the authoritative grader;
+3. preserve every accepted candidate in their union, plus missing/rejected
    candidates used for the missing-data denominator;
-3. retrieve frozen exact packages with
+4. retrieve frozen exact packages with
    `tastytrade_get_historical_option_package_horizons` using an authoritative
    caller-supplied trading-session calendar, then inspect its aggregate
    strict and valuation-tier coverage diagnostics;
-4. normalize exact-leg quote or reference evidence with
+5. normalize exact-leg quote or reference evidence with
    `tastytrade_normalize_historical_execution_evidence` (the optional horizon
    fallback supplies a complete `execution_evidence_input`);
-5. run each caller-frozen execution profile with
+6. run each caller-frozen execution profile with
    `tastytrade_simulate_historical_execution`;
-6. assemble the complete candidate × scenario × horizon matrix; and
-7. call the replay report builder, then validate the result against the JSON
+7. assemble the complete candidate × scenario × horizon matrix; and
+8. call the replay report builder, then validate the result against the JSON
    schema before handing it to regression reporting.
 
 The runner must not write `SPX-Paper-Sim` monthly files or

@@ -63,6 +63,7 @@ export type HistoricalCandlesInput = {
   timeout_ms?: number;
   max_candles?: number;
   evidence_cache?: EvidenceCacheRequest;
+  signal?: AbortSignal;
 };
 
 export type HistoricalCandleInstrument = {
@@ -86,6 +87,7 @@ export type HistoricalCandlesBatchInput = {
   timeout_ms?: number;
   max_candles?: number;
   evidence_cache?: EvidenceCacheRequest;
+  signal?: AbortSignal;
 };
 
 export type HistoricalCandle = {
@@ -943,8 +945,38 @@ function isRetryable(error: unknown): boolean {
   );
 }
 
-function wait(milliseconds: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, milliseconds));
+export class HistoricalCandlesAbortedError extends Error {
+  readonly code = "PROVIDER_TIMEOUT";
+  readonly retryable = true;
+
+  constructor() {
+    super("Historical candle request was aborted.");
+    this.name = "HistoricalCandlesAbortedError";
+  }
+}
+
+function assertNotAborted(signal?: AbortSignal): void {
+  if (signal?.aborted) throw new HistoricalCandlesAbortedError();
+}
+
+function wait(milliseconds: number, signal?: AbortSignal): Promise<void> {
+  assertNotAborted(signal);
+  if (!signal) {
+    return new Promise((resolve) => setTimeout(resolve, milliseconds));
+  }
+  return new Promise((resolve, reject) => {
+    const finish = () => {
+      signal.removeEventListener("abort", abort);
+      resolve();
+    };
+    const timer = setTimeout(finish, milliseconds);
+    const abort = () => {
+      clearTimeout(timer);
+      signal.removeEventListener("abort", abort);
+      reject(new HistoricalCandlesAbortedError());
+    };
+    signal.addEventListener("abort", abort, { once: true });
+  });
 }
 
 function assertTrustedDxlinkUrl(value: string): string {
@@ -1056,7 +1088,8 @@ export class TastytradeHistoricalCandlesClient {
     assertTrustedHosts();
   }
 
-  private async getQuoteToken(): Promise<QuoteToken> {
+  private async getQuoteToken(signal?: AbortSignal): Promise<QuoteToken> {
+    assertNotAborted(signal);
     const now = this.clock();
     if (this.quoteToken && now < this.quoteTokenExpiresAt) {
       return this.quoteToken;
@@ -1066,9 +1099,11 @@ export class TastytradeHistoricalCandlesClient {
     for (let attempt = 0; attempt < 3; attempt += 1) {
       try {
         const accessToken = await this.oauth.getAccessToken();
+        assertNotAborted(signal);
         const response = await this.http.get<QuoteTokenResponse>(
           "/api-quote-tokens",
           {
+            signal,
             headers: { Authorization: `Bearer ${accessToken}` },
           },
         );
@@ -1089,7 +1124,7 @@ export class TastytradeHistoricalCandlesClient {
         lastError = error;
         if (!isRetryable(error) || attempt === 2) throw error;
         const baseDelay = 250 * 2 ** attempt;
-        await wait(baseDelay + Math.floor(Math.random() * 100));
+        await wait(baseDelay + Math.floor(Math.random() * 100), signal);
       }
     }
     throw lastError;
@@ -1119,6 +1154,7 @@ export class TastytradeHistoricalCandlesClient {
       timeout_ms: input.timeout_ms,
       max_candles: input.max_candles,
       evidence_cache: input.evidence_cache,
+      ...(input.signal ? { signal: input.signal } : {}),
     });
     return result;
   }
@@ -1126,6 +1162,7 @@ export class TastytradeHistoricalCandlesClient {
   async getHistoricalCandlesBatch(
     input: HistoricalCandlesBatchInput,
   ): Promise<HistoricalCandlesResult[]> {
+    assertNotAborted(input.signal);
     if (
       input.evidence_cache &&
       input.evidence_cache.mode !== "BYPASS"
@@ -1231,7 +1268,8 @@ export class TastytradeHistoricalCandlesClient {
     ) {
       throw new Error("instruments must have unique streamer_symbol values.");
     }
-    const quoteToken = await this.getQuoteToken();
+    const quoteToken = await this.getQuoteToken(input.signal);
+    assertNotAborted(input.signal);
     const snapshot = await this.readSnapshot({
       quoteToken,
       candleSymbols,
@@ -1239,6 +1277,7 @@ export class TastytradeHistoricalCandlesClient {
       endMs,
       session,
       budgets,
+      signal: input.signal,
     });
     const retrievedAt = new Date(this.clock()).toISOString();
     const requestId = stableRequestId({
@@ -1452,7 +1491,9 @@ export class TastytradeHistoricalCandlesClient {
     endMs: number;
     session: ReturnType<typeof sessionConfiguration>;
     budgets: HistoricalCandleBudgets;
+    signal?: AbortSignal;
   }): Promise<SnapshotReadResult> {
+    assertNotAborted(input.signal);
     return new Promise((resolve, reject) => {
       const socket = this.socketFactory(input.quoteToken.url);
       const symbolStates = new Map<string, SnapshotSymbolState>(
@@ -1500,6 +1541,7 @@ export class TastytradeHistoricalCandlesClient {
       let pendingMessageBytes = 0;
       let keepalive: ReturnType<typeof setInterval> | null = null;
       let deadline: ReturnType<typeof setTimeout> | null = null;
+      let abortListener: (() => void) | null = null;
       let messageQueue = Promise.resolve();
       let stage: HistoricalCandlesTimeoutStage = "CONNECTING";
 
@@ -1525,6 +1567,9 @@ export class TastytradeHistoricalCandlesClient {
       const cleanup = () => {
         if (deadline) clearTimeout(deadline);
         if (keepalive) clearInterval(keepalive);
+        if (abortListener) {
+          input.signal?.removeEventListener("abort", abortListener);
+        }
         unsubscribe([...activeSymbols]);
         if (socket.readyState === DXLINK_OPEN) {
           socket.close(1000, "historical snapshot stopped");
@@ -1551,6 +1596,10 @@ export class TastytradeHistoricalCandlesClient {
         cleanup();
         reject(error);
       };
+      abortListener = () => fail(new HistoricalCandlesAbortedError());
+      input.signal?.addEventListener("abort", abortListener, {
+        once: true,
+      });
       const isTerminal = (state: SnapshotSymbolState) =>
         state.providerComplete ||
         state.providerSnipped ||
