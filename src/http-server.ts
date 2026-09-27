@@ -9,6 +9,7 @@ import type { OAuthTokenVerifier } from "@modelcontextprotocol/sdk/server/auth/p
 import type { AuthInfo } from "@modelcontextprotocol/sdk/server/auth/types.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { TastytradeBacktesterClient } from "./backtester-client.js";
+import { evidenceCacheFromEnv } from "./evidence-cache.js";
 import { TastytradeHistoricalCandlesClient } from "./historical-candles.js";
 import { TastytradeOAuthClient } from "./oauth-client.js";
 import {
@@ -58,6 +59,7 @@ function defaultServices(): ResearchServices {
   return {
     backtester: new TastytradeBacktesterClient(oauth),
     candles: new TastytradeHistoricalCandlesClient(oauth),
+    evidenceCache: evidenceCacheFromEnv(),
   };
 }
 
