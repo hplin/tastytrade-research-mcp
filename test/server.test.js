@@ -524,7 +524,7 @@ describe("MCP research server", () => {
       expect(candles.getHistoricalCandlesBatch).toHaveBeenCalled();
       expect(
         candles.getHistoricalCandlesBatch.mock.calls.every(
-          ([request]) => request.instruments.length <= 20,
+          ([request]) => request.instruments.length <= 100,
         ),
       ).toBe(true);
 

@@ -342,6 +342,43 @@ function checkpointPackageRequest(
 }
 
 describe("private immutable research evidence cache", () => {
+  test("reports cache lookup and provider bootstrap without changing immutable identity", async () => {
+    await withCache(async (cache) => {
+      const source = provider();
+      const service = new CachedHistoricalCandlesService(source, cache);
+      const request = requestFor(
+        ["SPX"],
+        "2026-08-24T14:30:00.000Z",
+        { mode: "READ_WRITE" },
+      );
+      const firstEvents = [];
+      const [first] = await service.getHistoricalCandlesBatch(request, {
+        on_progress: (event) => firstEvents.push(event),
+      });
+      const secondEvents = [];
+      const [second] = await service.getHistoricalCandlesBatch(request, {
+        on_progress: (event) => secondEvents.push(event),
+      });
+
+      expect(firstEvents).toEqual([
+        { stage: "CACHE_LOOKUP", state: "STARTED" },
+        { stage: "PROVIDER_BOOTSTRAP", state: "STARTED" },
+        { stage: "PROVIDER_BOOTSTRAP", state: "COMPLETED" },
+        { stage: "CACHE_LOOKUP", state: "COMPLETED" },
+      ]);
+      expect(secondEvents).toEqual([
+        { stage: "CACHE_LOOKUP", state: "STARTED" },
+        { stage: "CACHE_LOOKUP", state: "COMPLETED" },
+      ]);
+      expect(source.getHistoricalCandlesBatch).toHaveBeenCalledTimes(1);
+      expect(first.evidence_cache.cache_status).toBe("MISS");
+      expect(second.evidence_cache.cache_status).toBe("HIT");
+      expect(second.evidence_cache.request_fingerprint).toBe(
+        first.evidence_cache.request_fingerprint,
+      );
+    });
+  });
+
   test("freezes the 2026-08-07 DD and 2026-08-27 DV manifests and replays cache-only without provider calls", async () => {
     await withCache(async (cache) => {
       const onlineProvider = provider();

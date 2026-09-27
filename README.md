@@ -176,7 +176,11 @@ single-checkpoint contract to an explicit caller-supplied trading calendar.
 It preserves chronological output order while using a bounded worker pool,
 isolates checkpoint failures, retries only transient provider failures, and
 returns an opaque continuation cursor for unresolved or deferred sessions.
-Operational settings do not alter the logical batch request ID.
+Per-checkpoint stage timings identify cache lookup, provider bootstrap,
+contract-universe construction, candle reconstruction, selector evaluation,
+and the stage interrupted by a deadline. Operational settings and diagnostic
+callbacks do not alter the logical batch request ID or candle-cache
+fingerprints.
 
 The official option-chain and REST quote endpoints do not document an
 historical `as_of` parameter. Backtester logs currently expose exact selected
@@ -188,6 +192,9 @@ time-of-day field, and a live request containing undocumented
 
 For `DELTA` and `PERCENTAGE_OTM`, the adapter reconstructs a bounded SPXW
 universe from generated OCC/streamer symbols and completed DXLink candles.
+Candidate discovery uses the provider-supported maximum of 100 option symbols
+per candle batch; the standalone bounded-universe tool retains its existing
+20-symbol batch policy.
 Omitting `resolution_profile` preserves the 5-minute cohort; strict native-hour RTH
 research requires explicit `HOURLY_VALUATION_RESEARCH`. When DXLink labels SPXW
 hour bars on its provider clock instead of the 09:30 ET session anchor, callers

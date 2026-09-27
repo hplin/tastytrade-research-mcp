@@ -15,6 +15,12 @@ import {
   type HistoricalSpxCandidatesPlan,
   type HistoricalSpxCandidatesResult,
 } from "./historical-spx-candidates.js";
+import {
+  HISTORICAL_SPX_CANDIDATE_PROGRESS_STAGES,
+  type HistoricalSpxCandidateProgressEvent,
+  type HistoricalSpxCandidateProgressSelector,
+  type HistoricalSpxCandidateProgressStage,
+} from "./historical-spx-candidate-progress.js";
 import type { HistoricalCandidateCandles } from "./historical-spx-reconstruction.js";
 import {
   normalizeDate,
@@ -75,6 +81,34 @@ export type HistoricalSpxCandidateRangeFailureCategory = Exclude<
   RangeCompletionStatus
 >;
 
+export type HistoricalSpxCandidateRangeStageDiagnostic = {
+  stage: HistoricalSpxCandidateProgressStage;
+  status:
+    | "NOT_STARTED"
+    | "IN_PROGRESS"
+    | "COMPLETED"
+    | "FAILED"
+    | "TIMED_OUT";
+  duration_ms: number;
+  operation_count: number;
+};
+
+export type HistoricalSpxCandidateRangeDiagnostics = {
+  elapsed_ms: number;
+  timeout_stage:
+    | HistoricalSpxCandidateProgressStage
+    | "BEFORE_CACHE_LOOKUP"
+    | null;
+  selector_attempts_started: Array<{
+    option_side: HistoricalSpxCandidateProgressSelector["option_side"];
+    selector: Omit<
+      HistoricalSpxCandidateProgressSelector,
+      "option_side"
+    >;
+  }>;
+  stages: HistoricalSpxCandidateRangeStageDiagnostic[];
+};
+
 export type HistoricalSpxCandidateRangeCheckpoint = {
   session_date: string;
   scheduled_checkpoint: string;
@@ -97,6 +131,7 @@ export type HistoricalSpxCandidateRangeCheckpoint = {
   }>;
   cache_fully_served: boolean;
   provider_access_required: boolean;
+  diagnostics: HistoricalSpxCandidateRangeDiagnostics;
 };
 
 export type HistoricalSpxCandidatesRangePlan = {
@@ -811,6 +846,137 @@ function failureStatus(
   return failure.category;
 }
 
+type MutableStageDiagnostic = HistoricalSpxCandidateRangeStageDiagnostic & {
+  active_since_ms: number | null;
+  last_started_sequence: number;
+};
+
+function progressSelectorKey(
+  selector: HistoricalSpxCandidateProgressSelector,
+): string {
+  return [
+    selector.option_side,
+    selector.method,
+    selector.value,
+    selector.days_until_expiration,
+  ].join(":");
+}
+
+function createProgressTracker(
+  now: () => number,
+  startedAt: number,
+): {
+  report: (event: HistoricalSpxCandidateProgressEvent) => void;
+  snapshot: (
+    timedOut: boolean,
+    timeoutStageOverride?: HistoricalSpxCandidateProgressStage,
+  ) => HistoricalSpxCandidateRangeDiagnostics;
+} {
+  let sequence = 0;
+  const stages = new Map<
+    HistoricalSpxCandidateProgressStage,
+    MutableStageDiagnostic
+  >(
+    HISTORICAL_SPX_CANDIDATE_PROGRESS_STAGES.map((stage) => [
+      stage,
+      {
+        stage,
+        status: "NOT_STARTED",
+        duration_ms: 0,
+        operation_count: 0,
+        active_since_ms: null,
+        last_started_sequence: -1,
+      },
+    ]),
+  );
+  const selectors = new Map<
+    string,
+    HistoricalSpxCandidateProgressSelector
+  >();
+
+  const report = (event: HistoricalSpxCandidateProgressEvent): void => {
+    const stage = stages.get(event.stage)!;
+    if (event.state === "PROGRESS") {
+      if (event.selector) {
+        selectors.set(progressSelectorKey(event.selector), event.selector);
+      }
+      return;
+    }
+
+    const at = now();
+    if (event.state === "STARTED") {
+      if (stage.active_since_ms === null) {
+        stage.active_since_ms = at;
+      }
+      stage.operation_count += 1;
+      stage.last_started_sequence = sequence;
+      sequence += 1;
+      stage.status = "IN_PROGRESS";
+      return;
+    }
+
+    if (stage.active_since_ms !== null) {
+      stage.duration_ms += Math.max(0, at - stage.active_since_ms);
+      stage.active_since_ms = null;
+    }
+    stage.status =
+      event.state === "COMPLETED" ? "COMPLETED" : "FAILED";
+  };
+
+  const snapshot = (
+    timedOut: boolean,
+    timeoutStageOverride?: HistoricalSpxCandidateProgressStage,
+  ): HistoricalSpxCandidateRangeDiagnostics => {
+    const finishedAt = now();
+    const timeoutStage = timedOut
+      ? timeoutStageOverride ??
+        [...stages.values()]
+          .filter(
+            (stage) =>
+              stage.active_since_ms !== null ||
+              stage.status === "FAILED",
+          )
+          .sort(
+            (left, right) =>
+              right.last_started_sequence - left.last_started_sequence,
+          )[0]?.stage ??
+        "BEFORE_CACHE_LOOKUP"
+      : null;
+    return {
+      elapsed_ms: Math.max(0, finishedAt - startedAt),
+      timeout_stage: timeoutStage,
+      selector_attempts_started: [...selectors.values()].map(
+        ({ option_side, ...selector }) => ({
+          option_side,
+          selector,
+        }),
+      ),
+      stages: HISTORICAL_SPX_CANDIDATE_PROGRESS_STAGES.map(
+        (stageName) => {
+          const stage = stages.get(stageName)!;
+          const activeDuration =
+            stage.active_since_ms === null
+              ? 0
+              : Math.max(0, finishedAt - stage.active_since_ms);
+          return {
+            stage: stage.stage,
+            status:
+              timedOut &&
+              (stage.active_since_ms !== null ||
+                stage.stage === timeoutStageOverride)
+                ? "TIMED_OUT"
+                : stage.status,
+            duration_ms: stage.duration_ms + activeDuration,
+            operation_count: stage.operation_count,
+          };
+        },
+      ),
+    };
+  };
+
+  return { report, snapshot };
+}
+
 async function runCheckpoint(
   checkpoint: PlannedCheckpoint,
   backtester: HistoricalCandidateBacktester,
@@ -818,7 +984,9 @@ async function runCheckpoint(
   plan: HistoricalSpxCandidatesRangePlan,
   runtime: Required<HistoricalSpxCandidateRangeRuntime>,
 ): Promise<HistoricalSpxCandidateRangeCheckpoint> {
-  const deadlineAt = runtime.now() + plan.checkpoint_deadline_ms;
+  const startedAt = runtime.now();
+  const deadlineAt = startedAt + plan.checkpoint_deadline_ms;
+  const progress = createProgressTracker(runtime.now, startedAt);
   const attemptErrors: HistoricalSpxCandidateRangeCheckpoint["attempt_errors"] =
     [];
   let bestResult: HistoricalSpxCandidatesResult | null = null;
@@ -852,6 +1020,7 @@ async function runCheckpoint(
           bestResult,
           failure,
         ),
+        diagnostics: progress.snapshot(true),
       };
     }
 
@@ -860,7 +1029,11 @@ async function runCheckpoint(
         backtester,
         checkpoint.input,
         candles,
-        { deadline_ms: remaining },
+        {
+          deadline_ms: remaining,
+          now: runtime.now,
+          on_progress: progress.report,
+        },
       );
       if (
         bestResult === null ||
@@ -906,6 +1079,12 @@ async function runCheckpoint(
           result,
           failure,
         ),
+        diagnostics: progress.snapshot(
+          failure?.category === "PROVIDER_TIMEOUT",
+          failure?.category === "PROVIDER_TIMEOUT"
+            ? "SELECTOR_EVALUATION"
+            : undefined,
+        ),
       };
     } catch (error) {
       const failure = classifyFailure(error);
@@ -939,6 +1118,9 @@ async function runCheckpoint(
           checkpoint,
           bestResult,
           failure,
+        ),
+        diagnostics: progress.snapshot(
+          failure.category === "PROVIDER_TIMEOUT",
         ),
       };
     }
@@ -1089,7 +1271,14 @@ export async function discoverHistoricalSpxCandidatesRange(
     if (checkpoint.error) {
       increment(failureReasons, checkpoint.error.category);
     }
+    const attemptedSelectors = new Set<string>();
     for (const attempt of checkpoint.result?.attempts ?? []) {
+      attemptedSelectors.add(
+        progressSelectorKey({
+          option_side: attempt.option_side,
+          ...attempt.selector,
+        }),
+      );
       increment(
         attemptedByDte,
         String(attempt.selector.days_until_expiration),
@@ -1107,6 +1296,20 @@ export async function discoverHistoricalSpxCandidatesRange(
       } else {
         increment(failureReasons, attempt.status);
       }
+    }
+    for (const attempt of checkpoint.diagnostics.selector_attempts_started) {
+      const selector = {
+        option_side: attempt.option_side,
+        ...attempt.selector,
+      };
+      const key = progressSelectorKey(selector);
+      if (attemptedSelectors.has(key)) continue;
+      attemptedSelectors.add(key);
+      increment(
+        attemptedByDte,
+        String(attempt.selector.days_until_expiration),
+      );
+      increment(attemptedBySide, attempt.option_side);
     }
   }
   const dtes = [...requestedByDte.keys()]

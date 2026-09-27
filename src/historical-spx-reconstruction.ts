@@ -22,6 +22,7 @@ import type {
   HistoricalCandlesInput,
   HistoricalCandlesResult,
 } from "./historical-candles.js";
+import type { HistoricalSpxCandidateProgressOptions } from "./historical-spx-candidate-progress.js";
 import type {
   HistoricalCandidateProvenance,
   HistoricalSpxCandidate,
@@ -52,15 +53,19 @@ import {
 export type HistoricalCandidateCandles = {
   getHistoricalCandles(
     request: HistoricalCandlesInput,
+    execution?: HistoricalSpxCandidateProgressOptions,
   ): Promise<HistoricalCandlesResult>;
   getHistoricalCandlesBatch(
     request: HistoricalCandlesBatchInput,
+    execution?: HistoricalSpxCandidateProgressOptions,
   ): Promise<HistoricalCandlesResult[]>;
 };
 
-export type HistoricalSpxReconstructionExecutionOptions = {
+export type HistoricalSpxReconstructionExecutionOptions =
+  HistoricalSpxCandidateProgressOptions & {
   deadline_at_ms?: number;
   signal?: AbortSignal;
+  now?: () => number;
 };
 
 export class HistoricalSpxReconstructionTimeoutError extends Error {
@@ -79,7 +84,7 @@ function assertReconstructionActive(
   if (
     execution.signal?.aborted ||
     (execution.deadline_at_ms !== undefined &&
-      Date.now() >= execution.deadline_at_ms)
+      (execution.now ?? Date.now)() >= execution.deadline_at_ms)
   ) {
     throw new HistoricalSpxReconstructionTimeoutError();
   }
@@ -292,7 +297,8 @@ const CANDLE_MAX_OUTPUT = 20_000;
 const CANDLE_MAX_RECEIVED_EVENTS = 20_000;
 const CANDLE_MAX_BUFFER_BYTES = 32 * 1024 * 1024;
 const MAX_OBSERVATION_AGE_MS = 60 * 60_000;
-const OPTION_BATCH_SIZE = 20;
+const CANDIDATE_OPTION_BATCH_SIZE = 100;
+const UNIVERSE_OPTION_BATCH_SIZE = 20;
 const STRIKE_INCREMENT = 5;
 const DELTA_STRIKE_RADIUS = 100;
 const TARGET_STRIKE_RADIUS = 20;
@@ -1025,21 +1031,24 @@ export async function reconstructHistoricalSpxCandidates(
   );
   const cacheResults: HistoricalCandlesResult[] = [];
 
-  const underlyingResult = await candles.getHistoricalCandles({
-    symbol: "SPX",
-    streamer_symbol: "SPX",
-    instrument_type: "INDEX",
-    interval,
-    start_time: new Date(asOfMs - 2 * intervalMs).toISOString(),
-    end_time: plan.as_of,
-    session: underlyingSession,
-    resolution_profile: resolutionProfileInput(underlyingProfile),
-    max_output_candles: CANDLE_MAX_OUTPUT,
-    max_received_events: CANDLE_MAX_RECEIVED_EVENTS,
-    max_buffer_bytes: CANDLE_MAX_BUFFER_BYTES,
-    evidence_cache: plan.evidence_cache,
-    ...(execution.signal ? { signal: execution.signal } : {}),
-  });
+  const underlyingResult = await candles.getHistoricalCandles(
+    {
+      symbol: "SPX",
+      streamer_symbol: "SPX",
+      instrument_type: "INDEX",
+      interval,
+      start_time: new Date(asOfMs - 2 * intervalMs).toISOString(),
+      end_time: plan.as_of,
+      session: underlyingSession,
+      resolution_profile: resolutionProfileInput(underlyingProfile),
+      max_output_candles: CANDLE_MAX_OUTPUT,
+      max_received_events: CANDLE_MAX_RECEIVED_EVENTS,
+      max_buffer_bytes: CANDLE_MAX_BUFFER_BYTES,
+      evidence_cache: plan.evidence_cache,
+      ...(execution.signal ? { signal: execution.signal } : {}),
+    },
+    { on_progress: execution.on_progress },
+  );
   assertReconstructionActive(execution);
   cacheResults.push(underlyingResult);
   const underlyingContract = contractSpec(
@@ -1078,6 +1087,10 @@ export async function reconstructHistoricalSpxCandidates(
     };
   }
 
+  execution.on_progress?.({
+    stage: "CONTRACT_UNIVERSE",
+    state: "STARTED",
+  });
   const underlyingPrice = underlying.price;
   const underlyingPriceText = normalizedDecimal(underlying.candle.close);
   const underlyingIv = underlying.implied_volatility;
@@ -1170,31 +1183,46 @@ export async function reconstructHistoricalSpxCandidates(
   }
 
   const contracts = [...contractsByKey.values()];
+  assertReconstructionActive(execution);
+  execution.on_progress?.({
+    stage: "CONTRACT_UNIVERSE",
+    state: "COMPLETED",
+  });
   const observations = new Map<string, CandleObservation>();
   let misalignedOptionBars = 0;
   const optionStart = new Date(
     asOfMs - maxObservationAgeMs - intervalMs,
   ).toISOString();
-  for (let offset = 0; offset < contracts.length; offset += OPTION_BATCH_SIZE) {
+  for (
+    let offset = 0;
+    offset < contracts.length;
+    offset += CANDIDATE_OPTION_BATCH_SIZE
+  ) {
     assertReconstructionActive(execution);
-    const batch = contracts.slice(offset, offset + OPTION_BATCH_SIZE);
-    const results = await candles.getHistoricalCandlesBatch({
-      instruments: batch.map((contract) => ({
-        symbol: contract.occ_symbol,
-        streamer_symbol: contract.streamer_symbol,
-        instrument_type: "OPTION",
-      })),
-      interval,
-      start_time: optionStart,
-      end_time: plan.as_of,
-      session,
-      resolution_profile: resolutionProfileInput(resolutionProfile),
-      max_output_candles: CANDLE_MAX_OUTPUT,
-      max_received_events: CANDLE_MAX_RECEIVED_EVENTS,
-      max_buffer_bytes: CANDLE_MAX_BUFFER_BYTES,
-      evidence_cache: plan.evidence_cache,
-      ...(execution.signal ? { signal: execution.signal } : {}),
-    });
+    const batch = contracts.slice(
+      offset,
+      offset + CANDIDATE_OPTION_BATCH_SIZE,
+    );
+    const results = await candles.getHistoricalCandlesBatch(
+      {
+        instruments: batch.map((contract) => ({
+          symbol: contract.occ_symbol,
+          streamer_symbol: contract.streamer_symbol,
+          instrument_type: "OPTION",
+        })),
+        interval,
+        start_time: optionStart,
+        end_time: plan.as_of,
+        session,
+        resolution_profile: resolutionProfileInput(resolutionProfile),
+        max_output_candles: CANDLE_MAX_OUTPUT,
+        max_received_events: CANDLE_MAX_RECEIVED_EVENTS,
+        max_buffer_bytes: CANDLE_MAX_BUFFER_BYTES,
+        evidence_cache: plan.evidence_cache,
+        ...(execution.signal ? { signal: execution.signal } : {}),
+      },
+      { on_progress: execution.on_progress },
+    );
     assertReconstructionActive(execution);
     if (results.length !== batch.length) {
       throw new Error(
@@ -2197,9 +2225,12 @@ export async function getHistoricalSpxCandidateUniverse(
   for (
     let offset = 0;
     offset < fetchContracts.length;
-    offset += OPTION_BATCH_SIZE
+    offset += UNIVERSE_OPTION_BATCH_SIZE
   ) {
-    const batch = fetchContracts.slice(offset, offset + OPTION_BATCH_SIZE);
+    const batch = fetchContracts.slice(
+      offset,
+      offset + UNIVERSE_OPTION_BATCH_SIZE,
+    );
     let results: HistoricalCandlesResult[];
     try {
       results = await candles.getHistoricalCandlesBatch({
@@ -2227,7 +2258,7 @@ export async function getHistoricalSpxCandidateUniverse(
       if (error instanceof EvidenceCacheError) throw error;
       providerErrors.push({
         stage: "OPTION_BATCH",
-        batch_index: offset / OPTION_BATCH_SIZE,
+        batch_index: offset / UNIVERSE_OPTION_BATCH_SIZE,
         symbols: batch.map((contract) => contract.occ_symbol),
         message: errorMessage(error),
       });

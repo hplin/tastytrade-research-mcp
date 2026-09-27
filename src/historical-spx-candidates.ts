@@ -19,6 +19,10 @@ import {
   reconstructHistoricalSpxCandidates,
   type HistoricalCandidateCandles,
 } from "./historical-spx-reconstruction.js";
+import type {
+  HistoricalSpxCandidateProgressEvent,
+  HistoricalSpxCandidateProgressReporter,
+} from "./historical-spx-candidate-progress.js";
 import {
   normalizeCandidateConstructionProfile,
   normalizeResolutionProfile,
@@ -187,6 +191,8 @@ export type HistoricalCandidateBacktester = {
 
 export type HistoricalSpxCandidateExecutionOptions = {
   deadline_ms?: number;
+  now?: () => number;
+  on_progress?: HistoricalSpxCandidateProgressReporter;
 };
 
 export class HistoricalSpxCandidateProviderTimeoutError extends Error {
@@ -248,6 +254,7 @@ const NEW_YORK_TIMEZONE = "America/New_York";
 type ExecutionDeadline = {
   deadline_at: number;
   signal: AbortSignal;
+  now: () => number;
 };
 
 const LIMITATION_WARNINGS = [
@@ -583,8 +590,15 @@ function sleep(milliseconds: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
 }
 
+function reportProgress(
+  reporter: HistoricalSpxCandidateProgressReporter | undefined,
+  event: HistoricalSpxCandidateProgressEvent,
+): void {
+  reporter?.(event);
+}
+
 function remainingDeadlineMs(deadline: ExecutionDeadline): number {
-  const remaining = deadline.deadline_at - Date.now();
+  const remaining = deadline.deadline_at - deadline.now();
   if (remaining <= 0) {
     throw new HistoricalSpxCandidateProviderTimeoutError(
       "Historical SPX candidate provider work exceeded its deadline.",
@@ -1093,6 +1107,7 @@ async function discoverHistoricalSpxCandidatesWithinDeadline(
   input: HistoricalSpxCandidatesInput,
   candles?: HistoricalCandidateCandles,
   deadline?: ExecutionDeadline,
+  onProgress?: HistoricalSpxCandidateProgressReporter,
 ): Promise<HistoricalSpxCandidatesResult> {
   const plan = prepareHistoricalSpxCandidates(input);
   const contracts: HistoricalSpxCandidate[] = [];
@@ -1113,17 +1128,33 @@ async function discoverHistoricalSpxCandidatesWithinDeadline(
   }
 
   if (candles) {
+    reportProgress(onProgress, {
+      stage: "CANDLE_RECONSTRUCTION",
+      state: "STARTED",
+    });
     try {
       const reconstruction = deadline
         ? await reconstructHistoricalSpxCandidates(plan, candles, {
             deadline_at_ms: deadline.deadline_at,
             signal: deadline.signal,
+            now: deadline.now,
+            on_progress: onProgress,
           })
-        : await reconstructHistoricalSpxCandidates(plan, candles);
+        : await reconstructHistoricalSpxCandidates(plan, candles, {
+            on_progress: onProgress,
+          });
       reconstructedCandidates = reconstruction.candidates;
       warnings.push(...reconstruction.warnings);
       evidenceCacheSummary = reconstruction.evidence_cache;
+      reportProgress(onProgress, {
+        stage: "CANDLE_RECONSTRUCTION",
+        state: "COMPLETED",
+      });
     } catch (error) {
+      reportProgress(onProgress, {
+        stage: "CANDLE_RECONSTRUCTION",
+        state: "FAILED",
+      });
       if (isProviderTimeoutError(error)) {
         throw error;
       }
@@ -1136,128 +1167,154 @@ async function discoverHistoricalSpxCandidatesWithinDeadline(
     }
   }
 
-  for (const [itemIndex, item] of plan.items.entries()) {
-    const reconstructed = reconstructedCandidates[itemIndex];
-    if (reconstructed) {
-      reconstructedCount += 1;
-      contracts.push(reconstructed);
-      attempts.push({
-        option_side: item.option_side,
-        selector: item.selector,
-        backtest_id: null,
-        status: "RECONSTRUCTED_CANDIDATE_FOUND",
-        error: null,
+  reportProgress(onProgress, {
+    stage: "SELECTOR_EVALUATION",
+    state: "STARTED",
+  });
+  try {
+    for (const [itemIndex, item] of plan.items.entries()) {
+      reportProgress(onProgress, {
+        stage: "SELECTOR_EVALUATION",
+        state: "PROGRESS",
+        selector: {
+          option_side: item.option_side,
+          method: item.selector.method,
+          value: item.selector.value,
+          days_until_expiration: item.selector.days_until_expiration,
+        },
       });
-      continue;
-    }
-
-    if (cacheOnly) {
-      warnings.push(
-        `${attemptKey(item)}:CACHE_ONLY_BACKTESTER_FALLBACK_DISABLED`,
-      );
-      attempts.push({
-        option_side: item.option_side,
-        selector: item.selector,
-        backtest_id: null,
-        status: "NO_ELIGIBLE_TRIAL",
-        error: "CACHE_ONLY_BACKTESTER_FALLBACK_DISABLED",
-      });
-      continue;
-    }
-
-    if (!usedBacktester) {
-      warnings.push(...BACKTESTER_LIMITATION_WARNINGS);
-      usedBacktester = true;
-    }
-    let id: string | null = null;
-    try {
-      const created = deadline
-        ? await backtester.createBacktest(
-            item.backtest_request,
-            providerRequestOptions(deadline),
-          )
-        : await backtester.createBacktest(item.backtest_request);
-      const completed = await waitForCompletedBacktest(
-        backtester,
-        created,
-        deadline,
-      );
-      id = completed.id;
-      const logs = deadline
-        ? await backtester.getBacktestLogs(
-            id,
-            providerRequestOptions(deadline),
-          )
-        : await backtester.getBacktestLogs(id);
-      const extraction = extractCandidate(logs, item, id, plan);
-      if (extraction.future_trials_excluded > 0) {
-        warnings.push(
-          `${attemptKey(item)}:FUTURE_TRIALS_EXCLUDED:${extraction.future_trials_excluded}`,
-        );
-      }
-      if (extraction.stale_trials_excluded > 0) {
-        warnings.push(
-          `${attemptKey(item)}:STALE_TRIALS_EXCLUDED:${extraction.stale_trials_excluded}`,
-        );
-      }
-      warnings.push(
-        ...extraction.warnings.map(
-          (warning) => `${attemptKey(item)}:${warning}`,
-        ),
-      );
-      if (!extraction.candidate) {
+      const reconstructed = reconstructedCandidates[itemIndex];
+      if (reconstructed) {
+        reconstructedCount += 1;
+        contracts.push(reconstructed);
         attempts.push({
           option_side: item.option_side,
           selector: item.selector,
-          backtest_id: id,
-          status: extraction.invalid_logs
-            ? "INVALID_PROVIDER_LOGS"
-            : "NO_ELIGIBLE_TRIAL",
+          backtest_id: null,
+          status: "RECONSTRUCTED_CANDIDATE_FOUND",
           error: null,
         });
         continue;
       }
 
-      let candidate = extraction.candidate;
+      if (cacheOnly) {
+        warnings.push(
+          `${attemptKey(item)}:CACHE_ONLY_BACKTESTER_FALLBACK_DISABLED`,
+        );
+        attempts.push({
+          option_side: item.option_side,
+          selector: item.selector,
+          backtest_id: null,
+          status: "NO_ELIGIBLE_TRIAL",
+          error: "CACHE_ONLY_BACKTESTER_FALLBACK_DISABLED",
+        });
+        continue;
+      }
+
+      if (!usedBacktester) {
+        warnings.push(...BACKTESTER_LIMITATION_WARNINGS);
+        usedBacktester = true;
+      }
+      let id: string | null = null;
       try {
-        candidate = await enrichCandidate(backtester, candidate, deadline);
+        const created = deadline
+          ? await backtester.createBacktest(
+              item.backtest_request,
+              providerRequestOptions(deadline),
+            )
+          : await backtester.createBacktest(item.backtest_request);
+        const completed = await waitForCompletedBacktest(
+          backtester,
+          created,
+          deadline,
+        );
+        id = completed.id;
+        const logs = deadline
+          ? await backtester.getBacktestLogs(
+              id,
+              providerRequestOptions(deadline),
+            )
+          : await backtester.getBacktestLogs(id);
+        const extraction = extractCandidate(logs, item, id, plan);
+        if (extraction.future_trials_excluded > 0) {
+          warnings.push(
+            `${attemptKey(item)}:FUTURE_TRIALS_EXCLUDED:${extraction.future_trials_excluded}`,
+          );
+        }
+        if (extraction.stale_trials_excluded > 0) {
+          warnings.push(
+            `${attemptKey(item)}:STALE_TRIALS_EXCLUDED:${extraction.stale_trials_excluded}`,
+          );
+        }
+        warnings.push(
+          ...extraction.warnings.map(
+            (warning) => `${attemptKey(item)}:${warning}`,
+          ),
+        );
+        if (!extraction.candidate) {
+          attempts.push({
+            option_side: item.option_side,
+            selector: item.selector,
+            backtest_id: id,
+            status: extraction.invalid_logs
+              ? "INVALID_PROVIDER_LOGS"
+              : "NO_ELIGIBLE_TRIAL",
+            error: null,
+          });
+          continue;
+        }
+
+        let candidate = extraction.candidate;
+        try {
+          candidate = await enrichCandidate(backtester, candidate, deadline);
+        } catch (error) {
+          if (isProviderTimeoutError(error)) {
+            throw error;
+          }
+          candidate = {
+            ...candidate,
+            warnings: [
+              ...candidate.warnings,
+              `SIMULATE_TRADE_ENRICHMENT_FAILED:${errorMessage(error)}`,
+            ],
+          };
+        }
+        contracts.push(candidate);
+        attempts.push({
+          option_side: item.option_side,
+          selector: item.selector,
+          backtest_id: id,
+          status: "CANDIDATE_FOUND",
+          error: null,
+        });
       } catch (error) {
         if (isProviderTimeoutError(error)) {
           throw error;
         }
-        candidate = {
-          ...candidate,
-          warnings: [
-            ...candidate.warnings,
-            `SIMULATE_TRADE_ENRICHMENT_FAILED:${errorMessage(error)}`,
-          ],
-        };
+        const message = errorMessage(error);
+        const providerError = providerErrorMetadata(error);
+        warnings.push(`${attemptKey(item)}:PROVIDER_ERROR:${message}`);
+        attempts.push({
+          option_side: item.option_side,
+          selector: item.selector,
+          backtest_id: id,
+          status: "PROVIDER_ERROR",
+          error: message,
+          provider_error: providerError,
+        });
       }
-      contracts.push(candidate);
-      attempts.push({
-        option_side: item.option_side,
-        selector: item.selector,
-        backtest_id: id,
-        status: "CANDIDATE_FOUND",
-        error: null,
-      });
-    } catch (error) {
-      if (isProviderTimeoutError(error)) {
-        throw error;
-      }
-      const message = errorMessage(error);
-      const providerError = providerErrorMetadata(error);
-      warnings.push(`${attemptKey(item)}:PROVIDER_ERROR:${message}`);
-      attempts.push({
-        option_side: item.option_side,
-        selector: item.selector,
-        backtest_id: id,
-        status: "PROVIDER_ERROR",
-        error: message,
-        provider_error: providerError,
-      });
     }
+  } catch (error) {
+    reportProgress(onProgress, {
+      stage: "SELECTOR_EVALUATION",
+      state: "FAILED",
+    });
+    throw error;
   }
+  reportProgress(onProgress, {
+    stage: "SELECTOR_EVALUATION",
+    state: "COMPLETED",
+  });
 
   const complete =
     contracts.length === plan.items.length &&
@@ -1377,6 +1434,8 @@ export async function discoverHistoricalSpxCandidates(
       backtester,
       input,
       candles,
+      undefined,
+      execution.on_progress,
     );
   }
   if (
@@ -1390,9 +1449,11 @@ export async function discoverHistoricalSpxCandidates(
   }
 
   const controller = new AbortController();
+  const now = execution.now ?? Date.now;
   const deadline: ExecutionDeadline = {
-    deadline_at: Date.now() + execution.deadline_ms,
+    deadline_at: now() + execution.deadline_ms,
     signal: controller.signal,
+    now,
   };
   let timeout: ReturnType<typeof setTimeout> | undefined;
   const timeoutPromise = new Promise<never>((_resolve, reject) => {
@@ -1413,6 +1474,7 @@ export async function discoverHistoricalSpxCandidates(
         input,
         candles,
         deadline,
+        execution.on_progress,
       ),
       timeoutPromise,
     ]);
