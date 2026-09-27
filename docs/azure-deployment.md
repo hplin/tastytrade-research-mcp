@@ -22,16 +22,16 @@ tastytrade OAuth credentials in Azure Key Vault-backed Container App secrets.
 - Health URL:
   `https://tastytrade-research-mcp.victoriousfield-047d2c99.westus2.azurecontainerapps.io/healthz`
 - Production revision:
-  `tastytrade-research-mcp--main-3c85fc1`
+  `tastytrade-research-mcp--main-8456a4b`
 - ACR image:
-  `hplintradingmcp.azurecr.io/tastytrade-research-mcp:main-3c85fc1`
+  `hplintradingmcp.azurecr.io/tastytrade-research-mcp:main-8456a4b`
 - Image digest:
-  `sha256:da8e5814f2d48c1a4621cb6255e50465a298eeba0be83b6558a8723c69e248ab`
+  `sha256:8e9b2ac122d6f780c569c235b49d1133747515ead05faad52402bc48b1651bfd`
 - Source commit:
-  `3c85fc1918fab732c5881782ba8b590913b5e907`
+  `8456a4b0c34b4a1154822696542a7bebe5908a74`
 - Managed identity: `mi-tastytrade-research-mcp`
 - Rollback revision:
-  `tastytrade-research-mcp--main-b52f7e7`
+  `tastytrade-research-mcp--main-3c85fc1`
 
 Production OAuth uses Entra resource application
 `f6c77904-5bf9-46cf-96f9-be5f2e841054` and delegated scope
@@ -166,12 +166,12 @@ provider domain. HTTP 429 responses can extend the shared cooldown through
 so a restarted replica does not immediately retry deferred checkpoints.
 
 For emergency rollback, move 100% traffic to the still-active revision
-`tastytrade-research-mcp--main-b52f7e7`. That revision contains the
-100-symbol SPX candidate batches, stage-level timeout diagnostics, resumable
-range discovery, and Azure Files startup warmup, but predates fair
-continuation scheduling for retryable partial checkpoints. It retains the
-same Entra OAuth, Key Vault-backed tastytrade configuration, and persistent
-Azure Files mount.
+`tastytrade-research-mcp--main-3c85fc1`. That revision contains fair
+first-pass continuation scheduling, 100-symbol SPX candidate batches,
+stage-level timeout diagnostics, resumable range discovery, and Azure Files
+startup warmup, but predates the shared Backtester request gate and durable
+rate-limit eligibility. It retains the same Entra OAuth, Key Vault-backed
+tastytrade configuration, and persistent Azure Files mount.
 
 After deployment, verify:
 
@@ -202,7 +202,40 @@ After deployment, verify:
    trading calendar and verify exact ENTRY/+3/+5 symbols plus aggregate
    coverage diagnostics.
 
-## Current continuation-fairness deployment verification
+## Current provider-rate-limit deployment verification
+
+Revision `tastytrade-research-mcp--main-8456a4b` was verified on 2026-09-27
+with:
+
+- ACR build run `cc10` producing digest
+  `sha256:8e9b2ac122d6f780c569c235b49d1133747515ead05faad52402bc48b1651bfd`;
+- source commit `8456a4b0c34b4a1154822696542a7bebe5908a74`;
+- one healthy replica in `RunningAtMaxScale`, the Azure Files cache mount
+  preserved, and
+  `TASTYTRADE_BACKTESTER_MIN_REQUEST_INTERVAL_MS=100`;
+- 100% production traffic, with `main-3c85fc1` healthy and active at 0% as
+  the immediate rollback revision;
+- HTTP 200 from `/healthz`, valid RFC 9728 protected-resource metadata, HTTP
+  401 with `resource_metadata` from unauthenticated `/mcp`, 22 authenticated
+  tools, and a local package-pricing smoke returning a `1` synthetic natural
+  credit;
+- a revision-specific 21-session August first pass that visited every
+  session exactly once in five chronological calls while emitting compact v3
+  cursors;
+- two real HTTP 429 checkpoint failures followed by three checkpoints
+  suppressed locally with `ACTIVE_COOLDOWN`, without blocking the remaining
+  first-pass dates;
+- provider-wide fallback windows of approximately 10, 30, and 90 seconds
+  with jitter, and monotonic cumulative rate-limit counts `1, 2, 2, 3, 3`;
+- an immediate continuation during cooldown that attempted zero checkpoints
+  and reported all five deferred checkpoints as cooling;
+- a post-cooldown retry of deferred queue head `2026-08-25` with six cache
+  hits, zero cache misses, and six provider calls avoided; and
+- a `CACHE_ONLY` replay of `2026-08-03` during an active synthetic 120-second
+  cooldown that completed from six immutable manifests with no provider
+  access.
+
+## Previous continuation-fairness deployment verification
 
 Revision `tastytrade-research-mcp--main-3c85fc1` was verified on 2026-09-27
 with:
