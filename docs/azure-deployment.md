@@ -22,16 +22,16 @@ tastytrade OAuth credentials in Azure Key Vault-backed Container App secrets.
 - Health URL:
   `https://tastytrade-research-mcp.victoriousfield-047d2c99.westus2.azurecontainerapps.io/healthz`
 - Production revision:
-  `tastytrade-research-mcp--main-851f08c`
+  `tastytrade-research-mcp--main-b52f7e7`
 - ACR image:
-  `hplintradingmcp.azurecr.io/tastytrade-research-mcp:main-851f08c`
+  `hplintradingmcp.azurecr.io/tastytrade-research-mcp:main-b52f7e7`
 - Image digest:
-  `sha256:632fcfc61c1c0dfade6654151c650e4fc56dacde498b6f9d815c515c1595149d`
+  `sha256:06f302ade77afeb4672f430bd58abb0f78cafc5aae0afbe451bbe983813f58fa`
 - Source commit:
-  `851f08ca1a8b7ce77b534edb0bf6237d35a6c6e4`
+  `b52f7e7dbcf33f5e1ea919207b224032cfe158a4`
 - Managed identity: `mi-tastytrade-research-mcp`
 - Rollback revision:
-  `tastytrade-research-mcp--main-0992cc7`
+  `tastytrade-research-mcp--main-851f08c`
 
 Production OAuth uses Entra resource application
 `f6c77904-5bf9-46cf-96f9-be5f2e841054` and delegated scope
@@ -160,12 +160,11 @@ OAUTH_RESOURCE_NAME=Tastytrade Research MCP
 ```
 
 For emergency rollback, move 100% traffic to the still-active revision
-`tastytrade-research-mcp--main-0992cc7`. That revision contains the persistent
-Azure Files cache, exact fixed-horizon package workflow, research-only model
-valuation fallback, and resumable date-range candidate discovery, but
-predates the 100-symbol candidate batches and stage-level timeout
-diagnostics. It retains the same Entra OAuth and Key Vault-backed tastytrade
-configuration.
+`tastytrade-research-mcp--main-851f08c`. That revision contains the
+100-symbol SPX candidate batches, stage-level timeout diagnostics, and
+resumable range discovery, but predates the Azure Files quota-accounting and
+startup-warmup optimizations. It retains the same Entra OAuth, Key
+Vault-backed tastytrade configuration, and persistent Azure Files mount.
 
 After deployment, verify:
 
@@ -196,7 +195,46 @@ After deployment, verify:
    trading calendar and verify exact ENTRY/+3/+5 symbols plus aggregate
    coverage diagnostics.
 
-## Current pre-selector-timeout deployment verification
+## Current cache-startup deployment verification
+
+Revision `tastytrade-research-mcp--main-b52f7e7` was verified on 2026-09-27
+with:
+
+- ACR build run `ccx` producing digest
+  `sha256:06f302ade77afeb4672f430bd58abb0f78cafc5aae0afbe451bbe983813f58fa`;
+- source commit `b52f7e7dbcf33f5e1ea919207b224032cfe158a4`;
+- one healthy replica in `RunningAtMaxScale`;
+- 100% production traffic, with `main-851f08c` healthy and active at 0% as
+  the immediate rollback revision;
+- unchanged managed identity, ACR pull configuration, Key Vault secret refs,
+  ingress, resource limits, one-replica scale, and Azure Files cache mount;
+- an exact quota scan completed before the HTTP listener started, preserving
+  full restart accounting without charging the first MCP checkpoint;
+- HTTP 200 from `/healthz`, valid RFC 9728 protected-resource metadata, HTTP
+  401 with the required resource metadata and `mcp.read` scope from
+  unauthenticated `/mcp`, 22 authenticated tools, and a local package-pricing
+  smoke returning a `1` synthetic natural credit;
+- the first authenticated request to the new process using a fresh cache
+  identity completed the exact #72 2026-08-24 `READ_WRITE` checkpoint in
+  9,462 ms, started all 12 selectors, returned eight candidates and six
+  manifests, exposed all five stage diagnostics, and reported no timeout;
+- exact `CACHE_ONLY` replay completed in 780 ms with all 12 selectors, the
+  same eight candidates, six manifests, zero provider-bootstrap operations,
+  `cache_fully_served: true`, and `provider_access_required: false`;
+- same-request single discovery completed in 6,591 ms with the identical
+  request ID and semantic result;
+- a fresh 2026-08-03 `READ_WRITE` checkpoint completed in 8,195 ms with all
+  12 selectors and eight candidates; and
+- a bounded two-session continuation completed 2026-08-03 and 2026-08-24 in
+  order without replay, retained one logical request ID, and exhausted the
+  continuation cursor.
+
+After traffic promotion, a second fresh 2026-08-24 identity through the
+production FQDN completed `READ_WRITE` in 7,948 ms and exact `CACHE_ONLY` in
+820 ms with the same coverage and provider-free replay guarantees. The
+failed `main-53da2fe` candidate was then deactivated.
+
+## Previous pre-selector-timeout deployment verification
 
 Revision `tastytrade-research-mcp--main-851f08c` was verified on 2026-09-27
 with:
