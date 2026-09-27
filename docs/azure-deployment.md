@@ -22,16 +22,16 @@ tastytrade OAuth credentials in Azure Key Vault-backed Container App secrets.
 - Health URL:
   `https://tastytrade-research-mcp.victoriousfield-047d2c99.westus2.azurecontainerapps.io/healthz`
 - Production revision:
-  `tastytrade-research-mcp--main-8a93c25`
+  `tastytrade-research-mcp--main-85b194f`
 - ACR image:
-  `hplintradingmcp.azurecr.io/tastytrade-research-mcp:main-8a93c25`
+  `hplintradingmcp.azurecr.io/tastytrade-research-mcp:main-85b194f`
 - Image digest:
-  `sha256:adebce601fea60ce2d2cab49866388cbe616a5f038e2d20267b86b9e7e33054c`
+  `sha256:7f2d2e16530c8b72f9e046623c64e92300644f28a17de117308572128e085508`
 - Source commit:
-  `8a93c255116a886658ffb1ef4c48b012a2f07c77`
+  `85b194f82e0ed65549359a1fcd9f671e07de8fa5`
 - Managed identity: `mi-tastytrade-research-mcp`
 - Rollback revision:
-  `tastytrade-research-mcp--main-fc7e5d9`
+  `tastytrade-research-mcp--main-8a93c25`
 
 Production OAuth uses Entra resource application
 `f6c77904-5bf9-46cf-96f9-be5f2e841054` and delegated scope
@@ -160,9 +160,9 @@ OAUTH_RESOURCE_NAME=Tastytrade Research MCP
 ```
 
 For emergency rollback, move 100% traffic to the still-active revision
-`tastytrade-research-mcp--main-fc7e5d9`. That revision contains the historical
-replay toolchain but predates the persistent Azure Files cache and the mixed
-session/provider-clock hourly reconstruction fix. It retains the same Entra
+`tastytrade-research-mcp--main-8a93c25`. That revision contains the persistent
+Azure Files cache and mixed session/provider-clock hourly reconstruction, but
+predates the fixed-horizon exact-package workflow. It retains the same Entra
 OAuth and Key Vault-backed tastytrade configuration.
 
 After deployment, verify:
@@ -188,6 +188,35 @@ After deployment, verify:
    `tastytrade_get_historical_option_package_horizons` with an authoritative
    trading calendar and verify exact ENTRY/+3/+5 symbols plus aggregate
    coverage diagnostics.
+
+## Current exact-package horizon deployment verification
+
+Revision `tastytrade-research-mcp--main-85b194f` was verified on 2026-09-27
+with:
+
+- ACR build run `ccr` producing digest
+  `sha256:7f2d2e16530c8b72f9e046623c64e92300644f28a17de117308572128e085508`;
+- source commit `85b194f82e0ed65549359a1fcd9f671e07de8fa5`;
+- one healthy replica in `RunningAtMaxScale`;
+- 100% production traffic, with `main-8a93c25` active at 0% as the immediate
+  rollback revision and the older `main-fc7e5d9` revision deactivated;
+- unchanged managed identity, ACR pull configuration, Key Vault secret refs,
+  ingress, resource limits, one-replica scale, and Azure Files cache mount;
+- HTTP 200 from `/healthz` and RFC 9728 protected-resource metadata;
+- HTTP 401 plus the correct resource metadata and scope from unauthenticated
+  `/mcp`;
+- an Entra delegated `mcp.read` token listing all 21 MCP tools;
+- an authenticated local package-pricing call returning a `1` synthetic
+  natural credit;
+- the four expected 2026-08-25 Path B candidates, all selected at the exact
+  checkpoint with no future provenance;
+- the 21-35 DTE, 7300-8050, 25-point candidate universe retaining 110 of 186
+  requested contracts, 103 reconstructed deltas, all four Double Diagonal
+  target inputs, zero provider errors, and zero future evidence; and
+- an exact frozen 2026-08-25 Iron Condor horizon request returning a `14.3`
+  ENTRY credit, explicit contract-absence diagnostics at +3, and a `9.11` +5
+  credit. Its three `READ_WRITE` manifests replayed through `CACHE_ONLY` with
+  identical exact symbols, reference values, failures, and coverage.
 
 ## Current persistent-cache deployment verification
 
