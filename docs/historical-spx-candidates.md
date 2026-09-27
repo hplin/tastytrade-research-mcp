@@ -61,7 +61,8 @@ For each request, the reconstruction path:
      contract is selected from contract-specific historical evidence.
 4. Adds paired call/put parity anchors around SPX spot.
 5. Constructs documented SPXW OCC and streamer symbols, then retrieves the
-   option candles in batches of at most 20 symbols.
+   candidate-discovery candles in batches of at most 100 symbols. The
+   standalone bounded-universe tool retains its 20-symbol batches.
 6. Keeps only complete bars available by `as_of` and inside the profile's
    maximum observation age. Contract existence is inferred only when DXLink
    returns historical evidence for that exact generated symbol.
@@ -233,6 +234,25 @@ The range coordinator:
 - reports how many checkpoints were fully served from cache or required
   provider access.
 
+Each checkpoint also returns lightweight `diagnostics`. The fixed stage list
+distinguishes `CACHE_LOOKUP`, `PROVIDER_BOOTSTRAP`, `CONTRACT_UNIVERSE`,
+`CANDLE_RECONSTRUCTION`, and `SELECTOR_EVALUATION`, with status, cumulative
+duration, and operation count for each stage. `timeout_stage` identifies the
+most specific active or failed stage when a deadline expires, including
+`BEFORE_CACHE_LOOKUP` when provider work never began. A provider timeout
+returned as a completed selector attempt is attributed to
+`SELECTOR_EVALUATION`, including after an earlier retry failed in another
+stage.
+`selector_attempts_started` records the normalized selector identities that
+reached evaluation. Range coverage counts those starts even if the deadline
+interrupts the single-checkpoint call before it can return its normal
+`attempts` array.
+
+Cache and provider diagnostics are emitted outside the immutable candle
+request. They do not alter request fingerprints. A cache hit completes
+`CACHE_LOOKUP` without starting `PROVIDER_BOOTSTRAP`; a source fetch starts
+`PROVIDER_BOOTSTRAP` only after the cache elects to call the provider.
+
 The logical `request_id` includes the normalized date range, complete
 calendar, resolved checkpoints, selector/DTE configuration, resolution and
 candidate-construction profiles, and references. It intentionally excludes
@@ -277,6 +297,38 @@ The immutable candle evidence then replayed all 21 sessions in one
 
 The private manifests and full acceptance payload remain outside the
 repository.
+
+### Pre-selector timeout acceptance
+
+The 2026-09-27 #70 validation used the exact six-Delta selector grid for both
+CALL and PUT at 21, 28, and 35 DTE with a 15-second checkpoint deadline.
+
+- A fresh-cache 2026-08-24 request completed in 9,069 ms. It made one
+  underlying request plus five option batches of 100, 100, 100, 100, and 46
+  symbols, started all 12 selectors, and returned eight candidates with no
+  timeout.
+- A fresh-cache 2026-08-03 request completed in 8,881 ms. Its option batches
+  were 100, 100, 100, 100, and 40 symbols; all 12 selectors started, eight
+  candidates were returned, and no timeout occurred.
+- The frozen 2026-08-24 single-checkpoint and one-session range results had
+  the same request identity, selector attempts, contracts, profiles,
+  warnings, and anti-lookahead semantics. The cached range call completed in
+  1,305 ms with `timeout_stage: null`.
+
+The full 21-session August run kept one logical request ID across continuation
+rounds and never repeated a completed checkpoint. Backtester HTTP 429s were
+isolated after selector evaluation; immutable candle evidence was retained,
+and unresolved checkpoints were finalized through the existing `CACHE_ONLY`
+path, which forbids Backtester fallback. The final full-month replay reported:
+
+- 21 completed checkpoints with no continuation;
+- all 252 selector attempts started and completed;
+- 159 reconstructed candidates;
+- four `AVAILABLE`, 16 `PARTIAL`, and one `NOT_AVAILABLE` checkpoint;
+- 126 immutable manifests;
+- no pre-selector timeout; and
+- all 21 checkpoints fully served from cache with zero candle-provider or
+  Backtester calls.
 
 ## 2026-08-25 07:30 PT validation
 

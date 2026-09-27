@@ -119,6 +119,19 @@ const RANGE_REQUEST = {
   },
 };
 
+const ISSUE_70_SELECTOR_GRID = [
+  [20, 21],
+  [30, 21],
+  [20, 28],
+  [45, 28],
+  [20, 35],
+  [30, 35],
+].map(([value, daysUntilExpiration]) => ({
+  method: "DELTA",
+  value: String(value),
+  days_until_expiration: daysUntilExpiration,
+}));
+
 function fixtureBacktester(source = fixture, logs = source.logs) {
   return {
     createBacktest: jest.fn(async () => source.create_response),
@@ -694,7 +707,7 @@ describe("historical SPX candidate discovery", () => {
     expect(
       candles.getHistoricalCandlesBatch.mock.calls.every(
         ([input]) =>
-          input.instruments.length <= 20 &&
+          input.instruments.length <= 100 &&
           input.max_output_candles === 20_000 &&
           input.max_received_events === 20_000 &&
           input.max_buffer_bytes === 32 * 1024 * 1024 &&
@@ -1544,6 +1557,314 @@ describe("historical SPX candidate discovery", () => {
         scheduled_checkpoint: "2026-08-25T14:30:00.000Z",
         status: "AVAILABLE",
         result: single,
+      });
+    });
+
+    test("reaches selector evaluation without serial provider bootstrap for the issue 70 grid", async () => {
+      const candles = fixturePathBCandles();
+      const result = await discoverHistoricalSpxCandidatesRange(
+        fixtureBacktester(entryTimeIgnoredFixture),
+        {
+          ...RANGE_REQUEST,
+          start_date: "2026-08-25",
+          end_date: "2026-08-25",
+          trading_calendar: {
+            timezone: "America/Los_Angeles",
+            local_time: "07:30",
+            session_dates: ["2026-08-25"],
+          },
+          sides: ["CALL", "PUT"],
+          selector_grid: ISSUE_70_SELECTOR_GRID,
+          resolution_profile: undefined,
+          checkpoint_deadline_ms: 15_000,
+          retry_policy: {
+            max_attempts: 1,
+            backoff_ms: 0,
+          },
+        },
+        candles,
+      );
+
+      expect(candles.getHistoricalCandlesBatch.mock.calls.length).toBeLessThanOrEqual(
+        5,
+      );
+      expect(
+        candles.getHistoricalCandlesBatch.mock.calls.every(
+          ([request]) => request.instruments.length <= 100,
+        ),
+      ).toBe(true);
+      expect(result.coverage.selector_attempts_attempted).toBe(12);
+      expect(result.checkpoints[0].diagnostics).toMatchObject({
+        timeout_stage: null,
+        selector_attempts_started: expect.arrayContaining([
+          {
+            option_side: "CALL",
+            selector: {
+              method: "DELTA",
+              value: "20",
+              days_until_expiration: 21,
+            },
+          },
+          {
+            option_side: "PUT",
+            selector: {
+              method: "DELTA",
+              value: "30",
+              days_until_expiration: 35,
+            },
+          },
+        ]),
+      });
+      expect(result.checkpoints[0].diagnostics.stages).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            stage: "CONTRACT_UNIVERSE",
+            status: "COMPLETED",
+          }),
+          expect.objectContaining({
+            stage: "CANDLE_RECONSTRUCTION",
+            status: "COMPLETED",
+          }),
+          expect.objectContaining({
+            stage: "SELECTOR_EVALUATION",
+            status: "COMPLETED",
+          }),
+        ]),
+      );
+    });
+
+    test("identifies a timeout during provider bootstrap after cache lookup starts", async () => {
+      let now = 0;
+      const discover = jest.fn(
+        async (_backtester, _input, _candles, execution) => {
+          execution.on_progress({
+            stage: "CACHE_LOOKUP",
+            state: "STARTED",
+          });
+          now = 2;
+          execution.on_progress({
+            stage: "PROVIDER_BOOTSTRAP",
+            state: "STARTED",
+          });
+          now = 7;
+          throw Object.assign(new Error("provider timed out"), {
+            code: "PROVIDER_TIMEOUT",
+            retryable: true,
+          });
+        },
+      );
+      const result = await discoverHistoricalSpxCandidatesRange(
+        {},
+        {
+          ...RANGE_REQUEST,
+          end_date: "2026-08-24",
+          retry_policy: {
+            max_attempts: 1,
+            backoff_ms: 0,
+          },
+        },
+        undefined,
+        { discover, now: () => now },
+      );
+
+      expect(result.checkpoints[0].diagnostics).toMatchObject({
+        elapsed_ms: 7,
+        timeout_stage: "PROVIDER_BOOTSTRAP",
+        selector_attempts_started: [],
+        stages: expect.arrayContaining([
+          {
+            stage: "CACHE_LOOKUP",
+            status: "TIMED_OUT",
+            duration_ms: 7,
+            operation_count: 1,
+          },
+          {
+            stage: "PROVIDER_BOOTSTRAP",
+            status: "TIMED_OUT",
+            duration_ms: 5,
+            operation_count: 1,
+          },
+        ]),
+      });
+    });
+
+    test("counts selectors that start before a selector-evaluation timeout", async () => {
+      let now = 0;
+      const discover = jest.fn(
+        async (_backtester, _input, _candles, execution) => {
+          execution.on_progress({
+            stage: "SELECTOR_EVALUATION",
+            state: "STARTED",
+          });
+          now = 1;
+          execution.on_progress({
+            stage: "SELECTOR_EVALUATION",
+            state: "PROGRESS",
+            selector: {
+              option_side: "CALL",
+              method: "DELTA",
+              value: "20",
+              days_until_expiration: 28,
+            },
+          });
+          now = 4;
+          throw Object.assign(new Error("provider timed out"), {
+            code: "PROVIDER_TIMEOUT",
+            retryable: true,
+          });
+        },
+      );
+      const result = await discoverHistoricalSpxCandidatesRange(
+        {},
+        {
+          ...RANGE_REQUEST,
+          end_date: "2026-08-24",
+          retry_policy: {
+            max_attempts: 1,
+            backoff_ms: 0,
+          },
+        },
+        undefined,
+        { discover, now: () => now },
+      );
+
+      expect(result.checkpoints[0].diagnostics).toMatchObject({
+        timeout_stage: "SELECTOR_EVALUATION",
+        selector_attempts_started: [
+          {
+            option_side: "CALL",
+            selector: {
+              method: "DELTA",
+              value: "20",
+              days_until_expiration: 28,
+            },
+          },
+        ],
+      });
+      expect(result.coverage).toMatchObject({
+        selector_attempts_attempted: 1,
+        by_dte: expect.arrayContaining([
+          { dte: 28, requested: 1, attempted: 1, found: 0 },
+        ]),
+        by_side: [
+          {
+            option_side: "CALL",
+            requested: 1,
+            attempted: 1,
+            found: 0,
+          },
+        ],
+      });
+    });
+
+    test("attributes result-derived provider timeouts to selector evaluation", async () => {
+      const backtester = fixtureBacktester();
+      backtester.createBacktest.mockRejectedValue(
+        Object.assign(new Error("selector timed out"), {
+          code: "ETIMEDOUT",
+          retryable: true,
+        }),
+      );
+      const result = await discoverHistoricalSpxCandidatesRange(
+        backtester,
+        {
+          ...RANGE_REQUEST,
+          end_date: "2026-08-24",
+          retry_policy: {
+            max_attempts: 1,
+            backoff_ms: 0,
+          },
+        },
+      );
+
+      expect(result.checkpoints[0]).toMatchObject({
+        status: "PROVIDER_TIMEOUT",
+        result: {
+          attempts: [
+            expect.objectContaining({
+              status: "PROVIDER_ERROR",
+              provider_error: expect.objectContaining({
+                code: "ETIMEDOUT",
+              }),
+            }),
+          ],
+        },
+        diagnostics: {
+          timeout_stage: "SELECTOR_EVALUATION",
+          stages: expect.arrayContaining([
+            expect.objectContaining({
+              stage: "SELECTOR_EVALUATION",
+              status: "TIMED_OUT",
+            }),
+          ]),
+        },
+      });
+    });
+
+    test("prefers the current selector timeout over a failed prior retry stage", async () => {
+      const backtester = fixtureBacktester();
+      backtester.createBacktest.mockRejectedValue(
+        Object.assign(new Error("selector timed out"), {
+          code: "ETIMEDOUT",
+          retryable: true,
+        }),
+      );
+      let attempt = 0;
+      const discover = jest.fn(
+        async (candidateBacktester, input, candles, execution) => {
+          attempt += 1;
+          if (attempt === 1) {
+            execution.on_progress({
+              stage: "PROVIDER_BOOTSTRAP",
+              state: "STARTED",
+            });
+            execution.on_progress({
+              stage: "PROVIDER_BOOTSTRAP",
+              state: "FAILED",
+            });
+            throw Object.assign(new Error("bootstrap timed out"), {
+              code: "PROVIDER_TIMEOUT",
+              retryable: true,
+            });
+          }
+          return discoverHistoricalSpxCandidates(
+            candidateBacktester,
+            input,
+            candles,
+            execution,
+          );
+        },
+      );
+      const result = await discoverHistoricalSpxCandidatesRange(
+        backtester,
+        {
+          ...RANGE_REQUEST,
+          end_date: "2026-08-24",
+          retry_policy: {
+            max_attempts: 2,
+            backoff_ms: 0,
+          },
+        },
+        undefined,
+        { discover },
+      );
+
+      expect(result.checkpoints[0]).toMatchObject({
+        status: "PROVIDER_TIMEOUT",
+        attempt_count: 2,
+        diagnostics: {
+          timeout_stage: "SELECTOR_EVALUATION",
+          stages: expect.arrayContaining([
+            expect.objectContaining({
+              stage: "PROVIDER_BOOTSTRAP",
+              status: "FAILED",
+            }),
+            expect.objectContaining({
+              stage: "SELECTOR_EVALUATION",
+              status: "TIMED_OUT",
+            }),
+          ]),
+        },
       });
     });
 

@@ -18,6 +18,7 @@ import type {
   HistoricalCandlesInput,
   HistoricalCandlesResult,
 } from "./historical-candles.js";
+import type { HistoricalSpxCandidateProgressOptions } from "./historical-spx-candidate-progress.js";
 import {
   normalizeResolutionProfile,
   withEffectiveAggregation,
@@ -2718,24 +2719,32 @@ export class CachedHistoricalCandlesService {
 
   async getHistoricalCandles(
     request: HistoricalCandlesInput,
+    execution: HistoricalSpxCandidateProgressOptions = {},
   ): Promise<HistoricalCandlesResult> {
     const mode =
       request.evidence_cache?.mode ??
       this.cache?.defaultMode ??
       "BYPASS";
     if (mode === "BYPASS") {
-      return this.provider.getHistoricalCandles(
-        withoutSingleCache(request),
+      return this.withProgress(
+        "PROVIDER_BOOTSTRAP",
+        execution,
+        () =>
+          this.provider.getHistoricalCandles(
+            withoutSingleCache(request),
+          ),
       );
     }
     const [result] = await this.getHistoricalCandlesBatch(
       singleToBatch(request),
+      execution,
     );
     return result;
   }
 
   async getHistoricalCandlesBatch(
     request: HistoricalCandlesBatchInput,
+    execution: HistoricalSpxCandidateProgressOptions = {},
   ): Promise<HistoricalCandlesResult[]> {
     const mode =
       request.evidence_cache?.mode ??
@@ -2746,16 +2755,51 @@ export class CachedHistoricalCandlesService {
     }
     if (!this.cache) {
       if (mode !== "BYPASS") {
-        throw new EvidenceCacheError(
-          "EVIDENCE_CACHE_NOT_CONFIGURED",
-          "Evidence cache was requested but no private backend is configured.",
+        return this.withProgress(
+          "CACHE_LOOKUP",
+          execution,
+          async () => {
+            throw new EvidenceCacheError(
+              "EVIDENCE_CACHE_NOT_CONFIGURED",
+              "Evidence cache was requested but no private backend is configured.",
+            );
+          },
         );
       }
-      return this.providerBatch(withoutBatchCache(request));
+      return this.withProgress(
+        "PROVIDER_BOOTSTRAP",
+        execution,
+        () => this.providerBatch(withoutBatchCache(request)),
+      );
     }
-    return this.cache.execute(request, () =>
-      this.providerBatch(withoutBatchCache(request)),
+    return this.withProgress(
+      "CACHE_LOOKUP",
+      execution,
+      () =>
+        this.cache!.execute(request, () =>
+          this.withProgress(
+            "PROVIDER_BOOTSTRAP",
+            execution,
+            () => this.providerBatch(withoutBatchCache(request)),
+          ),
+        ),
     );
+  }
+
+  private async withProgress<T>(
+    stage: "CACHE_LOOKUP" | "PROVIDER_BOOTSTRAP",
+    execution: HistoricalSpxCandidateProgressOptions,
+    operation: () => Promise<T>,
+  ): Promise<T> {
+    execution.on_progress?.({ stage, state: "STARTED" });
+    try {
+      const result = await operation();
+      execution.on_progress?.({ stage, state: "COMPLETED" });
+      return result;
+    } catch (error) {
+      execution.on_progress?.({ stage, state: "FAILED" });
+      throw error;
+    }
   }
 
   private async providerBatch(

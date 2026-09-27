@@ -19,6 +19,7 @@ import {
   type HistoricalCandlesInput,
   type HistoricalCandlesResult,
 } from "./historical-candles.js";
+import type { HistoricalSpxCandidateProgressOptions } from "./historical-spx-candidate-progress.js";
 import {
   CachedHistoricalCandlesService,
   evidenceCacheFromEnv,
@@ -1772,9 +1773,11 @@ export type BacktesterService = {
 export type HistoricalCandlesService = {
   getHistoricalCandles(
     request: HistoricalCandlesInput,
+    execution?: HistoricalSpxCandidateProgressOptions,
   ): Promise<HistoricalCandlesResult>;
   getHistoricalCandlesBatch?(
     request: HistoricalCandlesBatchInput,
+    execution?: HistoricalSpxCandidateProgressOptions,
   ): Promise<HistoricalCandlesResult[]>;
 };
 
@@ -1831,10 +1834,14 @@ export function createResearchServer(
   );
   const reconstructionCandles = sourceCandles.getHistoricalCandlesBatch
     ? {
-        getHistoricalCandles: (request: HistoricalCandlesInput) =>
-          candles.getHistoricalCandles(request),
-        getHistoricalCandlesBatch: (request: HistoricalCandlesBatchInput) =>
-          candles.getHistoricalCandlesBatch!(request),
+        getHistoricalCandles: (
+          request: HistoricalCandlesInput,
+          execution?: HistoricalSpxCandidateProgressOptions,
+        ) => candles.getHistoricalCandles(request, execution),
+        getHistoricalCandlesBatch: (
+          request: HistoricalCandlesBatchInput,
+          execution?: HistoricalSpxCandidateProgressOptions,
+        ) => candles.getHistoricalCandlesBatch!(request, execution),
       }
     : undefined;
   const server = new Server(
