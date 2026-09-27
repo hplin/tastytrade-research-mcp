@@ -222,12 +222,15 @@ The range coordinator:
 - applies one hard deadline to the complete reconstruction/Backtester retry
   sequence for each checkpoint; its abort signal is operational metadata and
   does not enter immutable candle-cache fingerprints;
-- retries only timeout or rate-limit failures, up to three attempts;
+- retries non-rate-limit transient failures up to three times within the
+  checkpoint deadline, but defers a 429 immediately instead of applying the
+  short per-checkpoint backoff;
 - emits checkpoint results in calendar order even when workers complete out
   of order;
 - schedules every never-attempted session before deferred retries, then
-  rotates unresolved retries to the queue tail for deterministic round-robin
-  fairness across continuation calls;
+  schedules retry-eligible deferred checkpoints before still-cooling
+  checkpoints and rotates unresolved retries to the queue tail for
+  deterministic round-robin fairness across continuation calls;
 - preserves the complete single-checkpoint result unchanged under each
   checkpoint;
 - reports `AVAILABLE`, `PARTIAL`, `NOT_AVAILABLE`, `PROVIDER_TIMEOUT`,
@@ -251,6 +254,16 @@ reached evaluation. Range coverage counts those starts even if the deadline
 interrupts the single-checkpoint call before it can return its normal
 `attempts` array.
 
+Every Backtester endpoint in one MCP server process shares a provider-domain
+request gate. Request starts are spaced by at least 100 ms by default
+(`TASTYTRADE_BACKTESTER_MIN_REQUEST_INTERVAL_MS` can override the interval).
+An HTTP 429 activates the same cooldown for create, poll, logs, simulation,
+list, and cancel requests. `Retry-After` takes precedence over
+`X-RateLimit-Reset`; when neither is usable, bounded exponential fallback
+windows begin at approximately 10, 30, and 90 seconds with jitter. Calls that
+reach the gate while the cooldown is active fail locally without another
+provider request.
+
 Cache and provider diagnostics are emitted outside the immutable candle
 request. They do not alter request fingerprints. A cache hit completes
 `CACHE_LOOKUP` without starting `PROVIDER_BOOTSTRAP`; a source fetch starts
@@ -265,25 +278,37 @@ state.
 When work remains, `continuation` contains an opaque integrity-checked cursor,
 the completed session dates, the complete scheduling-order list of unresolved
 dates, and separate `unattempted_session_dates` and
-`deferred_session_dates` queues. Supply the cursor unchanged as
-`continuation_cursor` with the same logical request. Completed checkpoints are
-not called again. A retryable checkpoint remains unresolved and moves to the
-tail of the deferred queue; deferred work begins only after the first-pass
-queue is empty and then rotates round-robin.
+`deferred_session_dates` queues. `deferred_checkpoints` adds durable
+`retry_count`, `next_retry_at`, `last_error`, `last_retry_after_seconds`, and
+provider identity. `provider_rate_limit` preserves the provider-wide cooldown
+and last observed 429 across process restarts and continuation calls. Supply
+the cursor unchanged as `continuation_cursor` with the same logical request.
 
-New cursors use the v2 opaque format. Existing v1 cursors remain accepted and
-their pending dates are treated as unattempted once, allowing a formerly
-head-blocked cursor to classify failures into the deferred queue and advance.
+New cursors use the compact v3 opaque format. Existing v1 and v2 cursors
+remain accepted; missing retry metadata is initialized as immediately
+eligible so an old cursor can migrate forward. Completed checkpoints are not
+called again. Before `next_retry_at`, a normal resumed invocation returns
+without calling discovery when every deferred checkpoint is still cooling.
+After the timestamp, retry-eligible checkpoints run in queue order and any
+unresolved selections move to the tail. A `CACHE_ONLY` request may evaluate a
+cooling checkpoint because that mode cannot contact Backtester; sufficient
+immutable evidence can therefore complete during a provider cooldown.
 Cursor integrity, logical-request binding, date partition validation, and
 first-pass calendar ordering remain fail-closed. The logical request ID and
-immutable candle fingerprints do not include cursor version or queue state.
+immutable candle fingerprints do not include cursor version, queue state, or
+retry timestamps.
 
 Results from a resumed invocation are incremental: retain the completed
 checkpoint payloads from earlier responses and append the newly completed
 payloads. `progress.checkpoints_unattempted` and
 `progress.checkpoints_awaiting_retry` expose the post-invocation queue counts;
-the existing completed, deferred-this-run, and remaining counts retain their
-prior meanings. Changing a logical input causes cursor validation to fail.
+`checkpoints_retry_eligible` and `checkpoints_cooling_down` split deferred
+work by the current clock. Top-level `rate_limit` reports provider identity,
+cooldown state and timestamp, provider retry metadata, cumulative observed
+429 count, and the same eligibility counts. Each attempted checkpoint returns
+its durable `retry` metadata. The existing completed, deferred-this-run, and
+remaining counts retain their prior meanings. Changing a logical input causes
+cursor validation to fail.
 
 `evidence_cache.as_of` and `evidence_cache.evidence_role` are assigned per
 checkpoint and therefore cannot be supplied at range level. `CACHE_ONLY`

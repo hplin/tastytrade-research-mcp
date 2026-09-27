@@ -298,7 +298,11 @@ function continuationCursor(version, payload) {
   )}.${createHash("sha256").update(serialized).digest("hex")}`;
 }
 
-function rateLimitedRangeCandidateResult(input, cacheHit = false) {
+function rateLimitedRangeCandidateResult(
+  input,
+  cacheHit = false,
+  rateLimit,
+) {
   const date = input.as_of.slice(0, 10);
   return rangeCandidateResult(input, {
     status: "PARTIAL",
@@ -328,6 +332,7 @@ function rateLimitedRangeCandidateResult(input, cacheHit = false) {
           code: "ERR_BAD_REQUEST",
           http_status: 429,
           retryable: true,
+          ...(rateLimit ? { rate_limit: rateLimit } : {}),
         },
       },
     ],
@@ -975,6 +980,16 @@ describe("historical SPX candidate discovery", () => {
       {
         code: "ERR_BAD_REQUEST",
         response: { status: 429 },
+        provider_rate_limit: {
+          provider: "tastytrade-backtester",
+          cooldown_until: "2026-09-27T18:00:30.000Z",
+          last_429_at: "2026-09-27T18:00:00.000Z",
+          retry_after_seconds: 30,
+          rate_limit_count: 1,
+          remaining: 0,
+          source: "RETRY_AFTER",
+          cause: "HTTP_429",
+        },
       },
     );
     const result = await discoverHistoricalSpxCandidates(
@@ -996,6 +1011,13 @@ describe("historical SPX candidate discovery", () => {
         code: "ERR_BAD_REQUEST",
         http_status: 429,
         retryable: true,
+        rate_limit: {
+          provider: "tastytrade-backtester",
+          cooldown_until: "2026-09-27T18:00:30.000Z",
+          retry_after_seconds: 30,
+          rate_limit_count: 1,
+          source: "RETRY_AFTER",
+        },
       },
     });
   });
@@ -1153,6 +1175,7 @@ describe("historical SPX candidate discovery", () => {
     });
 
     test("preserves partial progress, retries only transient failures, and resumes unresolved checkpoints", async () => {
+      let now = Date.parse("2026-09-27T18:00:00.000Z");
       const calls = new Map();
       const discover = jest.fn(async (_backtester, input) => {
         const date = input.as_of.slice(0, 10);
@@ -1197,7 +1220,14 @@ describe("historical SPX candidate discovery", () => {
         {},
         request,
         undefined,
-        { discover },
+        {
+          discover,
+          now: () => now,
+          random: () => 0.5,
+          sleep: async (milliseconds) => {
+            now += milliseconds;
+          },
+        },
       );
 
       expect(
@@ -1214,8 +1244,8 @@ describe("historical SPX candidate discovery", () => {
         },
         {
           session_date: "2026-08-25",
-          status: "AVAILABLE",
-          attempt_count: 2,
+          status: "PROVIDER_RATE_LIMIT",
+          attempt_count: 1,
         },
         {
           session_date: "2026-08-27",
@@ -1225,21 +1255,44 @@ describe("historical SPX candidate discovery", () => {
       ]);
       expect(first.status).toBe("PARTIAL");
       expect(first.coverage).toMatchObject({
-        checkpoints_available: 2,
-        checkpoints_failed: 1,
+        checkpoints_available: 1,
+        checkpoints_failed: 2,
         provider_timeout_count: 1,
-        checkpoint_retry_count: 2,
+        provider_rate_limit_count: 1,
+        checkpoint_retry_count: 1,
         checkpoints_fully_served_from_cache: 1,
         checkpoints_requiring_provider_access: 2,
         cache: {
           cache_hits: 1,
-          cache_misses: 1,
+          cache_misses: 0,
           provider_calls_avoided: 1,
         },
       });
       expect(first.continuation).toMatchObject({
-        unresolved_session_dates: ["2026-08-27"],
-        completed_session_dates: ["2026-08-24", "2026-08-25"],
+        unresolved_session_dates: ["2026-08-25", "2026-08-27"],
+        completed_session_dates: ["2026-08-24"],
+        deferred_checkpoints: [
+          expect.objectContaining({
+            session_date: "2026-08-25",
+            retry_count: 1,
+            next_retry_at: "2026-09-27T18:00:10.000Z",
+            last_error: "PROVIDER_RATE_LIMIT",
+          }),
+          expect.objectContaining({
+            session_date: "2026-08-27",
+            retry_count: 1,
+            next_retry_at: null,
+            last_error: "PROVIDER_TIMEOUT",
+          }),
+        ],
+      });
+      expect(first.rate_limit).toMatchObject({
+        cooldown_active: true,
+        cooldown_until: "2026-09-27T18:00:10.000Z",
+        retry_after_seconds: 10,
+        rate_limit_count: 1,
+        checkpoints_retry_eligible: 1,
+        checkpoints_cooling_down: 1,
       });
 
       const resumeDiscover = jest.fn(async (_backtester, input) =>
@@ -1252,7 +1305,11 @@ describe("historical SPX candidate discovery", () => {
           continuation_cursor: first.continuation.cursor,
         },
         undefined,
-        { discover: resumeDiscover },
+        {
+          discover: resumeDiscover,
+          now: () => now,
+          random: () => 0.5,
+        },
       );
 
       expect(resumeDiscover).toHaveBeenCalledTimes(1);
@@ -1260,13 +1317,60 @@ describe("historical SPX candidate discovery", () => {
         resumeDiscover.mock.calls[0][1].as_of.slice(0, 10),
       ).toBe("2026-08-27");
       expect(resumed.progress).toMatchObject({
-        checkpoints_previously_completed: 2,
+        checkpoints_previously_completed: 1,
         checkpoints_attempted: 1,
         checkpoints_completed_this_run: 1,
-        checkpoints_remaining: 0,
+        checkpoints_remaining: 1,
+        checkpoints_retry_eligible: 0,
+        checkpoints_cooling_down: 1,
       });
-      expect(resumed.status).toBe("COMPLETE");
-      expect(resumed.continuation).toBeNull();
+      expect(resumed.continuation.deferred_session_dates).toEqual([
+        "2026-08-25",
+      ]);
+
+      const cooling = await discoverHistoricalSpxCandidatesRange(
+        {},
+        {
+          ...request,
+          continuation_cursor: resumed.continuation.cursor,
+        },
+        undefined,
+        {
+          discover: resumeDiscover,
+          now: () => now,
+          random: () => 0.5,
+        },
+      );
+      expect(resumeDiscover).toHaveBeenCalledTimes(1);
+      expect(cooling.checkpoints).toEqual([]);
+      expect(cooling.progress).toMatchObject({
+        checkpoints_attempted: 0,
+        checkpoints_remaining: 1,
+        checkpoints_retry_eligible: 0,
+        checkpoints_cooling_down: 1,
+      });
+
+      now = Date.parse(
+        cooling.continuation.deferred_checkpoints[0].next_retry_at,
+      );
+      const recovered = await discoverHistoricalSpxCandidatesRange(
+        {},
+        {
+          ...request,
+          continuation_cursor: cooling.continuation.cursor,
+        },
+        undefined,
+        {
+          discover: resumeDiscover,
+          now: () => now,
+          random: () => 0.5,
+        },
+      );
+      expect(
+        resumeDiscover.mock.calls[1][1].as_of.slice(0, 10),
+      ).toBe("2026-08-25");
+      expect(recovered.status).toBe("COMPLETE");
+      expect(recovered.continuation).toBeNull();
     });
 
     test("limits each invocation and keeps deferred checkpoints in the continuation cursor", async () => {
@@ -1298,7 +1402,7 @@ describe("historical SPX candidate discovery", () => {
         unattempted_session_dates: ["2026-08-27", "2026-08-28"],
         deferred_session_dates: [],
       });
-      expect(first.continuation.cursor.startsWith("v2.")).toBe(true);
+      expect(first.continuation.cursor.startsWith("v3.")).toBe(true);
 
       const secondDiscover = jest.fn(async (_backtester, input) =>
         rangeCandidateResult(input),
@@ -1324,6 +1428,7 @@ describe("historical SPX candidate discovery", () => {
     });
 
     test("finishes the first pass before retrying rate-limited partial checkpoints", async () => {
+      let now = Date.parse("2026-09-27T18:00:00.000Z");
       const sessionDates = [
         "2026-08-24",
         "2026-08-25",
@@ -1368,6 +1473,7 @@ describe("historical SPX candidate discovery", () => {
       const rounds = [];
       let cursor;
       for (let round = 0; round < 4; round += 1) {
+        if (round === 3) now += 10_000;
         const result = await discoverHistoricalSpxCandidatesRange(
           {},
           {
@@ -1375,7 +1481,11 @@ describe("historical SPX candidate discovery", () => {
             ...(cursor ? { continuation_cursor: cursor } : {}),
           },
           undefined,
-          { discover },
+          {
+            discover,
+            now: () => now,
+            random: () => 0.5,
+          },
         );
         rounds.push(result);
         cursor = result.continuation?.cursor;
@@ -1425,6 +1535,10 @@ describe("historical SPX candidate discovery", () => {
         unattempted_session_dates: [],
         deferred_session_dates: sessionDates.slice(0, 2),
       });
+      expect(rounds[2].progress).toMatchObject({
+        checkpoints_retry_eligible: 0,
+        checkpoints_cooling_down: 2,
+      });
       expect(rounds[3].continuation).toBeNull();
       expect(rounds[3].coverage.cache).toMatchObject({
         cache_hits: 2,
@@ -1443,6 +1557,7 @@ describe("historical SPX candidate discovery", () => {
     });
 
     test("makes a finite first pass over 21 sessions and rotates deferred retries", async () => {
+      let now = Date.parse("2026-09-27T18:00:00.000Z");
       const sessionDates = [
         "2026-08-03",
         "2026-08-04",
@@ -1496,7 +1611,11 @@ describe("historical SPX candidate discovery", () => {
             ...(cursor ? { continuation_cursor: cursor } : {}),
           },
           undefined,
-          { discover },
+          {
+            discover,
+            now: () => now,
+            random: () => 0.5,
+          },
         );
         cursor = lastFirstPass.continuation.cursor;
       }
@@ -1513,8 +1632,11 @@ describe("historical SPX candidate discovery", () => {
         checkpoints_remaining: 21,
         checkpoints_unattempted: 0,
         checkpoints_awaiting_retry: 21,
+        checkpoints_retry_eligible: 0,
+        checkpoints_cooling_down: 21,
       });
 
+      now += 10_000;
       const retryRound = await discoverHistoricalSpxCandidatesRange(
         {},
         {
@@ -1522,7 +1644,11 @@ describe("historical SPX candidate discovery", () => {
           continuation_cursor: cursor,
         },
         undefined,
-        { discover },
+        {
+          discover,
+          now: () => now,
+          random: () => 0.5,
+        },
       );
       expect(
         retryRound.checkpoints.map((checkpoint) => checkpoint.session_date),
@@ -1534,7 +1660,72 @@ describe("historical SPX candidate discovery", () => {
       expect(retryRound.continuation.unattempted_session_dates).toEqual([]);
     });
 
-    test("accepts v1 cursors and emits classified v2 queue state", async () => {
+    test("keeps the maximum 400-session first pass resumable within the cursor limit", async () => {
+      const sessionDates = [];
+      const date = new Date("2026-01-02T00:00:00.000Z");
+      while (sessionDates.length < 400) {
+        const day = date.getUTCDay();
+        if (day !== 0 && day !== 6) {
+          sessionDates.push(date.toISOString().slice(0, 10));
+        }
+        date.setUTCDate(date.getUTCDate() + 1);
+      }
+      const calledDates = [];
+      const discover = jest.fn(async (_backtester, input) => {
+        calledDates.push(input.as_of.slice(0, 10));
+        return rateLimitedRangeCandidateResult(input);
+      });
+      const request = {
+        ...RANGE_REQUEST,
+        start_date: sessionDates[0],
+        end_date: sessionDates.at(-1),
+        trading_calendar: {
+          ...RANGE_REQUEST.trading_calendar,
+          session_dates: sessionDates,
+        },
+        max_concurrency: 4,
+        max_checkpoints_per_run: 50,
+        retry_policy: {
+          max_attempts: 1,
+          backoff_ms: 0,
+        },
+      };
+      const now = Date.parse("2026-09-27T18:00:00.000Z");
+      let cursor;
+      let result;
+      for (let round = 0; round < 8; round += 1) {
+        result = await discoverHistoricalSpxCandidatesRange(
+          {},
+          {
+            ...request,
+            ...(cursor ? { continuation_cursor: cursor } : {}),
+          },
+          undefined,
+          {
+            discover,
+            now: () => now,
+            random: () => 0.5,
+          },
+        );
+        cursor = result.continuation.cursor;
+      }
+
+      expect(calledDates).toEqual(sessionDates);
+      expect(new Set(calledDates).size).toBe(400);
+      expect(result.progress).toMatchObject({
+        checkpoints_unattempted: 0,
+        checkpoints_awaiting_retry: 400,
+        checkpoints_retry_eligible: 0,
+        checkpoints_cooling_down: 400,
+      });
+      expect(result.continuation.deferred_session_dates).toEqual(
+        sessionDates,
+      );
+      expect(result.continuation.cursor.startsWith("v3.")).toBe(true);
+      expect(result.continuation.cursor.length).toBeLessThanOrEqual(32_768);
+    });
+
+    test("accepts v1 cursors and emits classified v3 queue state", async () => {
       const plan = prepareHistoricalSpxCandidatesRange(RANGE_REQUEST);
       const cursor = continuationCursor("v1", {
         completed: [],
@@ -1562,12 +1753,62 @@ describe("historical SPX candidate discovery", () => {
       );
 
       expect(result.request_id).toBe(plan.request_id);
-      expect(result.continuation.cursor.startsWith("v2.")).toBe(true);
+      expect(result.continuation.cursor.startsWith("v3.")).toBe(true);
       expect(result.continuation).toMatchObject({
         unattempted_session_dates:
           RANGE_REQUEST.trading_calendar.session_dates.slice(1),
         deferred_session_dates: [
           RANGE_REQUEST.trading_calendar.session_dates[0],
+        ],
+      });
+    });
+
+    test("accepts v2 cursors and preserves first-pass priority in v3 state", async () => {
+      const plan = prepareHistoricalSpxCandidatesRange(RANGE_REQUEST);
+      const dates = RANGE_REQUEST.trading_calendar.session_dates;
+      const cursor = continuationCursor("v2", {
+        completed: [
+          {
+            session_date: dates[0],
+            status: "AVAILABLE",
+          },
+        ],
+        contract_version: "1.0.0",
+        unattempted_session_dates: [dates[1], dates[2]],
+        deferred_session_dates: [dates[3]],
+        request_id: plan.request_id,
+      });
+      const discover = jest.fn(async (_backtester, input) =>
+        rangeCandidateResult(input),
+      );
+      const result = await discoverHistoricalSpxCandidatesRange(
+        {},
+        {
+          ...RANGE_REQUEST,
+          max_checkpoints_per_run: 1,
+          continuation_cursor: cursor,
+        },
+        undefined,
+        { discover },
+      );
+
+      expect(
+        discover.mock.calls[0][1].as_of.slice(0, 10),
+      ).toBe(dates[1]);
+      expect(result.continuation.cursor.startsWith("v3.")).toBe(true);
+      expect(result.continuation).toMatchObject({
+        completed_session_dates: [dates[0], dates[1]],
+        unattempted_session_dates: [dates[2]],
+        deferred_session_dates: [dates[3]],
+        deferred_checkpoints: [
+          {
+            session_date: dates[3],
+            retry_count: 0,
+            next_retry_at: null,
+            last_error: null,
+            last_retry_after_seconds: null,
+            provider: null,
+          },
         ],
       });
     });
@@ -1625,10 +1866,17 @@ describe("historical SPX candidate discovery", () => {
       const payload = JSON.parse(
         Buffer.from(encoded, "base64url").toString("utf8"),
       );
-      payload.deferred_session_dates = [
-        payload.unattempted_session_dates[0],
+      payload.deferred_checkpoints = [
+        [
+          payload.unattempted_session_dates[0],
+          0,
+          null,
+          null,
+          null,
+          null,
+        ],
       ];
-      const invalidQueueCursor = continuationCursor("v2", payload);
+      const invalidQueueCursor = continuationCursor("v3", payload);
       await expect(
         discoverHistoricalSpxCandidatesRange(
           {},
@@ -1679,7 +1927,8 @@ describe("historical SPX candidate discovery", () => {
       ]);
     });
 
-    test("retries structured rate limits returned by single discovery", async () => {
+    test("defers structured rate limits until their durable retry time", async () => {
+      let now = Date.parse("2026-09-27T18:00:00.000Z");
       let attempt = 0;
       const discover = jest.fn(async (_backtester, input) => {
         attempt += 1;
@@ -1709,22 +1958,393 @@ describe("historical SPX candidate discovery", () => {
         }
         return rangeCandidateResult(input);
       });
-      const result = await discoverHistoricalSpxCandidatesRange(
+      const first = await discoverHistoricalSpxCandidatesRange(
         {},
         {
           ...RANGE_REQUEST,
           end_date: "2026-08-24",
         },
         undefined,
-        { discover },
+        {
+          discover,
+          now: () => now,
+          random: () => 0.5,
+        },
+      );
+
+      expect(discover).toHaveBeenCalledTimes(1);
+      expect(first.checkpoints[0]).toMatchObject({
+        status: "PROVIDER_RATE_LIMIT",
+        attempt_count: 1,
+        retry: {
+          retry_count: 1,
+          next_retry_at: "2026-09-27T18:00:10.000Z",
+          last_error: "PROVIDER_RATE_LIMIT",
+          last_retry_after_seconds: 10,
+          provider: "tastytrade-backtester",
+        },
+      });
+      expect(first.coverage.checkpoint_retry_count).toBe(0);
+      expect(first.continuation.cursor.startsWith("v3.")).toBe(true);
+
+      const cooling = await discoverHistoricalSpxCandidatesRange(
+        {},
+        {
+          ...RANGE_REQUEST,
+          end_date: "2026-08-24",
+          continuation_cursor: first.continuation.cursor,
+        },
+        undefined,
+        {
+          discover,
+          now: () => now,
+          random: () => 0.5,
+        },
+      );
+      expect(discover).toHaveBeenCalledTimes(1);
+      expect(cooling.checkpoints).toEqual([]);
+      expect(cooling.rate_limit).toMatchObject({
+        cooldown_active: true,
+        checkpoints_retry_eligible: 0,
+        checkpoints_cooling_down: 1,
+      });
+
+      now += 10_000;
+      const recovered = await discoverHistoricalSpxCandidatesRange(
+        {},
+        {
+          ...RANGE_REQUEST,
+          end_date: "2026-08-24",
+          continuation_cursor: cooling.continuation.cursor,
+        },
+        undefined,
+        {
+          discover,
+          now: () => now,
+          random: () => 0.5,
+        },
+      );
+      expect(discover).toHaveBeenCalledTimes(2);
+      expect(recovered.checkpoints[0]).toMatchObject({
+        status: "AVAILABLE",
+        attempt_count: 1,
+        retry: {
+          retry_count: 1,
+          next_retry_at: null,
+          last_error: null,
+        },
+      });
+      expect(recovered.continuation).toBeNull();
+    });
+
+    test("extends every matching deferred checkpoint when the provider cooldown moves later", async () => {
+      let now = Date.parse("2026-09-27T18:00:00.000Z");
+      const extendedCooldown = "2026-09-27T18:01:10.000Z";
+      const discover = jest.fn(async (_backtester, input) => {
+        if (discover.mock.calls.length <= 2) {
+          return rateLimitedRangeCandidateResult(input);
+        }
+        return rangeCandidateResult(input, {
+          status: "NOT_AVAILABLE",
+          contracts: [],
+          attempts: [
+            {
+              option_side: "CALL",
+              selector: {
+                method: "DELTA",
+                value: "20",
+                days_until_expiration: 28,
+              },
+              backtest_id: null,
+              status: "PROVIDER_ERROR",
+              error: "Request failed with status code 429",
+              provider_error: {
+                code: "PROVIDER_RATE_LIMIT",
+                http_status: 429,
+                retryable: true,
+                rate_limit: {
+                  provider: "tastytrade-backtester",
+                  cooldown_until: extendedCooldown,
+                  last_429_at: "2026-09-27T18:00:10.000Z",
+                  retry_after_seconds: 60,
+                  rate_limit_count: 1,
+                  remaining: 0,
+                  source: "RETRY_AFTER",
+                  cause: "HTTP_429",
+                },
+              },
+            },
+          ],
+        });
+      });
+      const request = {
+        ...RANGE_REQUEST,
+        end_date: "2026-08-25",
+        max_checkpoints_per_run: 2,
+        retry_policy: {
+          max_attempts: 1,
+          backoff_ms: 0,
+        },
+      };
+      const first = await discoverHistoricalSpxCandidatesRange(
+        {},
+        request,
+        undefined,
+        {
+          discover,
+          now: () => now,
+          random: () => 0.5,
+        },
+      );
+
+      now += 10_000;
+      const extended = await discoverHistoricalSpxCandidatesRange(
+        {},
+        {
+          ...request,
+          max_checkpoints_per_run: 1,
+          continuation_cursor: first.continuation.cursor,
+        },
+        undefined,
+        {
+          discover,
+          now: () => now,
+          random: () => 0.5,
+        },
+      );
+      expect(discover).toHaveBeenCalledTimes(3);
+      expect(
+        extended.continuation.deferred_checkpoints.map(
+          (checkpoint) => checkpoint.next_retry_at,
+        ),
+      ).toEqual([extendedCooldown, extendedCooldown]);
+
+      now += 10_000;
+      const cooling = await discoverHistoricalSpxCandidatesRange(
+        {},
+        {
+          ...request,
+          max_checkpoints_per_run: 1,
+          continuation_cursor: extended.continuation.cursor,
+        },
+        undefined,
+        {
+          discover,
+          now: () => now,
+          random: () => 0.5,
+        },
+      );
+      expect(discover).toHaveBeenCalledTimes(3);
+      expect(cooling.checkpoints).toEqual([]);
+      expect(cooling.rate_limit).toMatchObject({
+        checkpoints_retry_eligible: 0,
+        checkpoints_cooling_down: 2,
+      });
+    });
+
+    test("persists provider Retry-After metadata without applying the short local backoff", async () => {
+      const now = Date.parse("2026-09-27T18:00:00.000Z");
+      const rateLimit = {
+        provider: "tastytrade-backtester",
+        cooldown_until: "2026-09-27T18:01:00.000Z",
+        last_429_at: "2026-09-27T18:00:00.000Z",
+        retry_after_seconds: 60,
+        rate_limit_count: 4,
+        remaining: 0,
+        source: "RETRY_AFTER",
+        cause: "HTTP_429",
+      };
+      const discover = jest.fn(async (_backtester, input) =>
+        rateLimitedRangeCandidateResult(input, false, rateLimit),
+      );
+      const sleep = jest.fn();
+      const result = await discoverHistoricalSpxCandidatesRange(
+        {},
+        {
+          ...RANGE_REQUEST,
+          end_date: "2026-08-24",
+          retry_policy: {
+            max_attempts: 3,
+            backoff_ms: 1_500,
+          },
+        },
+        undefined,
+        {
+          discover,
+          now: () => now,
+          random: () => 0.5,
+          sleep,
+        },
+      );
+
+      expect(discover).toHaveBeenCalledTimes(1);
+      expect(sleep).not.toHaveBeenCalled();
+      expect(result.checkpoints[0]).toMatchObject({
+        attempt_count: 1,
+        error: {
+          category: "PROVIDER_RATE_LIMIT",
+          rate_limit: rateLimit,
+        },
+        retry: {
+          retry_count: 1,
+          next_retry_at: rateLimit.cooldown_until,
+          last_retry_after_seconds: 60,
+          provider: "tastytrade-backtester",
+        },
+      });
+      expect(result.rate_limit).toMatchObject({
+        cooldown_active: true,
+        cooldown_until: rateLimit.cooldown_until,
+        retry_after_seconds: 60,
+        rate_limit_count: 4,
+        remaining: 0,
+        source: "RETRY_AFTER",
+      });
+      expect(result.continuation.provider_rate_limit).toEqual(rateLimit);
+    });
+
+    test("lets any 429 dominate mixed provider failures", async () => {
+      const now = Date.parse("2026-09-27T18:00:00.000Z");
+      const discover = jest.fn(async (_backtester, input) =>
+        rangeCandidateResult(input, {
+          status: "NOT_AVAILABLE",
+          contracts: [],
+          attempts: [
+            {
+              option_side: "CALL",
+              selector: {
+                method: "DELTA",
+                value: "20",
+                days_until_expiration: 28,
+              },
+              backtest_id: null,
+              status: "PROVIDER_ERROR",
+              error: "Request failed with status code 429",
+              provider_error: {
+                code: "ERR_BAD_REQUEST",
+                http_status: 429,
+                retryable: true,
+              },
+            },
+            {
+              option_side: "PUT",
+              selector: {
+                method: "DELTA",
+                value: "20",
+                days_until_expiration: 28,
+              },
+              backtest_id: null,
+              status: "PROVIDER_ERROR",
+              error: "temporary upstream failure",
+              provider_error: {
+                code: "ERR_NETWORK",
+                http_status: 503,
+                retryable: true,
+              },
+            },
+          ],
+        }),
+      );
+      const sleep = jest.fn();
+      const result = await discoverHistoricalSpxCandidatesRange(
+        {},
+        {
+          ...RANGE_REQUEST,
+          end_date: "2026-08-24",
+          retry_policy: {
+            max_attempts: 3,
+            backoff_ms: 1_500,
+          },
+        },
+        undefined,
+        {
+          discover,
+          now: () => now,
+          random: () => 0.5,
+          sleep,
+        },
+      );
+
+      expect(discover).toHaveBeenCalledTimes(1);
+      expect(sleep).not.toHaveBeenCalled();
+      expect(result.checkpoints[0]).toMatchObject({
+        status: "PROVIDER_RATE_LIMIT",
+        attempt_count: 1,
+        error: {
+          category: "PROVIDER_RATE_LIMIT",
+        },
+      });
+    });
+
+    test("allows cache-only deferred work during an active provider cooldown", async () => {
+      const now = Date.parse("2026-09-27T18:00:00.000Z");
+      const rateLimit = {
+        provider: "tastytrade-backtester",
+        cooldown_until: "2026-09-27T18:01:00.000Z",
+        last_429_at: "2026-09-27T18:00:00.000Z",
+        retry_after_seconds: 60,
+        rate_limit_count: 1,
+        remaining: 0,
+        source: "RETRY_AFTER",
+        cause: "HTTP_429",
+      };
+      let attempt = 0;
+      const discover = jest.fn(async (_backtester, input) => {
+        attempt += 1;
+        if (attempt === 1) {
+          return rateLimitedRangeCandidateResult(input, true, rateLimit);
+        }
+        return rangeCandidateResult(input, {
+          evidence_cache: rateLimitedRangeCandidateResult(
+            input,
+            true,
+          ).evidence_cache,
+        });
+      });
+      const request = {
+        ...RANGE_REQUEST,
+        end_date: "2026-08-24",
+        evidence_cache: {
+          mode: "CACHE_ONLY",
+          manifest_ids: [`sha256:${"1".repeat(64)}`],
+        },
+        retry_policy: {
+          max_attempts: 1,
+          backoff_ms: 0,
+        },
+      };
+      const first = await discoverHistoricalSpxCandidatesRange(
+        {},
+        request,
+        undefined,
+        {
+          discover,
+          now: () => now,
+          random: () => 0.5,
+        },
+      );
+      const replay = await discoverHistoricalSpxCandidatesRange(
+        {},
+        {
+          ...request,
+          continuation_cursor: first.continuation.cursor,
+        },
+        undefined,
+        {
+          discover,
+          now: () => now,
+          random: () => 0.5,
+        },
       );
 
       expect(discover).toHaveBeenCalledTimes(2);
-      expect(result.checkpoints[0]).toMatchObject({
+      expect(replay.checkpoints[0]).toMatchObject({
         status: "AVAILABLE",
-        attempt_count: 2,
+        cache_fully_served: true,
+        provider_access_required: false,
       });
-      expect(result.coverage.checkpoint_retry_count).toBe(1);
+      expect(replay.rate_limit.cooldown_active).toBe(true);
+      expect(replay.continuation).toBeNull();
     });
 
     test("retains partial evidence when a later retry times out", async () => {

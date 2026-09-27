@@ -1660,7 +1660,7 @@ export const TOOLS: Tool[] = [
   {
     name: "tastytrade_discover_historical_spx_candidates_range",
     description:
-      "Discover checkpoint-safe historical SPX candidates across an explicit caller-supplied trading calendar. Uses bounded concurrency and per-checkpoint deadlines, preserves ordered single-checkpoint results, retries only transient provider failures, and returns resumable partial progress plus aggregate immutable-cache diagnostics.",
+      "Discover checkpoint-safe historical SPX candidates across an explicit caller-supplied trading calendar. Uses bounded concurrency, per-checkpoint deadlines, and shared provider pacing; preserves ordered single-checkpoint results; defers rate-limited work behind durable Retry-After-aware cooldowns; and returns resumable partial progress plus aggregate immutable-cache diagnostics.",
     inputSchema: HISTORICAL_SPX_CANDIDATES_RANGE_SCHEMA,
   },
   {

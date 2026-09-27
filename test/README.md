@@ -79,10 +79,16 @@ The suite builds the TypeScript project before running Jest and covers:
 - explicit-calendar SPX range discovery with bounded workers, hard
   checkpoint deadlines, transient retry, ordered partial progress,
   fair first-pass-before-retry continuation, deferred round-robin scheduling,
-  v1 cursor compatibility, no completed-checkpoint replay, aggregate cache
-  diagnostics, stage-level timeout attribution, selector-start accounting,
-  result-derived selector-timeout attribution across retries, and bounded
-  100-symbol candidate reconstruction batches;
+  v1/v2 cursor compatibility, v3 durable retry eligibility, provider-wide
+  cooldown diagnostics, Retry-After precedence, cache-only cooldown bypass,
+  no completed-checkpoint replay, aggregate cache diagnostics, stage-level
+  timeout attribution, selector-start accounting, result-derived
+  selector-timeout attribution across retries, maximum 400-session cursor
+  bounds (including the six-month scale),
+  and bounded 100-symbol candidate reconstruction batches;
+- shared Backtester request pacing, HTTP 429 cooldown gating,
+  X-RateLimit-Reset handling, bounded jittered fallback backoff, and
+  cross-endpoint suppression of provider calls during cooldown;
 - exact provider identity recovery from captured Backtester logs;
 - strict exclusion of stale and future selector trials that do not occur
   exactly at `as_of`;

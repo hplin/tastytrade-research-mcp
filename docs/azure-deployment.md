@@ -157,7 +157,13 @@ OAUTH_AUDIENCE=<resource-app-id>
 OAUTH_REQUIRED_SCOPE=api://<resource-app-id>/mcp.read
 OAUTH_TOKEN_SCOPE=mcp.read
 OAUTH_RESOURCE_NAME=Tastytrade Research MCP
+TASTYTRADE_BACKTESTER_MIN_REQUEST_INTERVAL_MS=100
 ```
+
+The Backtester interval applies process-wide to every endpoint on that
+provider domain. HTTP 429 responses can extend the shared cooldown through
+`Retry-After` or `X-RateLimit-Reset`; the range cursor persists that cooldown
+so a restarted replica does not immediately retry deferred checkpoints.
 
 For emergency rollback, move 100% traffic to the still-active revision
 `tastytrade-research-mcp--main-b52f7e7`. That revision contains the
