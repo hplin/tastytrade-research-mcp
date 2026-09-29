@@ -17,6 +17,7 @@
     "handoff:dd-iv:check": "npm run build --silent && node scripts/generate-dd-iv-handoff.mjs --check",
     "live:historical-quote-capability": "npm run build --silent && node --env-file-if-exists=.env scripts/live-historical-quote-capability.mjs",
     "live:historical-replay-week": "npm run build --silent && node --env-file-if-exists=.env scripts/live-historical-replay-week.mjs",
+    "live:option-snapshot": "npm run build --silent && node --env-file-if-exists=.env scripts/live-option-snapshot.mjs",
     "report:historical-replay": "npm run build --silent && node scripts/build-historical-replay-report.mjs",
     "live:resolution-gate": "npm run build --silent && node --env-file-if-exists=.env scripts/live-resolution-profile-gate.mjs",
     "report:evidence-cache": "npm run build --silent && node scripts/evidence-cache-report.mjs",

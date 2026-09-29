@@ -6,6 +6,16 @@ import {
   assertTrustedHosts,
 } from "./config.js";
 import { ExactDecimal } from "./decimal.js";
+import {
+  DXLINK_OPEN,
+  TastytradeDxlinkTokenClient,
+  decodeDxlinkMessageData,
+  dxlinkMessageDataByteLength,
+  type DxlinkQuoteToken,
+  type DxlinkSocket,
+  type DxlinkSocketFactory,
+  type TastytradeAccessTokenProvider,
+} from "./dxlink.js";
 import type {
   EvidenceCacheRecord,
   EvidenceCacheRequest,
@@ -227,29 +237,7 @@ export type HistoricalCandlesResult = {
   evidence_cache?: EvidenceCacheRecord | null;
 };
 
-type QuoteToken = {
-  token: string;
-  url: string;
-};
-
-type QuoteTokenResponse = {
-  data?: {
-    token?: string;
-    "dxlink-url"?: string;
-  };
-};
-
-type DxlinkSocket = {
-  readyState: number;
-  onopen: (() => void) | null;
-  onmessage: ((event: { data: unknown }) => void) | null;
-  onerror: (() => void) | null;
-  onclose: ((event: { code: number; reason: string }) => void) | null;
-  send(data: string): void;
-  close(code?: number, reason?: string): void;
-};
-
-export type DxlinkSocketFactory = (url: string) => DxlinkSocket;
+export type { DxlinkSocketFactory } from "./dxlink.js";
 
 type RawCandle = {
   eventSymbol: string;
@@ -326,7 +314,6 @@ type HistoricalCandleBudgets = {
   timeoutMsCompatibilityApplied: boolean;
 };
 
-const DXLINK_OPEN = 1;
 const TX_PENDING = 1;
 const REMOVE_EVENT = 2;
 const SNAPSHOT_BEGIN = 4;
@@ -342,7 +329,6 @@ const MAX_BUFFER_BYTES = 128 * 1024 * 1024;
 const LEGACY_MAX_CANDLES = 20_000;
 const RETAINED_CANDLE_OVERHEAD_BYTES = 256;
 const RETAINED_INDEX_OVERHEAD_BYTES = 64;
-const QUOTE_TOKEN_TTL_MS = 23 * 60 * 60_000;
 const CANDLE_FIELDS = [
   "eventType",
   "eventSymbol",
@@ -876,35 +862,6 @@ export function parseDxlinkCandleData(data: unknown): {
   };
 }
 
-function decodeMessageData(data: unknown): Promise<string> {
-  if (typeof data === "string") return Promise.resolve(data);
-  if (data instanceof ArrayBuffer) {
-    return Promise.resolve(Buffer.from(data).toString("utf8"));
-  }
-  if (ArrayBuffer.isView(data)) {
-    return Promise.resolve(
-      Buffer.from(data.buffer, data.byteOffset, data.byteLength).toString(
-        "utf8",
-      ),
-    );
-  }
-  if (
-    typeof Blob !== "undefined" &&
-    data instanceof Blob
-  ) {
-    return data.text();
-  }
-  return Promise.resolve(String(data));
-}
-
-function messageDataByteLength(data: unknown): number {
-  if (typeof data === "string") return Buffer.byteLength(data, "utf8");
-  if (data instanceof ArrayBuffer) return data.byteLength;
-  if (ArrayBuffer.isView(data)) return data.byteLength;
-  if (typeof Blob !== "undefined" && data instanceof Blob) return data.size;
-  return Buffer.byteLength(String(data), "utf8");
-}
-
 function retainedCandleBytes(candle: RawCandle): number {
   return (
     RETAINED_CANDLE_OVERHEAD_BYTES +
@@ -936,15 +893,6 @@ function emptyResourceCounters(): HistoricalCandlesResourceCounters {
   };
 }
 
-function isRetryable(error: unknown): boolean {
-  if (!axios.isAxiosError(error)) return false;
-  return (
-    !error.response ||
-    error.response.status === 429 ||
-    error.response.status >= 500
-  );
-}
-
 export class HistoricalCandlesAbortedError extends Error {
   readonly code = "PROVIDER_TIMEOUT";
   readonly retryable = true;
@@ -957,44 +905,6 @@ export class HistoricalCandlesAbortedError extends Error {
 
 function assertNotAborted(signal?: AbortSignal): void {
   if (signal?.aborted) throw new HistoricalCandlesAbortedError();
-}
-
-function wait(milliseconds: number, signal?: AbortSignal): Promise<void> {
-  assertNotAborted(signal);
-  if (!signal) {
-    return new Promise((resolve) => setTimeout(resolve, milliseconds));
-  }
-  return new Promise((resolve, reject) => {
-    const finish = () => {
-      signal.removeEventListener("abort", abort);
-      resolve();
-    };
-    const timer = setTimeout(finish, milliseconds);
-    const abort = () => {
-      clearTimeout(timer);
-      signal.removeEventListener("abort", abort);
-      reject(new HistoricalCandlesAbortedError());
-    };
-    signal.addEventListener("abort", abort, { once: true });
-  });
-}
-
-function assertTrustedDxlinkUrl(value: string): string {
-  const url = new URL(value);
-  if (
-    url.protocol !== "wss:" ||
-    !(
-      url.hostname.toLowerCase() === "dxfeed.com" ||
-      url.hostname.toLowerCase().endsWith(".dxfeed.com")
-    ) ||
-    url.username ||
-    url.password
-  ) {
-    throw new Error(
-      `Refusing DXLink token target: ${url.hostname}. Expected a dxfeed.com host over wss.`,
-    );
-  }
-  return url.toString();
 }
 
 function gapWarnings(
@@ -1067,12 +977,11 @@ export function edgeCoverageWarnings(
 }
 
 export class TastytradeHistoricalCandlesClient {
-  private quoteToken: QuoteToken | null = null;
-  private quoteTokenExpiresAt = 0;
+  private readonly quoteTokens: TastytradeDxlinkTokenClient;
 
   constructor(
-    private readonly oauth = new TastytradeOAuthClient(),
-    private readonly http: AxiosInstance = axios.create({
+    oauth: TastytradeAccessTokenProvider = new TastytradeOAuthClient(),
+    http: AxiosInstance = axios.create({
       baseURL: OAUTH_BASE_URL,
       timeout: 30_000,
       maxRedirects: 0,
@@ -1086,48 +995,11 @@ export class TastytradeHistoricalCandlesClient {
     private readonly clock: () => number = () => Date.now(),
   ) {
     assertTrustedHosts();
-  }
-
-  private async getQuoteToken(signal?: AbortSignal): Promise<QuoteToken> {
-    assertNotAborted(signal);
-    const now = this.clock();
-    if (this.quoteToken && now < this.quoteTokenExpiresAt) {
-      return this.quoteToken;
-    }
-
-    let lastError: unknown;
-    for (let attempt = 0; attempt < 3; attempt += 1) {
-      try {
-        const accessToken = await this.oauth.getAccessToken();
-        assertNotAborted(signal);
-        const response = await this.http.get<QuoteTokenResponse>(
-          "/api-quote-tokens",
-          {
-            signal,
-            headers: { Authorization: `Bearer ${accessToken}` },
-          },
-        );
-        const token = response.data.data?.token;
-        const url = response.data.data?.["dxlink-url"];
-        if (!token || !url) {
-          throw new Error(
-            "Quote-token response did not contain token and dxlink-url.",
-          );
-        }
-        this.quoteToken = {
-          token,
-          url: assertTrustedDxlinkUrl(url),
-        };
-        this.quoteTokenExpiresAt = now + QUOTE_TOKEN_TTL_MS;
-        return this.quoteToken;
-      } catch (error) {
-        lastError = error;
-        if (!isRetryable(error) || attempt === 2) throw error;
-        const baseDelay = 250 * 2 ** attempt;
-        await wait(baseDelay + Math.floor(Math.random() * 100), signal);
-      }
-    }
-    throw lastError;
+    this.quoteTokens = new TastytradeDxlinkTokenClient(
+      oauth,
+      http,
+      this.clock,
+    );
   }
 
   async getHistoricalCandles(
@@ -1268,7 +1140,7 @@ export class TastytradeHistoricalCandlesClient {
     ) {
       throw new Error("instruments must have unique streamer_symbol values.");
     }
-    const quoteToken = await this.getQuoteToken(input.signal);
+    const quoteToken = await this.quoteTokens.getQuoteToken(input.signal);
     assertNotAborted(input.signal);
     const snapshot = await this.readSnapshot({
       quoteToken,
@@ -1485,7 +1357,7 @@ export class TastytradeHistoricalCandlesClient {
   }
 
   private readSnapshot(input: {
-    quoteToken: QuoteToken;
+    quoteToken: DxlinkQuoteToken;
     candleSymbols: string[];
     startMs: number;
     endMs: number;
@@ -2017,7 +1889,7 @@ export class TastytradeHistoricalCandlesClient {
       };
       socket.onmessage = (event) => {
         if (settled) return;
-        const bytes = messageDataByteLength(event.data);
+        const bytes = dxlinkMessageDataByteLength(event.data);
         const attemptedBufferBytes =
           retainedBytes + pendingMessageBytes + bytes;
         recordPeakBuffer(attemptedBufferBytes);
@@ -2029,7 +1901,7 @@ export class TastytradeHistoricalCandlesClient {
         messageQueue = messageQueue
           .then(async () => {
             if (settled) return;
-            const text = await decodeMessageData(event.data);
+            const text = await decodeDxlinkMessageData(event.data);
             if (settled) return;
             for (const line of text.split(/\n+/).filter(Boolean)) {
               if (settled) return;

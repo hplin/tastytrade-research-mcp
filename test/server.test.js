@@ -72,7 +72,21 @@ describe("MCP research server", () => {
         })),
       ),
     };
-    const server = createResearchServer({ backtester, candles });
+    const liveOptions = {
+      getLiveOptionSnapshot: jest.fn(async (request) => ({
+        status: "AVAILABLE",
+        snapshot_complete: true,
+        underlying: request.underlying,
+        underlying_price: request.around_price,
+        evidence_role: "SUPPORTING_EVIDENCE",
+        dealer_gex_status: "UNKNOWN",
+      })),
+    };
+    const server = createResearchServer({
+      backtester,
+      candles,
+      liveOptions,
+    });
     const client = new Client({ name: "test-client", version: "1.0.0" });
     const [clientTransport, serverTransport] =
       InMemoryTransport.createLinkedPair();
@@ -81,9 +95,10 @@ describe("MCP research server", () => {
     await client.connect(clientTransport);
     try {
       const tools = await client.listTools();
-      expect(tools.tools).toHaveLength(22);
+      expect(tools.tools).toHaveLength(23);
       expect(tools.tools.map((tool) => tool.name)).toEqual(
         expect.arrayContaining([
+          "tastytrade_get_live_option_snapshot",
           "tastytrade_price_option_package",
           "tastytrade_discover_historical_spx_candidates",
           "tastytrade_discover_historical_spx_candidates_range",
@@ -101,6 +116,19 @@ describe("MCP research server", () => {
           "tastytrade_create_spx_spread_backtest",
         ]),
       );
+      const liveOptionTool = tools.tools.find(
+        (tool) => tool.name === "tastytrade_get_live_option_snapshot",
+      );
+      expect(
+        liveOptionTool.inputSchema.properties.request.properties,
+      ).toMatchObject({
+        underlying: { enum: ["SPX", "SPXW"] },
+        expirations: { minItems: 1, maxItems: 10 },
+        strike_count: { maximum: 100 },
+        phase: { const: "LIVE_SUPPORT" },
+        deadline_ms: { maximum: 30000 },
+        max_temporal_skew_ms: { maximum: 300000 },
+      });
       const candleTool = tools.tools.find(
         (tool) => tool.name === "tastytrade_get_historical_candles",
       );
@@ -450,6 +478,40 @@ describe("MCP research server", () => {
           max_output_candles: 1000,
           max_received_events: 5000,
           max_buffer_bytes: 1048576,
+        }),
+      );
+
+      const liveSnapshot = textResult(
+        await client.callTool({
+          name: "tastytrade_get_live_option_snapshot",
+          arguments: {
+            request: {
+              underlying: "SPX",
+              expirations: ["2026-09-29"],
+              around_price: "7683.69",
+              strike_count: 25,
+              include_quotes: true,
+              include_greeks: true,
+              include_summary: true,
+              phase: "LIVE_SUPPORT",
+            },
+          },
+        }),
+      );
+      expect(liveSnapshot).toMatchObject({
+        status: "AVAILABLE",
+        snapshot_complete: true,
+        underlying: "SPX",
+        underlying_price: "7683.69",
+        evidence_role: "SUPPORTING_EVIDENCE",
+        dealer_gex_status: "UNKNOWN",
+      });
+      expect(liveOptions.getLiveOptionSnapshot).toHaveBeenCalledWith(
+        expect.objectContaining({
+          underlying: "SPX",
+          expirations: ["2026-09-29"],
+          around_price: "7683.69",
+          phase: "LIVE_SUPPORT",
         }),
       );
 

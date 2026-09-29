@@ -1,15 +1,17 @@
 # tastytrade-research-mcp
 
 Research-only Model Context Protocol (MCP) server for tastytrade historical
-options research, package-price evidence, and strategy regression testing.
+options research, bounded live SPX/SPXW option evidence, package-price
+evidence, and strategy regression testing.
 
 The project is intentionally separate from the official
 [tastytrade/tastytrade-mcp](https://github.com/tastytrade/tastytrade-mcp):
 
-- **official tastytrade MCP**: live quotes, option chains, market metrics,
-  account workflows, and broker dry-run validation
-- **this project**: historical candles, Backtester access, package-pricing
-  research, and post-session fill verification
+- **official tastytrade MCP**: general live market data, account workflows,
+  and broker dry-run validation
+- **this project**: historical candles, Backtester access, bounded direct
+  SPX/SPXW Gamma+OI snapshots, package-pricing research, and post-session fill
+  verification
 - **never exposed here**: brokerage order placement, replacement, or
   cancellation
 
@@ -31,6 +33,7 @@ The project is intentionally separate from the official
 
 | Tool | Purpose |
 | --- | --- |
+| `tastytrade_get_live_option_snapshot` | Merge exact SPX/SPXW chain metadata with DXLink Quote, Greeks, and `Summary.openInterest`, then calculate a research-only unsigned Gamma concentration proxy |
 | `tastytrade_price_option_package` | Price verticals, iron condors, and double diagonals with explicit native/synthetic provenance |
 | `tastytrade_discover_historical_spx_candidates` | Reconstruct timestamp-safe historical SPXW candidates under a versioned resolution profile, with exact-timestamp Backtester fallback |
 | `tastytrade_discover_historical_spx_candidates_range` | Run the same candidate discovery over an explicit trading calendar with bounded concurrency, deadlines, immutable-cache diagnostics, and resumable partial progress |
@@ -48,6 +51,10 @@ The project is intentionally separate from the official
 | `tastytrade_get_historical_candles` | Retrieve normalized DXLink OHLCV candles without resampling |
 
 Use MCP `tools/list` for the complete JSON input schemas.
+The direct live snapshot, timestamp/completeness contract, OI-based unsigned
+Gamma concentration methodology, semantic limits, regression handoff, and
+opt-in live gate are documented in
+[`docs/live-option-snapshot.md`](docs/live-option-snapshot.md).
 The shared profile contract and the optional seven-date live capability gate
 are documented in
 [`docs/resolution-profiles.md`](docs/resolution-profiles.md).
@@ -73,7 +80,7 @@ runner guidance are documented in
 ## Private historical evidence cache
 
 The historical candle, SPX candidate/universe, and exact-package tools accept
-an opt-in `evidence_cache` policy. The server exposes 22 tools, including the
+an opt-in `evidence_cache` policy. The server exposes 23 tools, including the
 local-only historical quote normalizer, deterministic execution-model
 adapter, and historical replay report builder.
 `READ_WRITE` stores sanitized source observations and normalized results as

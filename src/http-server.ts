@@ -11,6 +11,7 @@ import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/
 import { TastytradeBacktesterClient } from "./backtester-client.js";
 import { evidenceCacheFromEnv } from "./evidence-cache.js";
 import { TastytradeHistoricalCandlesClient } from "./historical-candles.js";
+import { TastytradeLiveOptionSnapshotClient } from "./live-option-snapshot.js";
 import { TastytradeOAuthClient } from "./oauth-client.js";
 import {
   createResearchServer,
@@ -59,6 +60,7 @@ export function defaultResearchServices(): ResearchServices {
   return {
     backtester: new TastytradeBacktesterClient(oauth),
     candles: new TastytradeHistoricalCandlesClient(oauth),
+    liveOptions: new TastytradeLiveOptionSnapshotClient({ oauth }),
     evidenceCache: evidenceCacheFromEnv(),
   };
 }

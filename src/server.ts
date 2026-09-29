@@ -69,6 +69,12 @@ import {
   type HistoricalReplayInput,
 } from "./historical-replay.js";
 import {
+  LIVE_OPTION_SNAPSHOT_INPUT_SCHEMA,
+  TastytradeLiveOptionSnapshotClient,
+  type LiveOptionSnapshotInput,
+  type LiveOptionSnapshotResult,
+} from "./live-option-snapshot.js";
+import {
   priceOptionPackage,
   type PackagePricingInput,
 } from "./package-pricing.js";
@@ -1646,6 +1652,12 @@ export const TOOLS: Tool[] = [
     inputSchema: SIMULATE_REQUEST_SCHEMA,
   },
   {
+    name: "tastytrade_get_live_option_snapshot",
+    description:
+      "Retrieve one bounded SPX/SPXW live option cohort directly from tastytrade and DXLink, merging exact option-chain identity with Quote, Greeks, and Summary.openInterest. Returns timestamp provenance, completeness, temporal alignment, and a deterministic unsigned OI-based gamma concentration proxy that is explicitly supporting evidence rather than dealer GEX or a production gate.",
+    inputSchema: LIVE_OPTION_SNAPSHOT_INPUT_SCHEMA,
+  },
+  {
     name: "tastytrade_price_option_package",
     description:
       "Price a 2-4 leg option package with explicit native-package, synthetic-natural, and midpoint-reference provenance using exact decimal arithmetic.",
@@ -1781,9 +1793,16 @@ export type HistoricalCandlesService = {
   ): Promise<HistoricalCandlesResult[]>;
 };
 
+export type LiveOptionSnapshotService = {
+  getLiveOptionSnapshot(
+    request: LiveOptionSnapshotInput,
+  ): Promise<LiveOptionSnapshotResult>;
+};
+
 export type ResearchServices = {
   backtester?: BacktesterService;
   candles?: HistoricalCandlesService;
+  liveOptions?: LiveOptionSnapshotService;
   evidenceCache?: FileEvidenceCache | null;
 };
 
@@ -1824,6 +1843,8 @@ export function createResearchServer(
   const backtester = services.backtester ?? new TastytradeBacktesterClient();
   const sourceCandles =
     services.candles ?? new TastytradeHistoricalCandlesClient();
+  const liveOptions =
+    services.liveOptions ?? new TastytradeLiveOptionSnapshotClient();
   const evidenceCache =
     "evidenceCache" in services
       ? services.evidenceCache ?? null
@@ -1902,6 +1923,12 @@ export function createResearchServer(
       case "tastytrade_simulate_trade":
         return toolResult(
           await backtester.simulateTrade(objectArg(args.request, "request")),
+        );
+      case "tastytrade_get_live_option_snapshot":
+        return toolResult(
+          await liveOptions.getLiveOptionSnapshot(
+            requestArg<LiveOptionSnapshotInput>(args),
+          ),
         );
       case "tastytrade_price_option_package":
         return toolResult(
