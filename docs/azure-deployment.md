@@ -22,16 +22,16 @@ tastytrade OAuth credentials in Azure Key Vault-backed Container App secrets.
 - Health URL:
   `https://tastytrade-research-mcp.victoriousfield-047d2c99.westus2.azurecontainerapps.io/healthz`
 - Production revision:
-  `tastytrade-research-mcp--main-8456a4b`
+  `tastytrade-research-mcp--main-1fd48b8`
 - ACR image:
-  `hplintradingmcp.azurecr.io/tastytrade-research-mcp:main-8456a4b`
+  `hplintradingmcp.azurecr.io/tastytrade-research-mcp:main-1fd48b8`
 - Image digest:
-  `sha256:8e9b2ac122d6f780c569c235b49d1133747515ead05faad52402bc48b1651bfd`
+  `sha256:c8da3ed59f781694999681fe7bb671381727c1f551e721d40a28a2c1a4951d80`
 - Source commit:
-  `8456a4b0c34b4a1154822696542a7bebe5908a74`
+  `1fd48b8e4206866a9086bd95747a40d2ddefc238`
 - Managed identity: `mi-tastytrade-research-mcp`
 - Rollback revision:
-  `tastytrade-research-mcp--main-3c85fc1`
+  `tastytrade-research-mcp--main-8456a4b`
 
 Production OAuth uses Entra resource application
 `f6c77904-5bf9-46cf-96f9-be5f2e841054` and delegated scope
@@ -166,11 +166,11 @@ provider domain. HTTP 429 responses can extend the shared cooldown through
 so a restarted replica does not immediately retry deferred checkpoints.
 
 For emergency rollback, move 100% traffic to the still-active revision
-`tastytrade-research-mcp--main-3c85fc1`. That revision contains fair
-first-pass continuation scheduling, 100-symbol SPX candidate batches,
-stage-level timeout diagnostics, resumable range discovery, and Azure Files
-startup warmup, but predates the shared Backtester request gate and durable
-rate-limit eligibility. It retains the same Entra OAuth, Key Vault-backed
+`tastytrade-research-mcp--main-8456a4b`. That revision contains the shared
+Backtester request gate, durable rate-limit eligibility, fair first-pass
+continuation scheduling, 100-symbol SPX candidate batches, and Azure Files
+startup warmup, but predates the unified live option snapshot and Gamma
+concentration proxy. It retains the same Entra OAuth, Key Vault-backed
 tastytrade configuration, and persistent Azure Files mount.
 
 After deployment, verify:
@@ -201,8 +201,37 @@ After deployment, verify:
    `tastytrade_get_historical_option_package_horizons` with an authoritative
    trading calendar and verify exact ENTRY/+3/+5 symbols plus aggregate
    coverage diagnostics.
+10. A live SPX/SPXW snapshot smoke test can call
+    `tastytrade_get_live_option_snapshot` and verify exact provider symbols,
+    Quote/Greeks/Summary completeness, nullable OI behavior, explicit
+    timestamp alignment, and the research-only unsigned Gamma concentration
+    proxy.
 
-## Current provider-rate-limit deployment verification
+## Current live-option-snapshot deployment verification
+
+Revision `tastytrade-research-mcp--main-1fd48b8` was verified on 2026-09-29
+with:
+
+- ACR build run `cc11` producing digest
+  `sha256:c8da3ed59f781694999681fe7bb671381727c1f551e721d40a28a2c1a4951d80`;
+- source commit `1fd48b8e4206866a9086bd95747a40d2ddefc238`;
+- one healthy replica in `RunningAtMaxScale`, with the Azure Files cache
+  volume, Key Vault-backed tastytrade secrets, Entra OAuth settings, and
+  process-wide Backtester request gate preserved;
+- 100% production traffic, with `main-8456a4b` healthy and active at 0% as
+  the immediate rollback revision and superseded `main-3c85fc1` deactivated;
+- HTTP 200 from `/healthz`, valid RFC 9728 protected-resource metadata, HTTP
+  401 from unauthenticated `/mcp`, 23 authenticated tools, the live snapshot
+  tool present, and a local package-pricing smoke returning a `1` synthetic
+  natural credit; and
+- a production live SPX smoke selecting eight contracts across
+  `2026-09-29` and `2026-09-30`, with Gamma and open interest present for all
+  eight and complete Quote/Greeks/Summary coverage. After-hours Quote and
+  Summary provider timestamps were unavailable, so temporal alignment
+  correctly remained `UNVERIFIABLE`, the research proxy remained `PARTIAL`,
+  and Dealer GEX remained `UNKNOWN`.
+
+## Previous provider-rate-limit deployment verification
 
 Revision `tastytrade-research-mcp--main-8456a4b` was verified on 2026-09-27
 with:
