@@ -178,7 +178,7 @@ After deployment, verify:
 1. `/healthz` returns HTTP 200.
 2. The protected-resource metadata names Entra and the `mcp.read` scope.
 3. `/mcp` without a bearer token returns HTTP 401 with `resource_metadata`.
-4. A real Entra token connects, lists all 23 tools, and can call a local-only
+4. A real Entra token connects, lists all 24 tools, and can call a local-only
    tool such as `tastytrade_price_option_package`.
 5. A live provider smoke test can call
    `tastytrade_get_historical_spx_candidate_universe` and verify bounded
@@ -207,6 +207,12 @@ After deployment, verify:
     Quote/Greeks/Summary completeness, nullable OI behavior, separate
     provider event-time and current-request cohort evidence, source freshness,
     and the research-only unsigned Gamma concentration proxy.
+11. A Level 3 smoke test can call
+    `tastytrade_compute_heuristic_signed_gex`, verify that it preserves the
+    exact Level 2 `snapshot_id`, serializes and hashes the versioned signing
+    hypothesis, distinguishes current-Gamma from spot-repriced evidence,
+    bounds gamma-flip search to the caller's range, and remains
+    `RESEARCH_ONLY` with `production_gate_eligible=false`.
 
 ## Current live-option-snapshot deployment verification
 

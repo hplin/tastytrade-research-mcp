@@ -10,11 +10,20 @@ export type BlackScholesSpotInput = {
   option_side: OptionModelSide;
 };
 
+export type BlackScholesGammaInput = Omit<
+  BlackScholesSpotInput,
+  "option_side"
+>;
+
 function finite(value: number, field: string): number {
   if (!Number.isFinite(value)) {
     throw new Error(`${field} must be finite.`);
   }
   return value;
+}
+
+export function normalPdf(value: number): number {
+  return Math.exp((-value * value) / 2) / Math.sqrt(2 * Math.PI);
 }
 
 export function normalCdf(value: number): number {
@@ -95,4 +104,45 @@ export function blackScholesSpotPrice(
       : discountedStrike * normalCdf(-d2) -
         discountedSpot * normalCdf(-d1);
   return Math.max(value, 0);
+}
+
+export function blackScholesSpotGamma(
+  input: BlackScholesGammaInput,
+): number {
+  const spot = finite(input.spot, "spot");
+  const strike = finite(input.strike, "strike");
+  const years = finite(
+    input.years_to_expiration,
+    "years_to_expiration",
+  );
+  const volatility = finite(
+    input.annualized_volatility,
+    "annualized_volatility",
+  );
+  const rate = finite(
+    input.annualized_risk_free_rate,
+    "annualized_risk_free_rate",
+  );
+  const dividend = finite(
+    input.annualized_dividend_yield,
+    "annualized_dividend_yield",
+  );
+  if (spot <= 0) throw new Error("spot must be positive.");
+  if (strike <= 0) throw new Error("strike must be positive.");
+  if (years <= 0) {
+    throw new Error("years_to_expiration must be positive for gamma.");
+  }
+  if (volatility <= 0) {
+    throw new Error("annualized_volatility must be positive for gamma.");
+  }
+
+  const volatilityTime = volatility * Math.sqrt(years);
+  const d1 =
+    (Math.log(spot / strike) +
+      (rate - dividend + 0.5 * volatility * volatility) * years) /
+    volatilityTime;
+  return (
+    (Math.exp(-dividend * years) * normalPdf(d1)) /
+    (spot * volatilityTime)
+  );
 }
