@@ -22,16 +22,16 @@ tastytrade OAuth credentials in Azure Key Vault-backed Container App secrets.
 - Health URL:
   `https://tastytrade-research-mcp.victoriousfield-047d2c99.westus2.azurecontainerapps.io/healthz`
 - Production revision:
-  `tastytrade-research-mcp--main-a9df74d`
+  `tastytrade-research-mcp--main-5eafdca`
 - ACR image:
-  `hplintradingmcp.azurecr.io/tastytrade-research-mcp:main-a9df74d`
+  `hplintradingmcp.azurecr.io/tastytrade-research-mcp:main-5eafdca`
 - Image digest:
-  `sha256:c89e71603941e78d41b3ae95d9abb002d9803756bd84dd7498896dc803d5b067`
+  `sha256:e4c06ceeaff217c3d8f4a8ed4a452891e348326d9248c62940dd4ac3eae2229b`
 - Source commit:
-  `a9df74db38905011c7b40c6400a121d59d24c1fb`
+  `5eafdcae9c391e33ab77d2db177a43c1a1828a5d`
 - Managed identity: `mi-tastytrade-research-mcp`
 - Rollback revision:
-  `tastytrade-research-mcp--main-1fd48b8`
+  `tastytrade-research-mcp--main-a9df74d`
 
 Production OAuth uses Entra resource application
 `f6c77904-5bf9-46cf-96f9-be5f2e841054` and delegated scope
@@ -166,12 +166,12 @@ provider domain. HTTP 429 responses can extend the shared cooldown through
 so a restarted replica does not immediately retry deferred checkpoints.
 
 For emergency rollback, move 100% traffic to the still-active revision
-`tastytrade-research-mcp--main-1fd48b8`. That revision contains the unified
-live option snapshot and Gamma concentration proxy, but predates bounded
-DXLink subscription batching and the separate cohort/freshness evidence
-introduced in contract version `1.1.0`. It retains the same Entra OAuth, Key
-Vault-backed tastytrade configuration, persistent Azure Files mount, and
-process-wide Backtester request gate.
+`tastytrade-research-mcp--main-a9df74d`. That revision contains the hardened
+Level 2 unified snapshot, bounded DXLink batching, separate cohort/freshness
+evidence, and unsigned Gamma concentration proxy, but predates the Level 3
+heuristic signing model and bounded gamma-flip research tool. It retains the
+same Entra OAuth, Key Vault-backed tastytrade configuration, persistent Azure
+Files mount, and process-wide Backtester request gate.
 
 After deployment, verify:
 
@@ -214,7 +214,41 @@ After deployment, verify:
     bounds gamma-flip search to the caller's range, and remains
     `RESEARCH_ONLY` with `production_gate_eligible=false`.
 
-## Current live-option-snapshot deployment verification
+## Current heuristic-signed-GEX deployment verification
+
+Revision `tastytrade-research-mcp--main-5eafdca` was verified on 2026-09-29
+with:
+
+- ACR build run `cc13` producing digest
+  `sha256:e4c06ceeaff217c3d8f4a8ed4a452891e348326d9248c62940dd4ac3eae2229b`;
+- source commit `5eafdcae9c391e33ab77d2db177a43c1a1828a5d`;
+- all 23 test suites and 296 tests passing with the stable 10-second suite
+  timeout; the sole default-run 5-second load timeout passed independently in
+  2.75 seconds;
+- one healthy replica in `RunningAtMaxScale`, with the Azure Files cache
+  volume, Key Vault-backed tastytrade secrets, Entra OAuth settings, and
+  process-wide Backtester request gate preserved;
+- 100% production traffic, with `main-a9df74d` healthy and active at 0% as
+  the immediate rollback revision and superseded `main-1fd48b8` deactivated;
+- HTTP 200 from `/healthz`, valid RFC 9728 protected-resource metadata, HTTP
+  401 from unauthenticated `/mcp`, 24 authenticated tools, the heuristic
+  signed-GEX tool present, and a local package-pricing smoke returning a `1`
+  synthetic natural credit;
+- a production live SPX/SPXW smoke selecting 500 unique contracts across five
+  expirations with 1,500 event subscriptions. Both transport batches
+  completed with zero failures, and the largest encoded subscription frame
+  was 49,142 bytes, below the 48 KiB ceiling;
+- exact Level 2 `snapshot_id` preservation, a `COMPLETE` unsigned Gamma
+  cohort, `CONFIRMED` cohort alignment plus OI and Greeks freshness, and the
+  complete source snapshot returned beside the Level 3 result; and
+- signing model `CALL_SHORT_PUT_LONG_BASELINE/1.0.0` with hash
+  `sha256:12eb71092e622ebc090a3c06bf0cfb45487b9e9a169f7f44a0ad474f417e2f0e`,
+  `AVAILABLE` current-Gamma and spot-repriced evidence across 53 bounded
+  scenarios, one `AVAILABLE` heuristic crossing at `7723.7`, explicit
+  non-dealer semantic boundaries, `RESEARCH_ONLY` evidence, and
+  `production_gate_eligible=false`.
+
+## Previous hardened live-option-snapshot deployment verification
 
 Revision `tastytrade-research-mcp--main-a9df74d` was verified on 2026-09-29
 with:
@@ -242,7 +276,7 @@ with:
   `UNVERIFIABLE` provider event-time alignment, a `COMPLETE` unsigned Gamma
   concentration proxy, and Dealer GEX remaining `UNKNOWN`.
 
-## Previous live-option-snapshot deployment verification
+## Earlier live-option-snapshot deployment verification
 
 Revision `tastytrade-research-mcp--main-1fd48b8` was verified on 2026-09-29
 with:
