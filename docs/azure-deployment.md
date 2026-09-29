@@ -22,16 +22,16 @@ tastytrade OAuth credentials in Azure Key Vault-backed Container App secrets.
 - Health URL:
   `https://tastytrade-research-mcp.victoriousfield-047d2c99.westus2.azurecontainerapps.io/healthz`
 - Production revision:
-  `tastytrade-research-mcp--main-1fd48b8`
+  `tastytrade-research-mcp--main-a9df74d`
 - ACR image:
-  `hplintradingmcp.azurecr.io/tastytrade-research-mcp:main-1fd48b8`
+  `hplintradingmcp.azurecr.io/tastytrade-research-mcp:main-a9df74d`
 - Image digest:
-  `sha256:c8da3ed59f781694999681fe7bb671381727c1f551e721d40a28a2c1a4951d80`
+  `sha256:c89e71603941e78d41b3ae95d9abb002d9803756bd84dd7498896dc803d5b067`
 - Source commit:
-  `1fd48b8e4206866a9086bd95747a40d2ddefc238`
+  `a9df74db38905011c7b40c6400a121d59d24c1fb`
 - Managed identity: `mi-tastytrade-research-mcp`
 - Rollback revision:
-  `tastytrade-research-mcp--main-8456a4b`
+  `tastytrade-research-mcp--main-1fd48b8`
 
 Production OAuth uses Entra resource application
 `f6c77904-5bf9-46cf-96f9-be5f2e841054` and delegated scope
@@ -166,12 +166,12 @@ provider domain. HTTP 429 responses can extend the shared cooldown through
 so a restarted replica does not immediately retry deferred checkpoints.
 
 For emergency rollback, move 100% traffic to the still-active revision
-`tastytrade-research-mcp--main-8456a4b`. That revision contains the shared
-Backtester request gate, durable rate-limit eligibility, fair first-pass
-continuation scheduling, 100-symbol SPX candidate batches, and Azure Files
-startup warmup, but predates the unified live option snapshot and Gamma
-concentration proxy. It retains the same Entra OAuth, Key Vault-backed
-tastytrade configuration, and persistent Azure Files mount.
+`tastytrade-research-mcp--main-1fd48b8`. That revision contains the unified
+live option snapshot and Gamma concentration proxy, but predates bounded
+DXLink subscription batching and the separate cohort/freshness evidence
+introduced in contract version `1.1.0`. It retains the same Entra OAuth, Key
+Vault-backed tastytrade configuration, persistent Azure Files mount, and
+process-wide Backtester request gate.
 
 After deployment, verify:
 
@@ -203,11 +203,40 @@ After deployment, verify:
    coverage diagnostics.
 10. A live SPX/SPXW snapshot smoke test can call
     `tastytrade_get_live_option_snapshot` and verify exact provider symbols,
-    Quote/Greeks/Summary completeness, nullable OI behavior, explicit
-    timestamp alignment, and the research-only unsigned Gamma concentration
-    proxy.
+    bounded subscription frames, complete per-batch transport provenance,
+    Quote/Greeks/Summary completeness, nullable OI behavior, separate
+    provider event-time and current-request cohort evidence, source freshness,
+    and the research-only unsigned Gamma concentration proxy.
 
 ## Current live-option-snapshot deployment verification
+
+Revision `tastytrade-research-mcp--main-a9df74d` was verified on 2026-09-29
+with:
+
+- ACR build run `cc12` producing digest
+  `sha256:c89e71603941e78d41b3ae95d9abb002d9803756bd84dd7498896dc803d5b067`;
+- source commit `a9df74db38905011c7b40c6400a121d59d24c1fb`;
+- all 22 test suites and 287 tests passing against that exact source before
+  the image build;
+- one healthy replica in `RunningAtMaxScale`, with the Azure Files cache
+  volume, Key Vault-backed tastytrade secrets, Entra OAuth settings, and
+  process-wide Backtester request gate preserved;
+- 100% production traffic, with `main-1fd48b8` healthy and active at 0% as
+  the immediate rollback revision and superseded `main-8456a4b` deactivated;
+- HTTP 200 from `/healthz`, valid RFC 9728 protected-resource metadata, HTTP
+  401 from unauthenticated `/mcp`, 23 authenticated tools, the live snapshot
+  tool present, and a local package-pricing smoke returning a `1` synthetic
+  natural credit;
+- a production live SPX/SPXW smoke selecting 500 unique contracts across five
+  expirations with 1,500 event subscriptions. Both transport batches
+  completed with zero failures, and the largest encoded subscription frame
+  was 49,142 bytes, below the 48 KiB ceiling; and
+- `snapshot_complete=true`, Gamma and open-interest coverage of 500/500,
+  `CONFIRMED` cohort alignment plus OI and Greeks freshness, separately
+  `UNVERIFIABLE` provider event-time alignment, a `COMPLETE` unsigned Gamma
+  concentration proxy, and Dealer GEX remaining `UNKNOWN`.
+
+## Previous live-option-snapshot deployment verification
 
 Revision `tastytrade-research-mcp--main-1fd48b8` was verified on 2026-09-29
 with:
