@@ -69,6 +69,11 @@ import {
   type HistoricalReplayInput,
 } from "./historical-replay.js";
 import {
+  HEURISTIC_SIGNED_GEX_INPUT_SCHEMA,
+  computeLiveHeuristicSignedGex,
+  type HeuristicSignedGexInput,
+} from "./heuristic-signed-gex.js";
+import {
   LIVE_OPTION_SNAPSHOT_INPUT_SCHEMA,
   TastytradeLiveOptionSnapshotClient,
   type LiveOptionSnapshotInput,
@@ -1658,6 +1663,12 @@ export const TOOLS: Tool[] = [
     inputSchema: LIVE_OPTION_SNAPSHOT_INPUT_SCHEMA,
   },
   {
+    name: "tastytrade_compute_heuristic_signed_gex",
+    description:
+      "Acquire one unified SPX/SPXW live snapshot and apply an explicit versioned research hypothesis to calculate heuristic signed GEX plus an optional bounded Black-Scholes gamma-flip search. The output is always HEURISTIC, RESEARCH_ONLY, not dealer GEX, and never production-gate eligible.",
+    inputSchema: HEURISTIC_SIGNED_GEX_INPUT_SCHEMA,
+  },
+  {
     name: "tastytrade_price_option_package",
     description:
       "Price a 2-4 leg option package with explicit native-package, synthetic-natural, and midpoint-reference provenance using exact decimal arithmetic.",
@@ -1928,6 +1939,13 @@ export function createResearchServer(
         return toolResult(
           await liveOptions.getLiveOptionSnapshot(
             requestArg<LiveOptionSnapshotInput>(args),
+          ),
+        );
+      case "tastytrade_compute_heuristic_signed_gex":
+        return toolResult(
+          await computeLiveHeuristicSignedGex(
+            liveOptions,
+            requestArg<HeuristicSignedGexInput>(args),
           ),
         );
       case "tastytrade_price_option_package":

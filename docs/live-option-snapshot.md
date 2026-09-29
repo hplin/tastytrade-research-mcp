@@ -222,6 +222,13 @@ MODERATE, or HIGH thresholds, does not rewrite DV/CV/IC/DD grades, and must
 not become a `PRODUCTION_GATE` without a separately approved methodology and
 regression decision.
 
+The separate
+[`tastytrade_compute_heuristic_signed_gex`](heuristic-signed-gex.md) tool may
+apply an explicit, versioned Level 3 signing hypothesis to this exact
+snapshot. That model preserves `snapshot_id`, remains `RESEARCH_ONLY`, and
+does not change any Level 2 unsigned values or the `UNKNOWN` dealer fields in
+this contract.
+
 ## Downstream handoff
 
 `market_data_handoff` is shaped for `trading-market-data-v2` normalization:

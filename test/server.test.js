@@ -26,6 +26,94 @@ function modelSource(character) {
   };
 }
 
+function liveSnapshotFixture(request) {
+  const contract = (optionType, rootSymbol, gamma, openInterest) => ({
+    provider_symbol: `${rootSymbol}-${optionType}`,
+    occ_symbol: `${rootSymbol}-${optionType}`,
+    streamer_symbol: `.${rootSymbol}-${optionType}`,
+    underlying: "SPX",
+    root_symbol: rootSymbol,
+    strike: "100",
+    option_type: optionType,
+    expiration: request.expirations[0],
+    dte: 30,
+    multiplier: "100",
+    settlement: rootSymbol === "SPX" ? "AM" : "PM",
+    quote: null,
+    greeks: {
+      delta: null,
+      gamma,
+      theta: null,
+      vega: null,
+      rho: null,
+      implied_volatility: "0.2",
+      price: null,
+      timestamp: "2026-09-29T02:45:00.000Z",
+      timestamp_source: "PROVIDER_EVENT_TIME",
+      received_at: "2026-09-29T02:45:00.100Z",
+    },
+    summary: {
+      open_interest: openInterest,
+      timestamp: "2026-09-29T02:45:00.100Z",
+      timestamp_source: "LOCAL_RECEIVE_TIME",
+      received_at: "2026-09-29T02:45:00.100Z",
+    },
+    event_timestamp_alignment: {
+      status: "UNVERIFIABLE",
+      skew_ms: null,
+      receive_skew_ms: 0,
+      threshold_ms: 5000,
+    },
+    cohort_alignment: {
+      status: "CONFIRMED",
+      receive_skew_ms: 0,
+      threshold_ms: 5000,
+      exact_contract_identity: true,
+    },
+    oi_freshness: {
+      status: "CONFIRMED",
+      basis: "CURRENT_REQUEST_RECEIVE_TIME",
+      age_ms: 0,
+    },
+    greeks_freshness: {
+      status: "CONFIRMED",
+      basis: "PROVIDER_EVENT_TIME",
+      age_ms: 100,
+    },
+    temporal_alignment: {
+      status: "UNVERIFIABLE",
+      skew_ms: null,
+      receive_skew_ms: 0,
+      threshold_ms: 5000,
+    },
+  });
+  return {
+    contract_version: "1.1.0",
+    request_id: contentId("a"),
+    snapshot_id: contentId("b"),
+    status: "AVAILABLE",
+    provider: "tastytrade-dxlink",
+    snapshot_complete: true,
+    underlying: request.underlying,
+    underlying_price: String(request.around_price),
+    retrieved_at: "2026-09-29T02:45:00.100Z",
+    evidence_role: "SUPPORTING_EVIDENCE",
+    dealer_gex_status: "UNKNOWN",
+    cohort_alignment: { status: "CONFIRMED" },
+    oi_freshness: { status: "CONFIRMED" },
+    greeks_freshness: { status: "CONFIRMED" },
+    contracts: [
+      contract("CALL", "SPX", "0.02", "10"),
+      contract("PUT", "SPXW", "0.01", "30"),
+    ],
+    gamma_concentration_proxy: {
+      methodology: "OI_BASED_UNSIGNED_GAMMA_CONCENTRATION",
+      methodology_version: "1.0.0",
+      status: "COMPLETE",
+    },
+  };
+}
+
 describe("MCP research server", () => {
   test("lists and invokes the expanded research tool surface", async () => {
     const backtester = {
@@ -73,14 +161,9 @@ describe("MCP research server", () => {
       ),
     };
     const liveOptions = {
-      getLiveOptionSnapshot: jest.fn(async (request) => ({
-        status: "AVAILABLE",
-        snapshot_complete: true,
-        underlying: request.underlying,
-        underlying_price: request.around_price,
-        evidence_role: "SUPPORTING_EVIDENCE",
-        dealer_gex_status: "UNKNOWN",
-      })),
+      getLiveOptionSnapshot: jest.fn(async (request) =>
+        liveSnapshotFixture(request),
+      ),
     };
     const server = createResearchServer({
       backtester,
@@ -95,10 +178,11 @@ describe("MCP research server", () => {
     await client.connect(clientTransport);
     try {
       const tools = await client.listTools();
-      expect(tools.tools).toHaveLength(23);
+      expect(tools.tools).toHaveLength(24);
       expect(tools.tools.map((tool) => tool.name)).toEqual(
         expect.arrayContaining([
           "tastytrade_get_live_option_snapshot",
+          "tastytrade_compute_heuristic_signed_gex",
           "tastytrade_price_option_package",
           "tastytrade_discover_historical_spx_candidates",
           "tastytrade_discover_historical_spx_candidates_range",
@@ -128,6 +212,35 @@ describe("MCP research server", () => {
         phase: { const: "LIVE_SUPPORT" },
         deadline_ms: { maximum: 30000 },
         max_temporal_skew_ms: { maximum: 300000 },
+      });
+      const heuristicGexTool = tools.tools.find(
+        (tool) =>
+          tool.name === "tastytrade_compute_heuristic_signed_gex",
+      );
+      expect(
+        heuristicGexTool.inputSchema.properties.request.properties,
+      ).toMatchObject({
+        phase: { const: "REGRESSION_RESEARCH" },
+        signing_model: {
+          properties: {
+            model_id: {
+              const: "CALL_SHORT_PUT_LONG_BASELINE",
+            },
+            model_version: { const: "1.0.0" },
+          },
+        },
+        snapshot_request: {
+          properties: {
+            include_greeks: { const: true },
+            include_summary: { const: true },
+          },
+        },
+        spot_repricing: {
+          properties: {
+            pricing_model: { const: "BLACK_SCHOLES_GAMMA" },
+            model_version: { const: "1.0.0" },
+          },
+        },
       });
       const candleTool = tools.tools.find(
         (tool) => tool.name === "tastytrade_get_historical_candles",
@@ -514,6 +627,70 @@ describe("MCP research server", () => {
           phase: "LIVE_SUPPORT",
         }),
       );
+
+      const heuristicGex = textResult(
+        await client.callTool({
+          name: "tastytrade_compute_heuristic_signed_gex",
+          arguments: {
+            request: {
+              snapshot_request: {
+                underlying: "SPX",
+                expirations: ["2026-09-29"],
+                around_price: "100",
+                strike_count: 25,
+                include_quotes: true,
+                include_greeks: true,
+                include_summary: true,
+                phase: "LIVE_SUPPORT",
+              },
+              phase: "REGRESSION_RESEARCH",
+              signing_model: {
+                model_id: "CALL_SHORT_PUT_LONG_BASELINE",
+                model_version: "1.0.0",
+              },
+              spot_repricing: {
+                pricing_model: "BLACK_SCHOLES_GAMMA",
+                model_version: "1.0.0",
+                annualized_risk_free_rate: "0.04",
+                annualized_dividend_yield: "0.01",
+                minimum_years_to_expiration: "0.0001",
+                spot_range: {
+                  minimum: "80",
+                  maximum: "120",
+                  step: "5",
+                  root_tolerance: "0.1",
+                },
+              },
+            },
+          },
+        }),
+      );
+      expect(heuristicGex).toMatchObject({
+        status: "AVAILABLE",
+        gamma_evidence_scope: "HEURISTIC_SIGNED_MODEL",
+        evidence_role: "RESEARCH_ONLY",
+        production_gate_eligible: false,
+        snapshot: {
+          snapshot_id: contentId("b"),
+          level_2_unsigned_status: "COMPLETE",
+        },
+        heuristic_signed_gex: {
+          status: "AVAILABLE",
+          aggregation: {
+            total_signed_gex: "1000",
+          },
+        },
+        heuristic_gamma_flip: {
+          status: "NOT_FOUND_IN_RANGE",
+        },
+        spot_repriced_signed_gex: {
+          status: "AVAILABLE",
+          current_spot_reconciliation: {
+            snapshot_gamma_total_signed_gex: "1000",
+            repriced_total_signed_gex: expect.any(String),
+          },
+        },
+      });
 
       const candidates = textResult(
         await client.callTool({

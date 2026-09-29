@@ -1,5 +1,8 @@
 import { describe, expect, test } from "@jest/globals";
-import { blackScholesSpotPrice } from "../dist/option-model.js";
+import {
+  blackScholesSpotGamma,
+  blackScholesSpotPrice,
+} from "../dist/option-model.js";
 
 describe("Black-Scholes spot valuation", () => {
   test("prices calls and puts with the shared normal distribution", () => {
@@ -53,6 +56,19 @@ describe("Black-Scholes spot valuation", () => {
     ).toBeCloseTo(100 - 100 * Math.exp(-0.05), 10);
   });
 
+  test("calculates the shared Black-Scholes gamma deterministically", () => {
+    expect(
+      blackScholesSpotGamma({
+        spot: 100,
+        strike: 100,
+        years_to_expiration: 1,
+        annualized_volatility: 0.2,
+        annualized_risk_free_rate: 0.05,
+        annualized_dividend_yield: 0,
+      }),
+    ).toBeCloseTo(0.0187620173458469, 14);
+  });
+
   test("rejects invalid domains", () => {
     expect(() =>
       blackScholesSpotPrice({
@@ -76,5 +92,15 @@ describe("Black-Scholes spot valuation", () => {
         option_side: "PUT",
       }),
     ).toThrow("years_to_expiration must be non-negative");
+    expect(() =>
+      blackScholesSpotGamma({
+        spot: 100,
+        strike: 100,
+        years_to_expiration: 0,
+        annualized_volatility: 0.2,
+        annualized_risk_free_rate: 0.05,
+        annualized_dividend_yield: 0,
+      }),
+    ).toThrow("years_to_expiration must be positive for gamma");
   });
 });

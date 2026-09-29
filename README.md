@@ -34,6 +34,7 @@ The project is intentionally separate from the official
 | Tool | Purpose |
 | --- | --- |
 | `tastytrade_get_live_option_snapshot` | Auto-chunk and merge exact SPX/SPXW DXLink Quote, Greeks, and `Summary.openInterest` cohorts, then calculate a research-only unsigned Gamma concentration proxy |
+| `tastytrade_compute_heuristic_signed_gex` | Apply an explicit versioned research signing hypothesis to one unified snapshot, with separate current-Gamma signed GEX and optional bounded spot-repriced heuristic gamma flip |
 | `tastytrade_price_option_package` | Price verticals, iron condors, and double diagonals with explicit native/synthetic provenance |
 | `tastytrade_discover_historical_spx_candidates` | Reconstruct timestamp-safe historical SPXW candidates under a versioned resolution profile, with exact-timestamp Backtester fallback |
 | `tastytrade_discover_historical_spx_candidates_range` | Run the same candidate discovery over an explicit trading calendar with bounded concurrency, deadlines, immutable-cache diagnostics, and resumable partial progress |
@@ -55,6 +56,10 @@ The direct live snapshot, bounded DXLink batch provenance, event/cohort
 freshness contract, OI-based unsigned Gamma concentration methodology,
 semantic limits, regression handoff, and opt-in live gate are documented in
 [`docs/live-option-snapshot.md`](docs/live-option-snapshot.md).
+The separate Level 3 signing hypothesis, model/result identities,
+current-Gamma versus spot-repriced evidence, bounded heuristic gamma-flip
+search, and research-only live gate are documented in
+[`docs/heuristic-signed-gex.md`](docs/heuristic-signed-gex.md).
 The shared profile contract and the optional seven-date live capability gate
 are documented in
 [`docs/resolution-profiles.md`](docs/resolution-profiles.md).
@@ -80,7 +85,7 @@ runner guidance are documented in
 ## Private historical evidence cache
 
 The historical candle, SPX candidate/universe, and exact-package tools accept
-an opt-in `evidence_cache` policy. The server exposes 23 tools, including the
+an opt-in `evidence_cache` policy. The server exposes 24 tools, including the
 local-only historical quote normalizer, deterministic execution-model
 adapter, and historical replay report builder.
 `READ_WRITE` stores sanitized source observations and normalized results as
