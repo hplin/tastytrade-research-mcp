@@ -60,7 +60,15 @@ if (missingEnvironment.length > 0) {
       contract.summary,
   ).length;
   const outcome =
-    result.snapshot_complete && gammaAndOpenInterestContracts > 0
+    result.snapshot_complete &&
+    result.transport.failed_batches === 0 &&
+    result.transport.partial_batches === 0 &&
+    result.transport.timed_out_batches === 0 &&
+    result.cohort_alignment.status === "CONFIRMED" &&
+    result.oi_freshness.status === "CONFIRMED" &&
+    result.greeks_freshness.status === "CONFIRMED" &&
+    result.gamma_concentration_proxy.status === "COMPLETE" &&
+    gammaAndOpenInterestContracts > 0
       ? "PASS"
       : "FAIL";
   console.log(
@@ -75,6 +83,12 @@ if (missingEnvironment.length > 0) {
           gamma_and_open_interest_contracts:
             gammaAndOpenInterestContracts,
           snapshot_complete: result.snapshot_complete,
+          transport: result.transport,
+          event_timestamp_alignment:
+            result.event_timestamp_alignment,
+          cohort_alignment: result.cohort_alignment,
+          oi_freshness: result.oi_freshness,
+          greeks_freshness: result.greeks_freshness,
           temporal_alignment: result.temporal_alignment,
           gamma_proxy_status:
             result.gamma_concentration_proxy.status,

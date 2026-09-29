@@ -17,7 +17,7 @@ import {
 } from "./dxlink.js";
 import { TastytradeOAuthClient } from "./oauth-client.js";
 
-export const LIVE_OPTION_SNAPSHOT_CONTRACT_VERSION = "1.0.0";
+export const LIVE_OPTION_SNAPSHOT_CONTRACT_VERSION = "1.1.0";
 export const GAMMA_CONCENTRATION_METHODOLOGY =
   "OI_BASED_UNSIGNED_GAMMA_CONCENTRATION";
 export const GAMMA_CONCENTRATION_METHODOLOGY_VERSION = "1.0.0";
@@ -31,6 +31,31 @@ export type TemporalAlignmentStatus =
   | "MISALIGNED"
   | "UNVERIFIABLE"
   | "INCOMPLETE";
+export type EventTimestampAlignmentStatus =
+  | "ALIGNED"
+  | "MISALIGNED"
+  | "UNVERIFIABLE";
+export type CohortAlignmentStatus =
+  | "CONFIRMED"
+  | "PARTIAL"
+  | "NOT_CONFIRMED";
+export type SourceFreshnessStatus =
+  | "CONFIRMED"
+  | "STALE"
+  | "UNKNOWN";
+export type LiveOptionDxlinkEventType =
+  | "Quote"
+  | "Greeks"
+  | "Summary";
+export type LiveOptionDxlinkSubscription = {
+  type: LiveOptionDxlinkEventType;
+  symbol: string;
+};
+export type LiveOptionDxlinkBatchStatus =
+  | "COMPLETE"
+  | "PARTIAL"
+  | "TIMED_OUT"
+  | "FAILED";
 
 export type LiveOptionSnapshotInput = {
   underlying: LiveOptionUnderlying;
@@ -185,6 +210,31 @@ export type LiveOptionSnapshotContract = LiveOptionContractMetadata & {
   quote: LiveOptionQuote | null;
   greeks: LiveOptionGreeks | null;
   summary: LiveOptionSummary | null;
+  event_timestamp_alignment: {
+    status: EventTimestampAlignmentStatus;
+    skew_ms: number | null;
+    receive_skew_ms: number | null;
+    threshold_ms: number;
+  };
+  cohort_alignment: {
+    status: CohortAlignmentStatus;
+    receive_skew_ms: number | null;
+    threshold_ms: number;
+    exact_contract_identity: boolean;
+  };
+  oi_freshness: {
+    status: SourceFreshnessStatus;
+    basis:
+      | "CURRENT_REQUEST_RECEIVE_TIME"
+      | "PROVIDER_EVENT_TIME"
+      | "NOT_AVAILABLE";
+    age_ms: number | null;
+  };
+  greeks_freshness: {
+    status: SourceFreshnessStatus;
+    basis: "PROVIDER_EVENT_TIME" | "NOT_AVAILABLE";
+    age_ms: number | null;
+  };
   temporal_alignment: {
     status: TemporalAlignmentStatus;
     skew_ms: number | null;
@@ -211,7 +261,7 @@ export type GammaConcentrationGroup = {
 export type GammaConcentrationProxy = {
   methodology: typeof GAMMA_CONCENTRATION_METHODOLOGY;
   methodology_version: typeof GAMMA_CONCENTRATION_METHODOLOGY_VERSION;
-  status: "AVAILABLE" | "PARTIAL" | "NOT_AVAILABLE";
+  status: "COMPLETE" | "PARTIAL" | "NOT_AVAILABLE";
   phase: LiveOptionPhase;
   evidence_role: LiveOptionEvidenceRole;
   research_only: true;
@@ -241,6 +291,9 @@ export type GammaConcentrationProxy = {
     temporally_unaligned: number;
     temporal_alignment_incomplete: number;
     temporal_alignment_unverifiable: number;
+    cohort_alignment_not_confirmed: number;
+    oi_freshness_not_confirmed: number;
+    greeks_freshness_not_confirmed: number;
     coverage_ratio: string;
   };
   gamma_risk: "UNKNOWN";
@@ -283,6 +336,53 @@ export type LiveOptionSnapshotResult = {
   quote_complete: boolean;
   greeks_complete: boolean;
   summary_complete: boolean;
+  transport: {
+    strategy: "BOUNDED_AUTO_CHUNK";
+    max_frame_bytes: number;
+    max_concurrent_batches: number;
+    requested_subscriptions: number;
+    batch_count: number;
+    complete_batches: number;
+    partial_batches: number;
+    timed_out_batches: number;
+    failed_batches: number;
+    batches: Array<{
+      batch_index: number;
+      symbol_count: number;
+      subscription_count: number;
+      frame_bytes: number;
+      status: LiveOptionDxlinkBatchStatus;
+      affected_symbols: string[];
+      unmatched_symbols: string[];
+      error: string | null;
+    }>;
+  };
+  event_timestamp_alignment: {
+    status: EventTimestampAlignmentStatus;
+    threshold_ms: number;
+    max_skew_ms: number | null;
+    aligned_contracts: number;
+    misaligned_contracts: number;
+    unverifiable_contracts: number;
+  };
+  cohort_alignment: {
+    status: CohortAlignmentStatus;
+    confirmed_contracts: number;
+    partial_contracts: number;
+    not_confirmed_contracts: number;
+  };
+  oi_freshness: {
+    status: SourceFreshnessStatus;
+    confirmed_contracts: number;
+    stale_contracts: number;
+    unknown_contracts: number;
+  };
+  greeks_freshness: {
+    status: SourceFreshnessStatus;
+    confirmed_contracts: number;
+    stale_contracts: number;
+    unknown_contracts: number;
+  };
   temporal_alignment: {
     status: TemporalAlignmentStatus;
     threshold_ms: number;
@@ -322,6 +422,10 @@ export type LiveOptionSnapshotResult = {
       coverage_ratio: string;
       snapshot_complete: boolean;
       temporal_alignment: TemporalAlignmentStatus;
+      event_timestamp_alignment: EventTimestampAlignmentStatus;
+      cohort_alignment: CohortAlignmentStatus;
+      oi_freshness: SourceFreshnessStatus;
+      greeks_freshness: SourceFreshnessStatus;
     };
     dealer_gex_status: "UNKNOWN";
     evidence_role: LiveOptionEvidenceRole;
@@ -329,7 +433,7 @@ export type LiveOptionSnapshotResult = {
   };
   regression_record: {
     record_type: "LIVE_OPTION_GAMMA_CONCENTRATION";
-    record_version: "1.0.0";
+    record_version: "1.1.0";
     request_id: string;
     snapshot_id: string;
     as_of: string;
@@ -404,6 +508,18 @@ type LiveOptionSnapshotReadResult = {
   timedOut: boolean;
 };
 
+export type LiveOptionDxlinkSubscriptionBatch = {
+  subscriptions: LiveOptionDxlinkSubscription[];
+  frame_bytes: number;
+};
+
+type LiveOptionSnapshotAggregateReadResult = {
+  states: Map<string, LiveOptionEventState>;
+  unmatchedSymbols: string[];
+  timedOut: boolean;
+  transport: LiveOptionSnapshotResult["transport"];
+};
+
 const QUOTE_FIELDS = [
   "eventType",
   "eventSymbol",
@@ -447,6 +563,78 @@ const MAX_EXPIRATIONS = 10;
 const MAX_DEADLINE_MS = 30_000;
 const MAX_TEMPORAL_SKEW_MS = 300_000;
 const MAX_DXLINK_SUBSCRIPTIONS_PER_REQUEST = 5_000;
+export const DXLINK_SAFE_SUBSCRIPTION_FRAME_BYTES = 48 * 1024;
+const MAX_DXLINK_CONCURRENT_BATCHES = 4;
+
+function subscriptionMessage(
+  subscriptions: LiveOptionDxlinkSubscription[],
+): Record<string, unknown> {
+  return {
+    type: "FEED_SUBSCRIPTION",
+    channel: 3,
+    reset: true,
+    add: subscriptions,
+  };
+}
+
+export function dxlinkSubscriptionFrameBytes(
+  subscriptions: LiveOptionDxlinkSubscription[],
+): number {
+  return Buffer.byteLength(
+    JSON.stringify(subscriptionMessage(subscriptions)),
+    "utf8",
+  );
+}
+
+export function chunkDxlinkSubscriptions(
+  subscriptions: LiveOptionDxlinkSubscription[],
+  maxFrameBytes = DXLINK_SAFE_SUBSCRIPTION_FRAME_BYTES,
+): LiveOptionDxlinkSubscriptionBatch[] {
+  if (!Number.isSafeInteger(maxFrameBytes) || maxFrameBytes < 1) {
+    throw new Error("maxFrameBytes must be a positive integer.");
+  }
+  if (subscriptions.length === 0) return [];
+  const emptyFrameBytes = dxlinkSubscriptionFrameBytes([]);
+  const batches: LiveOptionDxlinkSubscriptionBatch[] = [];
+  let current: LiveOptionDxlinkSubscription[] = [];
+  let currentFrameBytes = emptyFrameBytes;
+  for (const subscription of subscriptions) {
+    const subscriptionBytes = Buffer.byteLength(
+      JSON.stringify(subscription),
+      "utf8",
+    );
+    const candidateFrameBytes =
+      currentFrameBytes +
+      subscriptionBytes +
+      (current.length === 0 ? 0 : 1);
+    if (candidateFrameBytes > maxFrameBytes && current.length > 0) {
+      batches.push({
+        subscriptions: current,
+        frame_bytes: currentFrameBytes,
+      });
+      current = [];
+      currentFrameBytes = emptyFrameBytes;
+    }
+    const nextFrameBytes =
+      currentFrameBytes +
+      subscriptionBytes +
+      (current.length === 0 ? 0 : 1);
+    if (nextFrameBytes > maxFrameBytes) {
+      throw new Error(
+        `DXLink subscription ${subscription.type}/${subscription.symbol} exceeds the configured frame limit.`,
+      );
+    }
+    current.push(subscription);
+    currentFrameBytes = nextFrameBytes;
+  }
+  if (current.length > 0) {
+    batches.push({
+      subscriptions: current,
+      frame_bytes: currentFrameBytes,
+    });
+  }
+  return batches;
+}
 
 function asRecord(value: unknown, field: string): Record<string, unknown> {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
@@ -713,6 +901,33 @@ export function mergeLiveOptionEvents(
     }
   }
   return [...unmatched].sort();
+}
+
+function subscriptionSatisfied(
+  states: Map<string, LiveOptionEventState>,
+  subscription: LiveOptionDxlinkSubscription,
+): boolean {
+  const state = states.get(subscription.symbol);
+  if (!state) return false;
+  if (subscription.type === "Quote") return state.quote !== null;
+  if (subscription.type === "Greeks") return state.greeks !== null;
+  return state.summary !== null;
+}
+
+function affectedSubscriptionSymbols(
+  states: Map<string, LiveOptionEventState>,
+  subscriptions: LiveOptionDxlinkSubscription[],
+): string[] {
+  return [
+    ...new Set(
+      subscriptions
+        .filter(
+          (subscription) =>
+            !subscriptionSatisfied(states, subscription),
+        )
+        .map((subscription) => subscription.symbol),
+    ),
+  ].sort();
 }
 
 function targetRoot(
@@ -985,6 +1200,7 @@ function contractAlignment(
         threshold_ms: input.maxTemporalSkewMs,
       };
     }
+
     timestamps.push({
       source: Date.parse(quote.timestamp),
       received: Date.parse(quote.received_at),
@@ -1054,6 +1270,194 @@ function contractAlignment(
     skew_ms: skewMs,
     receive_skew_ms: receiveSkewMs,
     threshold_ms: input.maxTemporalSkewMs,
+  };
+}
+
+function eventTimestampAlignment(
+  temporalAlignment: LiveOptionSnapshotContract["temporal_alignment"],
+): LiveOptionSnapshotContract["event_timestamp_alignment"] {
+  return {
+    status:
+      temporalAlignment.status === "INCOMPLETE"
+        ? "UNVERIFIABLE"
+        : temporalAlignment.status,
+    skew_ms: temporalAlignment.skew_ms,
+    receive_skew_ms: temporalAlignment.receive_skew_ms,
+    threshold_ms: temporalAlignment.threshold_ms,
+  };
+}
+
+function receivedDuringRequest(
+  receivedAt: string,
+  requestStartedAtMs: number,
+  retrievedAtMs: number,
+): boolean {
+  const receivedAtMs = Date.parse(receivedAt);
+  return (
+    Number.isFinite(receivedAtMs) &&
+    receivedAtMs >= requestStartedAtMs &&
+    receivedAtMs <= retrievedAtMs
+  );
+}
+
+function oiFreshness(
+  summary: LiveOptionSummary | null,
+  requestStartedAtMs: number,
+  retrievedAtMs: number,
+): LiveOptionSnapshotContract["oi_freshness"] {
+  if (!summary || summary.open_interest === null) {
+    return {
+      status: "UNKNOWN",
+      basis: "NOT_AVAILABLE",
+      age_ms: null,
+    };
+  }
+  const receivedAtMs = Date.parse(summary.received_at);
+  if (
+    !receivedDuringRequest(
+      summary.received_at,
+      requestStartedAtMs,
+      retrievedAtMs,
+    )
+  ) {
+    return {
+      status: "STALE",
+      basis: "CURRENT_REQUEST_RECEIVE_TIME",
+      age_ms: Number.isFinite(receivedAtMs)
+        ? Math.abs(retrievedAtMs - receivedAtMs)
+        : null,
+    };
+  }
+  return {
+    status: "CONFIRMED",
+    basis: "CURRENT_REQUEST_RECEIVE_TIME",
+    age_ms: Math.max(0, retrievedAtMs - receivedAtMs),
+  };
+}
+
+function greeksFreshness(
+  greeks: LiveOptionGreeks | null,
+  requestStartedAtMs: number,
+  retrievedAtMs: number,
+): LiveOptionSnapshotContract["greeks_freshness"] {
+  if (
+    !greeks ||
+    greeks.gamma === null ||
+    greeks.timestamp_source !== "PROVIDER_EVENT_TIME"
+  ) {
+    return {
+      status: "UNKNOWN",
+      basis: "NOT_AVAILABLE",
+      age_ms: null,
+    };
+  }
+  const providerTimestampMs = Date.parse(greeks.timestamp);
+  const receivedAtMs = Date.parse(greeks.received_at);
+  if (
+    !Number.isFinite(providerTimestampMs) ||
+    !Number.isFinite(receivedAtMs)
+  ) {
+    return {
+      status: "UNKNOWN",
+      basis: "NOT_AVAILABLE",
+      age_ms: null,
+    };
+  }
+  const ageMs = Math.abs(receivedAtMs - providerTimestampMs);
+  if (
+    !receivedDuringRequest(
+      greeks.received_at,
+      requestStartedAtMs,
+      retrievedAtMs,
+    )
+  ) {
+    return {
+      status: "STALE",
+      basis: "PROVIDER_EVENT_TIME",
+      age_ms: ageMs,
+    };
+  }
+  return {
+    status: "CONFIRMED",
+    basis: "PROVIDER_EVENT_TIME",
+    age_ms: ageMs,
+  };
+}
+
+function cohortAlignment(
+  greeks: LiveOptionGreeks | null,
+  summary: LiveOptionSummary | null,
+  input: NormalizedLiveOptionSnapshotInput,
+  requestStartedAtMs: number,
+  retrievedAtMs: number,
+): LiveOptionSnapshotContract["cohort_alignment"] {
+  const greeksUsable =
+    input.includeGreeks && greeks !== null && greeks.gamma !== null;
+  const summaryUsable =
+    input.includeSummary &&
+    summary !== null &&
+    summary.open_interest !== null;
+  const exactContractIdentity = greeks !== null || summary !== null;
+  if (!input.includeGreeks || !input.includeSummary) {
+    return {
+      status: "NOT_CONFIRMED",
+      receive_skew_ms: null,
+      threshold_ms: input.maxTemporalSkewMs,
+      exact_contract_identity: exactContractIdentity,
+    };
+  }
+  if (!greeksUsable && !summaryUsable) {
+    return {
+      status: "NOT_CONFIRMED",
+      receive_skew_ms: null,
+      threshold_ms: input.maxTemporalSkewMs,
+      exact_contract_identity: false,
+    };
+  }
+  if (!greeksUsable || !summaryUsable) {
+    return {
+      status: "PARTIAL",
+      receive_skew_ms: null,
+      threshold_ms: input.maxTemporalSkewMs,
+      exact_contract_identity: exactContractIdentity,
+    };
+  }
+  const greeksReceivedAtMs = Date.parse(greeks.received_at);
+  const summaryReceivedAtMs = Date.parse(summary.received_at);
+  if (
+    !Number.isFinite(greeksReceivedAtMs) ||
+    !Number.isFinite(summaryReceivedAtMs)
+  ) {
+    return {
+      status: "NOT_CONFIRMED",
+      receive_skew_ms: null,
+      threshold_ms: input.maxTemporalSkewMs,
+      exact_contract_identity: true,
+    };
+  }
+  const receiveSkewMs = Math.abs(
+    greeksReceivedAtMs - summaryReceivedAtMs,
+  );
+  const currentRequestCohort =
+    receivedDuringRequest(
+      greeks.received_at,
+      requestStartedAtMs,
+      retrievedAtMs,
+    ) &&
+    receivedDuringRequest(
+      summary.received_at,
+      requestStartedAtMs,
+      retrievedAtMs,
+    );
+  return {
+    status:
+      currentRequestCohort &&
+      receiveSkewMs <= input.maxTemporalSkewMs
+        ? "CONFIRMED"
+        : "NOT_CONFIRMED",
+    receive_skew_ms: receiveSkewMs,
+    threshold_ms: input.maxTemporalSkewMs,
+    exact_contract_identity: true,
   };
 }
 
@@ -1166,7 +1570,7 @@ export function calculateGammaConcentrationProxy(
   contracts: LiveOptionSnapshotContract[],
   underlyingPriceValue: DecimalInput,
   asOf: string,
-  snapshotComplete: boolean,
+  sourceComplete: boolean,
 ): GammaConcentrationProxy {
   const underlyingPrice = ExactDecimal.parse(
     underlyingPriceValue,
@@ -1195,6 +1599,16 @@ export function calculateGammaConcentrationProxy(
     (contract) =>
       contract.temporal_alignment.status === "UNVERIFIABLE",
   ).length;
+  const cohortAlignmentNotConfirmed = contracts.filter(
+    (contract) => contract.cohort_alignment.status !== "CONFIRMED",
+  ).length;
+  const oiFreshnessNotConfirmed = contracts.filter(
+    (contract) => contract.oi_freshness.status !== "CONFIRMED",
+  ).length;
+  const greeksFreshnessNotConfirmed = contracts.filter(
+    (contract) =>
+      contract.greeks_freshness.status !== "CONFIRMED",
+  ).length;
   const factor = ExactDecimal.parse("0.01");
   const eligible: EligibleConcentration[] = [];
   for (const contract of contracts) {
@@ -1204,8 +1618,9 @@ export function calculateGammaConcentrationProxy(
       contract.summary?.open_interest === null ||
       !contract.summary ||
       contract.multiplier === null ||
-      contract.temporal_alignment.status === "MISALIGNED" ||
-      contract.temporal_alignment.status === "INCOMPLETE"
+      contract.cohort_alignment.status !== "CONFIRMED" ||
+      contract.oi_freshness.status !== "CONFIRMED" ||
+      contract.greeks_freshness.status !== "CONFIRMED"
     ) {
       continue;
     }
@@ -1248,27 +1663,38 @@ export function calculateGammaConcentrationProxy(
   }
   if (missingMultiplier > 0) warnings.push("MISSING_MULTIPLIER_EXCLUDED");
   if (temporallyUnaligned > 0) {
-    warnings.push("TEMPORALLY_UNALIGNED_CONTRACTS_EXCLUDED");
+    warnings.push(
+      "EVENT_TIMESTAMP_MISALIGNMENT_RECORDED_SEPARATELY_FROM_COHORT",
+    );
   }
   if (temporalAlignmentIncomplete > 0) {
-    warnings.push("TEMPORAL_ALIGNMENT_INCOMPLETE_CONTRACTS_EXCLUDED");
+    warnings.push("EVENT_TIMESTAMP_ALIGNMENT_INCOMPLETE");
   }
   if (temporalAlignmentUnverifiable > 0) {
     warnings.push(
-      "SOURCE_TEMPORAL_ALIGNMENT_UNVERIFIABLE_PROXY_REMAINS_PARTIAL",
+      "EVENT_TIMESTAMP_ALIGNMENT_UNVERIFIABLE_NON_BLOCKING_FOR_CURRENT_COHORT",
     );
   }
-  if (!snapshotComplete) warnings.push("SOURCE_SNAPSHOT_INCOMPLETE");
+  if (cohortAlignmentNotConfirmed > 0) {
+    warnings.push("GAMMA_OI_COHORT_ALIGNMENT_NOT_CONFIRMED");
+  }
+  if (oiFreshnessNotConfirmed > 0) {
+    warnings.push("OI_FRESHNESS_NOT_CONFIRMED");
+  }
+  if (greeksFreshnessNotConfirmed > 0) {
+    warnings.push("GREEKS_FRESHNESS_NOT_CONFIRMED");
+  }
+  if (!sourceComplete) {
+    warnings.push("SOURCE_GAMMA_OI_COHORT_INCOMPLETE");
+  }
   return {
     methodology: GAMMA_CONCENTRATION_METHODOLOGY,
     methodology_version: GAMMA_CONCENTRATION_METHODOLOGY_VERSION,
     status:
       eligible.length === 0
         ? "NOT_AVAILABLE"
-        : snapshotComplete &&
-            eligible.length === contracts.length &&
-            temporalAlignmentUnverifiable === 0
-          ? "AVAILABLE"
+        : sourceComplete && eligible.length === contracts.length
+          ? "COMPLETE"
           : "PARTIAL",
     phase: "LIVE_SUPPORT",
     evidence_role: "SUPPORTING_EVIDENCE",
@@ -1343,6 +1769,10 @@ export function calculateGammaConcentrationProxy(
       temporal_alignment_incomplete: temporalAlignmentIncomplete,
       temporal_alignment_unverifiable:
         temporalAlignmentUnverifiable,
+      cohort_alignment_not_confirmed: cohortAlignmentNotConfirmed,
+      oi_freshness_not_confirmed: oiFreshnessNotConfirmed,
+      greeks_freshness_not_confirmed:
+        greeksFreshnessNotConfirmed,
       coverage_ratio: ratio(eligible.length, contracts.length),
     },
     gamma_risk: "UNKNOWN",
@@ -1364,6 +1794,8 @@ export type LiveOptionSnapshotClientOptions = {
   quoteTokens?: DxlinkQuoteTokenProvider;
   socketFactory?: DxlinkSocketFactory;
   clock?: () => number;
+  maxDxlinkSubscriptionFrameBytes?: number;
+  maxConcurrentDxlinkBatches?: number;
 };
 
 export class TastytradeLiveOptionSnapshotClient {
@@ -1372,6 +1804,8 @@ export class TastytradeLiveOptionSnapshotClient {
   private readonly quoteTokens: DxlinkQuoteTokenProvider;
   private readonly socketFactory: DxlinkSocketFactory;
   private readonly clock: () => number;
+  private readonly maxDxlinkSubscriptionFrameBytes: number;
+  private readonly maxConcurrentDxlinkBatches: number;
 
   constructor(options: LiveOptionSnapshotClientOptions = {}) {
     assertTrustedHosts();
@@ -1388,6 +1822,19 @@ export class TastytradeLiveOptionSnapshotClient {
     this.socketFactory =
       options.socketFactory ??
       ((url) => new WebSocket(url) as unknown as DxlinkSocket);
+    this.maxDxlinkSubscriptionFrameBytes = normalizePositiveInteger(
+      options.maxDxlinkSubscriptionFrameBytes,
+      DXLINK_SAFE_SUBSCRIPTION_FRAME_BYTES,
+      DXLINK_SAFE_SUBSCRIPTION_FRAME_BYTES,
+      "maxDxlinkSubscriptionFrameBytes",
+      256,
+    );
+    this.maxConcurrentDxlinkBatches = normalizePositiveInteger(
+      options.maxConcurrentDxlinkBatches,
+      MAX_DXLINK_CONCURRENT_BATCHES,
+      MAX_DXLINK_CONCURRENT_BATCHES,
+      "maxConcurrentDxlinkBatches",
+    );
   }
 
   async getLiveOptionSnapshot(
@@ -1416,7 +1863,8 @@ export class TastytradeLiveOptionSnapshotClient {
         headers: { Authorization: `Bearer ${accessToken}` },
       },
     );
-    const chainRetrievedAt = isoTimestamp(this.clock());
+    const chainRetrievedAtMs = this.clock();
+    const chainRetrievedAt = isoTimestamp(chainRetrievedAtMs);
     const selected = selectContracts(chainResponse.data, input);
     const states = new Map<string, LiveOptionEventState>(
       selected.contracts.map((contract) => [
@@ -1424,48 +1872,90 @@ export class TastytradeLiveOptionSnapshotClient {
         { quote: null, greeks: null, summary: null },
       ]),
     );
-    let snapshotRead: LiveOptionSnapshotReadResult = {
+    const eventTypes: LiveOptionDxlinkEventType[] = [
+      ...(input.includeQuotes ? (["Quote"] as const) : []),
+      ...(input.includeGreeks ? (["Greeks"] as const) : []),
+      ...(input.includeSummary ? (["Summary"] as const) : []),
+    ];
+    const subscriptions = selected.contracts.flatMap((contract) =>
+      eventTypes.map((type) => ({
+        type,
+        symbol: contract.streamer_symbol,
+      })),
+    );
+    if (
+      subscriptions.length >
+      MAX_DXLINK_SUBSCRIPTIONS_PER_REQUEST
+    ) {
+      throw new Error(
+        `Live option snapshot requires ${subscriptions.length} DXLink subscriptions; the provider session budget permits at most ${MAX_DXLINK_SUBSCRIPTIONS_PER_REQUEST} event subscriptions per request.`,
+      );
+    }
+    let snapshotRead: LiveOptionSnapshotAggregateReadResult = {
       states,
       unmatchedSymbols: [],
       timedOut: false,
+      transport: {
+        strategy: "BOUNDED_AUTO_CHUNK",
+        max_frame_bytes: this.maxDxlinkSubscriptionFrameBytes,
+        max_concurrent_batches: this.maxConcurrentDxlinkBatches,
+        requested_subscriptions: subscriptions.length,
+        batch_count: 0,
+        complete_batches: 0,
+        partial_batches: 0,
+        timed_out_batches: 0,
+        failed_batches: 0,
+        batches: [],
+      },
     };
-    if (selected.contracts.length > 0) {
-      const requestedEventTypes =
-        Number(input.includeQuotes) +
-        Number(input.includeGreeks) +
-        Number(input.includeSummary);
-      const subscriptionCount =
-        selected.contracts.length * requestedEventTypes;
-      if (subscriptionCount > MAX_DXLINK_SUBSCRIPTIONS_PER_REQUEST) {
-        throw new Error(
-          `Live option snapshot requires ${subscriptionCount} DXLink subscriptions; narrow expirations or strike_count to at most ${MAX_DXLINK_SUBSCRIPTIONS_PER_REQUEST} subscriptions per request.`,
-        );
-      }
+    if (subscriptions.length > 0) {
       const quoteToken = await this.quoteTokens.getQuoteToken(input.signal);
-      snapshotRead = await this.readSnapshot(
+      snapshotRead = await this.readSnapshotBatches(
         quoteToken,
-        selected.contracts,
+        subscriptions,
         input,
         states,
       );
     }
-    const retrievedAt = isoTimestamp(this.clock());
+    const retrievedAtMs = this.clock();
+    const retrievedAt = isoTimestamp(retrievedAtMs);
     const contracts = selected.contracts.map((metadata) => {
       const state = snapshotRead.states.get(metadata.streamer_symbol)!;
       const quote = state.quote ? normalizeQuote(state.quote) : null;
       const greeks = state.greeks ? normalizeGreeks(state.greeks) : null;
       const summary = state.summary ? normalizeSummary(state.summary) : null;
+      const temporalAlignment = contractAlignment(
+        quote,
+        greeks,
+        summary,
+        input,
+      );
       return {
         ...metadata,
         quote,
         greeks,
         summary,
-        temporal_alignment: contractAlignment(
-          quote,
+        event_timestamp_alignment: eventTimestampAlignment(
+          temporalAlignment,
+        ),
+        cohort_alignment: cohortAlignment(
           greeks,
           summary,
           input,
+          chainRetrievedAtMs,
+          retrievedAtMs,
         ),
+        oi_freshness: oiFreshness(
+          summary,
+          chainRetrievedAtMs,
+          retrievedAtMs,
+        ),
+        greeks_freshness: greeksFreshness(
+          greeks,
+          chainRetrievedAtMs,
+          retrievedAtMs,
+        ),
+        temporal_alignment: temporalAlignment,
       };
     });
     const quoteCoverage = coverage(
@@ -1507,8 +1997,20 @@ export class TastytradeLiveOptionSnapshotClient {
     const incompleteContracts = contracts.filter(
       (contract) => contract.temporal_alignment.status === "INCOMPLETE",
     ).length;
+    const eventAlignedContracts = contracts.filter(
+      (contract) =>
+        contract.event_timestamp_alignment.status === "ALIGNED",
+    ).length;
+    const eventMisalignedContracts = contracts.filter(
+      (contract) =>
+        contract.event_timestamp_alignment.status === "MISALIGNED",
+    ).length;
+    const eventUnverifiableContracts = contracts.filter(
+      (contract) =>
+        contract.event_timestamp_alignment.status === "UNVERIFIABLE",
+    ).length;
     const maxSkewValues = contracts
-      .map((contract) => contract.temporal_alignment.skew_ms)
+      .map((contract) => contract.event_timestamp_alignment.skew_ms)
       .filter((value): value is number => value !== null);
     const temporalAlignmentStatus: TemporalAlignmentStatus =
       incompleteContracts > 0
@@ -1520,23 +2022,102 @@ export class TastytradeLiveOptionSnapshotClient {
             : contracts.length > 0
               ? "ALIGNED"
               : "INCOMPLETE";
+    const eventTimestampAlignmentStatus: EventTimestampAlignmentStatus =
+      eventMisalignedContracts > 0
+        ? "MISALIGNED"
+        : eventUnverifiableContracts > 0
+          ? "UNVERIFIABLE"
+          : eventAlignedContracts > 0
+            ? "ALIGNED"
+            : "UNVERIFIABLE";
+    const confirmedCohortContracts = contracts.filter(
+      (contract) => contract.cohort_alignment.status === "CONFIRMED",
+    ).length;
+    const partialCohortContracts = contracts.filter(
+      (contract) => contract.cohort_alignment.status === "PARTIAL",
+    ).length;
+    const notConfirmedCohortContracts =
+      contracts.length -
+      confirmedCohortContracts -
+      partialCohortContracts;
+    const cohortAlignmentStatus: CohortAlignmentStatus =
+      contracts.length > 0 &&
+      confirmedCohortContracts === contracts.length
+        ? "CONFIRMED"
+        : confirmedCohortContracts > 0 || partialCohortContracts > 0
+          ? "PARTIAL"
+          : "NOT_CONFIRMED";
+    const oiConfirmedContracts = contracts.filter(
+      (contract) => contract.oi_freshness.status === "CONFIRMED",
+    ).length;
+    const oiStaleContracts = contracts.filter(
+      (contract) => contract.oi_freshness.status === "STALE",
+    ).length;
+    const oiUnknownContracts =
+      contracts.length - oiConfirmedContracts - oiStaleContracts;
+    const oiFreshnessStatus: SourceFreshnessStatus =
+      oiStaleContracts > 0
+        ? "STALE"
+        : contracts.length > 0 &&
+            oiConfirmedContracts === contracts.length
+          ? "CONFIRMED"
+          : "UNKNOWN";
+    const greeksConfirmedContracts = contracts.filter(
+      (contract) =>
+        contract.greeks_freshness.status === "CONFIRMED",
+    ).length;
+    const greeksStaleContracts = contracts.filter(
+      (contract) => contract.greeks_freshness.status === "STALE",
+    ).length;
+    const greeksUnknownContracts =
+      contracts.length -
+      greeksConfirmedContracts -
+      greeksStaleContracts;
+    const greeksFreshnessStatus: SourceFreshnessStatus =
+      greeksStaleContracts > 0
+        ? "STALE"
+        : contracts.length > 0 &&
+            greeksConfirmedContracts === contracts.length
+          ? "CONFIRMED"
+          : "UNKNOWN";
     const chainComplete =
       selected.availableExpirations.length === input.expirations.length;
+    const gammaOiRequested =
+      input.includeGreeks && input.includeSummary;
+    const transportComplete =
+      snapshotRead.transport.batch_count > 0 &&
+      snapshotRead.transport.complete_batches ===
+        snapshotRead.transport.batch_count;
     const snapshotComplete =
       contracts.length > 0 &&
       chainComplete &&
-      !snapshotRead.timedOut &&
+      transportComplete &&
       quoteCoverage.complete &&
+      greeksCoverageBase.complete &&
+      summaryCoverageBase.complete;
+    const gammaOiSourceComplete =
+      contracts.length > 0 &&
+      chainComplete &&
+      gammaOiRequested &&
       greeksCoverageBase.complete &&
       summaryCoverageBase.complete;
     const gammaProxy = calculateGammaConcentrationProxy(
       contracts,
       input.aroundPrice,
       retrievedAt,
-      snapshotComplete,
+      gammaOiSourceComplete,
     );
     const warnings = [...selected.warnings];
     if (snapshotRead.timedOut) warnings.push("SNAPSHOT_DEADLINE_EXCEEDED");
+    if (snapshotRead.transport.partial_batches > 0) {
+      warnings.push("DXLINK_BATCH_PARTIAL");
+    }
+    if (snapshotRead.transport.timed_out_batches > 0) {
+      warnings.push("DXLINK_BATCH_TIMED_OUT");
+    }
+    if (snapshotRead.transport.failed_batches > 0) {
+      warnings.push("DXLINK_BATCH_FAILED");
+    }
     if (snapshotRead.unmatchedSymbols.length > 0) {
       warnings.push("UNMATCHED_DXLINK_SYMBOLS_IGNORED");
     }
@@ -1579,13 +2160,25 @@ export class TastytradeLiveOptionSnapshotClient {
     if (!summaryCoverageBase.complete && input.includeSummary) {
       warnings.push("SUMMARY_OPEN_INTEREST_COVERAGE_INCOMPLETE");
     }
+    if (eventTimestampAlignmentStatus === "MISALIGNED") {
+      warnings.push("EVENT_TIMESTAMP_ALIGNMENT_MISALIGNED");
+    } else if (eventTimestampAlignmentStatus === "UNVERIFIABLE") {
+      warnings.push("EVENT_TIMESTAMP_ALIGNMENT_UNVERIFIABLE");
+    }
     if (
-      temporalAlignmentStatus === "MISALIGNED" ||
-      temporalAlignmentStatus === "INCOMPLETE"
+      gammaOiRequested &&
+      cohortAlignmentStatus !== "CONFIRMED"
     ) {
-      warnings.push("TEMPORAL_ALIGNMENT_INCOMPLETE_OR_FAILED");
-    } else if (temporalAlignmentStatus === "UNVERIFIABLE") {
-      warnings.push("SOURCE_TEMPORAL_ALIGNMENT_UNVERIFIABLE");
+      warnings.push("GAMMA_OI_COHORT_ALIGNMENT_NOT_CONFIRMED");
+    }
+    if (gammaOiRequested && oiFreshnessStatus !== "CONFIRMED") {
+      warnings.push("OI_FRESHNESS_NOT_CONFIRMED");
+    }
+    if (
+      gammaOiRequested &&
+      greeksFreshnessStatus !== "CONFIRMED"
+    ) {
+      warnings.push("GREEKS_FRESHNESS_NOT_CONFIRMED");
     }
     warnings.push(...gammaProxy.warnings);
     const timestampProvenance = {
@@ -1623,11 +2216,22 @@ export class TastytradeLiveOptionSnapshotClient {
         quote: contract.quote,
         greeks: contract.greeks,
         summary: contract.summary,
+        event_timestamp_alignment:
+          contract.event_timestamp_alignment,
+        cohort_alignment: contract.cohort_alignment,
+        oi_freshness: contract.oi_freshness,
+        greeks_freshness: contract.greeks_freshness,
         temporal_alignment: contract.temporal_alignment,
       })),
+      transport: snapshotRead.transport,
     });
+    const proxyEvidenceComplete =
+      !gammaOiRequested ||
+      (cohortAlignmentStatus === "CONFIRMED" &&
+        oiFreshnessStatus === "CONFIRMED" &&
+        greeksFreshnessStatus === "CONFIRMED");
     const status: LiveOptionSnapshotResult["status"] =
-      snapshotComplete && temporalAlignmentStatus === "ALIGNED"
+      snapshotComplete && proxyEvidenceComplete
         ? "AVAILABLE"
         : contracts.some(
             (contract) =>
@@ -1663,6 +2267,34 @@ export class TastytradeLiveOptionSnapshotClient {
       quote_complete: quoteCoverage.complete,
       greeks_complete: greeksCoverageBase.complete,
       summary_complete: summaryCoverageBase.complete,
+      transport: snapshotRead.transport,
+      event_timestamp_alignment: {
+        status: eventTimestampAlignmentStatus,
+        threshold_ms: input.maxTemporalSkewMs,
+        max_skew_ms:
+          maxSkewValues.length === 0 ? null : Math.max(...maxSkewValues),
+        aligned_contracts: eventAlignedContracts,
+        misaligned_contracts: eventMisalignedContracts,
+        unverifiable_contracts: eventUnverifiableContracts,
+      },
+      cohort_alignment: {
+        status: cohortAlignmentStatus,
+        confirmed_contracts: confirmedCohortContracts,
+        partial_contracts: partialCohortContracts,
+        not_confirmed_contracts: notConfirmedCohortContracts,
+      },
+      oi_freshness: {
+        status: oiFreshnessStatus,
+        confirmed_contracts: oiConfirmedContracts,
+        stale_contracts: oiStaleContracts,
+        unknown_contracts: oiUnknownContracts,
+      },
+      greeks_freshness: {
+        status: greeksFreshnessStatus,
+        confirmed_contracts: greeksConfirmedContracts,
+        stale_contracts: greeksStaleContracts,
+        unknown_contracts: greeksUnknownContracts,
+      },
       temporal_alignment: {
         status: temporalAlignmentStatus,
         threshold_ms: input.maxTemporalSkewMs,
@@ -1706,6 +2338,10 @@ export class TastytradeLiveOptionSnapshotClient {
           coverage_ratio: gammaProxy.data_completeness.coverage_ratio,
           snapshot_complete: snapshotComplete,
           temporal_alignment: temporalAlignmentStatus,
+          event_timestamp_alignment: eventTimestampAlignmentStatus,
+          cohort_alignment: cohortAlignmentStatus,
+          oi_freshness: oiFreshnessStatus,
+          greeks_freshness: greeksFreshnessStatus,
         },
         dealer_gex_status: "UNKNOWN",
         evidence_role: "SUPPORTING_EVIDENCE",
@@ -1713,7 +2349,7 @@ export class TastytradeLiveOptionSnapshotClient {
       },
       regression_record: {
         record_type: "LIVE_OPTION_GAMMA_CONCENTRATION",
-        record_version: "1.0.0",
+        record_version: "1.1.0",
         request_id: requestId,
         snapshot_id: snapshotId,
         as_of: retrievedAt,
@@ -1725,21 +2361,173 @@ export class TastytradeLiveOptionSnapshotClient {
     };
   }
 
-  private readSnapshot(
+  private async readSnapshotBatches(
     quoteToken: DxlinkQuoteToken,
-    contracts: LiveOptionContractMetadata[],
+    subscriptions: LiveOptionDxlinkSubscription[],
     input: NormalizedLiveOptionSnapshotInput,
     states: Map<string, LiveOptionEventState>,
+  ): Promise<LiveOptionSnapshotAggregateReadResult> {
+    const batches = chunkDxlinkSubscriptions(
+      subscriptions,
+      this.maxDxlinkSubscriptionFrameBytes,
+    );
+    const batchResults = new Array<
+      LiveOptionSnapshotResult["transport"]["batches"][number]
+    >(batches.length);
+    const unmatchedSymbols = new Set<string>();
+    const aggregateDeadlineAt = this.clock() + input.deadlineMs;
+    let nextBatchIndex = 0;
+
+    const readNextBatch = async () => {
+      while (true) {
+        const batchIndex = nextBatchIndex;
+        nextBatchIndex += 1;
+        const batch = batches[batchIndex];
+        if (!batch) return;
+        const symbols = [
+          ...new Set(
+            batch.subscriptions.map(
+              (subscription) => subscription.symbol,
+            ),
+          ),
+        ].sort();
+        const remainingDeadlineMs =
+          aggregateDeadlineAt - this.clock();
+        if (remainingDeadlineMs <= 0) {
+          batchResults[batchIndex] = {
+            batch_index: batchIndex + 1,
+            symbol_count: symbols.length,
+            subscription_count: batch.subscriptions.length,
+            frame_bytes: batch.frame_bytes,
+            status: "TIMED_OUT",
+            affected_symbols: symbols,
+            unmatched_symbols: [],
+            error:
+              "Aggregate snapshot deadline elapsed before this batch started.",
+          };
+          continue;
+        }
+        try {
+          const result = await this.readSnapshot(
+            quoteToken,
+            batch.subscriptions,
+            input,
+            states,
+            remainingDeadlineMs,
+          );
+          for (const symbol of result.unmatchedSymbols) {
+            unmatchedSymbols.add(symbol);
+          }
+          const affectedSymbols = affectedSubscriptionSymbols(
+            states,
+            batch.subscriptions,
+          );
+          const receivedSubscriptions =
+            batch.subscriptions.length -
+            batch.subscriptions.filter(
+              (subscription) =>
+                !subscriptionSatisfied(states, subscription),
+            ).length;
+          const status: LiveOptionDxlinkBatchStatus = result.timedOut
+            ? receivedSubscriptions > 0
+              ? "PARTIAL"
+              : "TIMED_OUT"
+            : affectedSymbols.length === 0
+              ? "COMPLETE"
+              : "PARTIAL";
+          batchResults[batchIndex] = {
+            batch_index: batchIndex + 1,
+            symbol_count: symbols.length,
+            subscription_count: batch.subscriptions.length,
+            frame_bytes: batch.frame_bytes,
+            status,
+            affected_symbols: affectedSymbols,
+            unmatched_symbols: result.unmatchedSymbols,
+            error:
+              status === "COMPLETE"
+                ? null
+                : "DXLink batch deadline elapsed before all subscriptions were received.",
+          };
+        } catch (error) {
+          if (
+            error instanceof DxlinkAbortedError ||
+            input.signal?.aborted
+          ) {
+            throw error;
+          }
+          const affectedSymbols = affectedSubscriptionSymbols(
+            states,
+            batch.subscriptions,
+          );
+          batchResults[batchIndex] = {
+            batch_index: batchIndex + 1,
+            symbol_count: symbols.length,
+            subscription_count: batch.subscriptions.length,
+            frame_bytes: batch.frame_bytes,
+            status: "FAILED",
+            affected_symbols:
+              affectedSymbols.length > 0 ? affectedSymbols : symbols,
+            unmatched_symbols: [],
+            error:
+              error instanceof Error ? error.message : String(error),
+          };
+        }
+      }
+    };
+
+    await Promise.all(
+      Array.from(
+        {
+          length: Math.min(
+            batches.length,
+            this.maxConcurrentDxlinkBatches,
+          ),
+        },
+        () => readNextBatch(),
+      ),
+    );
+    const completeBatches = batchResults.filter(
+      (batch) => batch.status === "COMPLETE",
+    ).length;
+    const partialBatches = batchResults.filter(
+      (batch) => batch.status === "PARTIAL",
+    ).length;
+    const timedOutBatches = batchResults.filter(
+      (batch) => batch.status === "TIMED_OUT",
+    ).length;
+    const failedBatches = batchResults.filter(
+      (batch) => batch.status === "FAILED",
+    ).length;
+    return {
+      states,
+      unmatchedSymbols: [...unmatchedSymbols].sort(),
+      timedOut: partialBatches > 0 || timedOutBatches > 0,
+      transport: {
+        strategy: "BOUNDED_AUTO_CHUNK",
+        max_frame_bytes: this.maxDxlinkSubscriptionFrameBytes,
+        max_concurrent_batches: this.maxConcurrentDxlinkBatches,
+        requested_subscriptions: subscriptions.length,
+        batch_count: batchResults.length,
+        complete_batches: completeBatches,
+        partial_batches: partialBatches,
+        timed_out_batches: timedOutBatches,
+        failed_batches: failedBatches,
+        batches: batchResults,
+      },
+    };
+  }
+
+  private readSnapshot(
+    quoteToken: DxlinkQuoteToken,
+    subscriptions: LiveOptionDxlinkSubscription[],
+    input: NormalizedLiveOptionSnapshotInput,
+    states: Map<string, LiveOptionEventState>,
+    deadlineMs: number,
   ): Promise<LiveOptionSnapshotReadResult> {
     assertDxlinkNotAborted(input.signal);
     return new Promise((resolve, reject) => {
       const socket = this.socketFactory(quoteToken.url);
       const unmatchedSymbols = new Set<string>();
-      const eventTypes = [
-        ...(input.includeQuotes ? (["Quote"] as const) : []),
-        ...(input.includeGreeks ? (["Greeks"] as const) : []),
-        ...(input.includeSummary ? (["Summary"] as const) : []),
-      ];
       let subscribed = false;
       let settled = false;
       let keepalive: ReturnType<typeof setInterval> | null = null;
@@ -1750,12 +2538,6 @@ export class TastytradeLiveOptionSnapshotClient {
       const send = (message: Record<string, unknown>) => {
         socket.send(JSON.stringify(message));
       };
-      const subscriptions = contracts.flatMap((contract) =>
-        eventTypes.map((type) => ({
-          type,
-          symbol: contract.streamer_symbol,
-        })),
-      );
       const unsubscribe = () => {
         if (
           !subscribed ||
@@ -1799,11 +2581,8 @@ export class TastytradeLiveOptionSnapshotClient {
         reject(error);
       };
       const complete = () =>
-        [...states.values()].every(
-          (state) =>
-            (!input.includeQuotes || state.quote !== null) &&
-            (!input.includeGreeks || state.greeks !== null) &&
-            (!input.includeSummary || state.summary !== null),
+        subscriptions.every((subscription) =>
+          subscriptionSatisfied(states, subscription),
         );
       const processMessage = (message: Record<string, unknown>) => {
         if (
@@ -1846,12 +2625,7 @@ export class TastytradeLiveOptionSnapshotClient {
           !subscribed
         ) {
           subscribed = true;
-          send({
-            type: "FEED_SUBSCRIPTION",
-            channel: 3,
-            reset: true,
-            add: subscriptions,
-          });
+          send(subscriptionMessage(subscriptions));
         } else if (
           message.type === "FEED_DATA" &&
           message.channel === 3
@@ -1880,7 +2654,7 @@ export class TastytradeLiveOptionSnapshotClient {
       input.signal?.addEventListener("abort", abortListener, {
         once: true,
       });
-      deadline = setTimeout(() => finish(true), input.deadlineMs);
+      deadline = setTimeout(() => finish(true), deadlineMs);
       socket.onopen = () => {
         if (settled) {
           socket.close(1000, "live option snapshot already settled");

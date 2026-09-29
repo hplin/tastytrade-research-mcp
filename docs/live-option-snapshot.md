@@ -18,6 +18,9 @@ The endpoint joins one option-chain cohort by the exact tastytrade
 This is live support evidence only. It never places, replaces, validates, or
 cancels an order.
 
+Contract version `1.1.0` adds bounded DXLink auto-chunking plus separate
+event-time, current-request cohort, and source-freshness evidence.
+
 ## Request
 
 ```json
@@ -49,10 +52,11 @@ not silently replace it with a later quote.
 
 The request is bounded to 10 expirations and 100 strikes per series. At least
 one of Quote, Greeks, or Summary must be requested. After contract selection,
-the endpoint also caps the cohort at 5,000 DXLink event subscriptions so the
-matching unsubscribe remains within the documented 10,000 subscription-change
-budget; callers must narrow expirations or strikes when a wider request would
-exceed it.
+the endpoint caps the cohort at 5,000 DXLink event subscriptions so matching
+unsubscribes remain within the documented 10,000 subscription-change budget.
+Within that bound, callers do not split requests around DXLink's 65,536-byte
+frame limit. The client deterministically encodes subscriptions into frames
+no larger than 48 KiB and reads at most four batches concurrently.
 
 ## Snapshot contract
 
@@ -62,7 +66,8 @@ Each contract includes:
 - exact `streamer_symbol`;
 - `root_symbol`, strike, call/put, expiration, DTE, multiplier, and settlement;
 - optional `quote`, `greeks`, and `summary` objects; and
-- per-contract temporal-alignment status and skew.
+- per-contract event timestamp alignment, Gamma/OI cohort alignment, OI
+  freshness, and Greeks freshness evidence.
 
 Missing numeric provider values remain `null`. In particular, missing
 `Summary.openInterest` is never converted to zero.
@@ -72,13 +77,16 @@ The result also includes:
 - `retrieved_at` and `chain_retrieved_at`;
 - `snapshot_complete`, `quote_complete`, `greeks_complete`, and
   `summary_complete`;
+- `transport`, including the encoded size and status of every DXLink batch
+  plus affected symbols for partial, timed-out, or failed batches;
 - field and timestamp-provenance coverage counts;
-- aggregate temporal alignment;
+- aggregate event timestamp alignment, cohort alignment, OI freshness, and
+  Greeks freshness;
 - stable `request_id` and per-observation `snapshot_id`;
 - a downstream `market_data_handoff`; and
 - a compact `regression_record`.
 
-## Timestamp provenance and temporal alignment
+## Timestamp, cohort, and freshness evidence
 
 DXLink Greeks normally carry a provider `time`. Quote `bidTime`/`askTime` and
 Summary `eventTime` may be zero, especially outside the active market. Every
@@ -92,36 +100,57 @@ event therefore returns:
 Local receive time is an explicit fallback, not a claimed provider event
 time. The result reports provider/local timestamp counts and warnings.
 
-For each contract, the endpoint computes the maximum skew across all
+`event_timestamp_alignment` compares provider event timestamps across all
 requested event categories:
 
-- `ALIGNED`: every requested event is present and skew is within
-  `max_temporal_skew_ms`;
-- `MISALIGNED`: all requested events are present but skew exceeds the limit;
-- `UNVERIFIABLE`: every requested event is present, but at least one category
-  lacks a provider timestamp, so local receive time cannot prove source-time
-  alignment; or
-- `INCOMPLETE`: at least one requested event is missing.
+- `ALIGNED`: each requested category has a provider timestamp and skew is
+  within `max_temporal_skew_ms`;
+- `MISALIGNED`: provider timestamps are present but skew exceeds the limit;
+  or
+- `UNVERIFIABLE`: at least one requested category lacks a provider timestamp
+  or event-time alignment otherwise cannot be established.
 
-`receive_skew_ms` records whether the events arrived in one local subscription
-cohort. It is not substituted for source-time skew.
+The legacy `temporal_alignment` field remains for version-1 consumers and may
+also report `INCOMPLETE`. It is not a Gamma proxy completeness gate.
+
+`cohort_alignment` separately evaluates exact-symbol Greeks and Summary
+observations delivered for this request:
+
+- `CONFIRMED`: usable Gamma and OI were received for the exact contract during
+  the current request, and their receive-time skew is within
+  `max_temporal_skew_ms`;
+- `PARTIAL`: only one usable side of the Gamma/OI pair arrived; or
+- `NOT_CONFIRMED`: the pair is absent or cannot be tied to the current request
+  cohort.
+
+`oi_freshness` may be `CONFIRMED` from `CURRENT_REQUEST_RECEIVE_TIME` even
+when `Summary.eventTime` is unavailable. Open interest is low-frequency
+state; local receipt in this exact request proves acquisition freshness
+without fabricating a provider event time. `greeks_freshness` requires a
+provider event timestamp delivered in this request. Both freshness objects
+also support `STALE` and `UNKNOWN`.
+
+These statuses describe acquisition freshness for this request, not a
+separately approved market-recency SLA. Provider/receive timestamps and
+`age_ms` remain explicit so downstream research can apply a versioned policy.
 
 The whole snapshot is complete when:
 
 1. every requested expiration is present in the selected root set;
 2. every selected contract has usable requested fields;
-3. the DXLink deadline did not expire.
+3. every DXLink batch completes without timeout or failure.
 
-Temporal alignment remains a separate status. `MISALIGNED` and `INCOMPLETE`
-contracts are excluded from the proxy. `UNVERIFIABLE` contracts may
-contribute to the unsigned research calculation, but force proxy status
-`PARTIAL`, retain Gamma Risk and Dealer GEX as `UNKNOWN`, and cannot become a
-production gate.
+Provider event-time alignment remains independent evidence. Missing Summary
+provider time, or even a provider-time mismatch caused by low-frequency OI,
+does not degrade a fully confirmed current-request Gamma/OI cohort. Batch
+failure, missing Gamma/OI, stale or unknown freshness, or unconfirmed cohort
+evidence still fails closed.
 
 ## Level 2 unsigned gamma concentration
 
-For every contract with Gamma, open interest, multiplier, and no known
-source-time mismatch:
+For every contract with Gamma, open interest, multiplier, confirmed
+current-request cohort, confirmed OI freshness, and confirmed Greeks
+freshness:
 
 ```text
 gamma_concentration_i
@@ -133,8 +162,18 @@ gamma_concentration_i
 ```
 
 The implementation uses the repository's exact decimal arithmetic. Contracts
-with missing Gamma, missing OI, missing multiplier, or failed temporal
-alignment are excluded and counted; missing OI is not zero-filled.
+with missing Gamma, missing OI, missing multiplier, unconfirmed cohort
+alignment, or unconfirmed freshness are excluded and counted; missing OI is
+not zero-filled. Event timestamp alignment remains visible but does not
+replace the cohort/freshness policy.
+
+Proxy status is:
+
+- `COMPLETE` when the requested chain is complete and every selected contract
+  has eligible Gamma/OI evidence;
+- `PARTIAL` when at least one eligible contract exists but the requested
+  Gamma/OI cohort is incomplete; or
+- `NOT_AVAILABLE` when no contract is eligible.
 
 The result uses:
 
@@ -193,10 +232,14 @@ regression decision.
   "gamma_proxy_methodology": "OI_BASED_UNSIGNED_GAMMA_CONCENTRATION",
   "gamma_proxy_as_of": "2026-09-29T02:45:00.000Z",
   "gamma_proxy_completeness": {
-    "status": "AVAILABLE",
+    "status": "COMPLETE",
     "coverage_ratio": "1",
     "snapshot_complete": true,
-    "temporal_alignment": "ALIGNED"
+    "temporal_alignment": "UNVERIFIABLE",
+    "event_timestamp_alignment": "UNVERIFIABLE",
+    "cohort_alignment": "CONFIRMED",
+    "oi_freshness": "CONFIRMED",
+    "greeks_freshness": "CONFIRMED"
   },
   "dealer_gex_status": "UNKNOWN",
   "evidence_role": "SUPPORTING_EVIDENCE",
@@ -206,7 +249,9 @@ regression decision.
 
 If the proxy is unavailable, `gamma_concentration_proxy` is `null`, not zero.
 The downstream risk dashboard must keep Gamma Risk `UNKNOWN` whenever
-coverage or alignment is insufficient.
+coverage, cohort alignment, or freshness is insufficient. `COMPLETE` still
+describes only the unsigned concentration proxy; it does not make Dealer GEX
+or Gamma Risk known.
 
 ## Regression recording
 
@@ -214,8 +259,9 @@ Persist the full sanitized result or, at minimum:
 
 - `regression_record`;
 - `market_data_handoff`;
+- DXLink batch provenance;
 - proxy `data_completeness`;
-- snapshot completeness and temporal alignment;
+- snapshot completeness, event alignment, cohort alignment, and freshness;
 - the selected exact contract inventory; and
 - later outcome labels.
 
@@ -248,7 +294,9 @@ Optional settings are:
 
 The gate passes only when at least one exact contract contains both Gamma and
 OI and the requested snapshot fields are complete. Source-time alignment is
-reported independently and may be `UNVERIFIABLE`; that condition leaves the
-proxy `PARTIAL` and all risk/dealer conclusions `UNKNOWN`. The JSON output is
-appropriate for a private regression artifact; it contains market data but
-no credentials or quote token.
+reported independently and may be `UNVERIFIABLE`; a confirmed current-request
+cohort with confirmed OI and Greeks freshness may still produce a `COMPLETE`
+proxy. All risk/dealer conclusions remain `UNKNOWN`. Set five current
+expirations and `TASTYTRADE_LIVE_OPTION_STRIKE_COUNT=50` to exercise live
+auto-chunking. The JSON output is appropriate for a private regression
+artifact; it contains market data but no credentials or quote token.
