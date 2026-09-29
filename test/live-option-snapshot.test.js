@@ -1,6 +1,9 @@
 import { describe, expect, jest, test } from "@jest/globals";
 import {
+  DXLINK_SAFE_SUBSCRIPTION_FRAME_BYTES,
   TastytradeLiveOptionSnapshotClient,
+  chunkDxlinkSubscriptions,
+  dxlinkSubscriptionFrameBytes,
   mergeLiveOptionEvents,
   parseDxlinkLiveOptionData,
 } from "../dist/live-option-snapshot.js";
@@ -62,6 +65,132 @@ class FakeSocket {
       ) {
         for (const data of this.batches) {
           this.emit({ type: "FEED_DATA", channel: 3, data });
+        }
+      }
+    });
+  }
+
+  emit(message) {
+    this.onmessage?.({ data: JSON.stringify(message) });
+  }
+
+  close(code = 1000, reason = "") {
+    this.closeCalls.push({ code, reason });
+    this.readyState = 3;
+    queueMicrotask(() => this.onclose?.({ code, reason }));
+  }
+}
+
+class SubscriptionDrivenSocket {
+  readyState = 0;
+  onopen = null;
+  onmessage = null;
+  onerror = null;
+  onclose = null;
+  sent = [];
+  closeCalls = [];
+
+  constructor({ failOnSubscription = false, summaryTime = 0 } = {}) {
+    this.failOnSubscription = failOnSubscription;
+    this.summaryTime = summaryTime;
+    queueMicrotask(() => {
+      this.readyState = 1;
+      this.onopen?.();
+    });
+  }
+
+  send(data) {
+    const message = JSON.parse(data);
+    this.sent.push(message);
+    queueMicrotask(() => {
+      if (message.type === "SETUP") {
+        this.emit({
+          type: "AUTH_STATE",
+          channel: 0,
+          state: "UNAUTHORIZED",
+        });
+      } else if (message.type === "AUTH") {
+        this.emit({
+          type: "AUTH_STATE",
+          channel: 0,
+          state: "AUTHORIZED",
+        });
+      } else if (message.type === "CHANNEL_REQUEST") {
+        this.emit({
+          type: "CHANNEL_OPENED",
+          channel: 3,
+          service: "FEED",
+        });
+      } else if (message.type === "FEED_SETUP") {
+        this.emit({
+          type: "FEED_CONFIG",
+          channel: 3,
+          aggregationPeriod: 0.1,
+          dataFormat: "COMPACT",
+        });
+      } else if (
+        message.type === "FEED_SUBSCRIPTION" &&
+        message.add
+      ) {
+        if (this.failOnSubscription) {
+          this.emit({
+            type: "ERROR",
+            channel: 3,
+            error: "TEST_BATCH_FAILURE",
+          });
+          return;
+        }
+        const subscriptionsByType = new Map();
+        for (const subscription of message.add) {
+          const symbols =
+            subscriptionsByType.get(subscription.type) ?? [];
+          symbols.push(subscription.symbol);
+          subscriptionsByType.set(subscription.type, symbols);
+        }
+        for (const [type, symbols] of subscriptionsByType) {
+          const rows = [];
+          for (const symbol of symbols) {
+            if (type === "Quote") {
+              rows.push(
+                "Quote",
+                symbol,
+                NOW,
+                NOW,
+                2,
+                2.2,
+                10,
+                12,
+              );
+            } else if (type === "Greeks") {
+              rows.push(
+                "Greeks",
+                symbol,
+                0,
+                1,
+                NOW,
+                0,
+                2.1,
+                0.2,
+                0.5,
+                0.01,
+                -1,
+                0.1,
+                1.2,
+              );
+            } else if (type === "Summary") {
+              rows.push(
+                "Summary",
+                symbol,
+                this.summaryTime,
+                10,
+              );
+            }
+          }
+          this.emit({
+            type: "FEED_DATA",
+            channel: 3,
+            data: [type, rows],
+          });
         }
       }
     });
@@ -140,6 +269,47 @@ function chainResponse() {
         },
       ],
     },
+  };
+}
+
+function generatedChainResponse({
+  expirationCount = 5,
+  strikeCount = 50,
+} = {}) {
+  const expirations = [
+    "2026-09-29",
+    "2026-09-30",
+    "2026-10-01",
+    "2026-10-02",
+    "2026-10-03",
+  ].slice(0, expirationCount);
+  const items = ["SPX", "SPXW"].map((root) => ({
+    "underlying-symbol": "SPX",
+    "root-symbol": root,
+    "shares-per-contract": 100,
+    expirations: expirations.map((expiration, expirationIndex) => {
+      const compactExpiration = expiration.replaceAll("-", "").slice(2);
+      return {
+        "expiration-date": expiration,
+        "days-to-expiration": expirationIndex + 1,
+        "settlement-type": root === "SPX" ? "AM" : "PM",
+        strikes: Array.from({ length: strikeCount }, (_, strikeIndex) => {
+          const strike = 7560 + strikeIndex * 5;
+          const occStrike = String(strike * 1000).padStart(8, "0");
+          return {
+            "strike-price": String(strike),
+            call: `${root.padEnd(6)}${compactExpiration}C${occStrike}`,
+            "call-streamer-symbol": `.${root}${compactExpiration}C${strike}`,
+            put: `${root.padEnd(6)}${compactExpiration}P${occStrike}`,
+            "put-streamer-symbol": `.${root}${compactExpiration}P${strike}`,
+          };
+        }),
+      };
+    }),
+  }));
+  return {
+    expirations,
+    response: { data: { items } },
   };
 }
 
@@ -247,6 +417,49 @@ function fixture(options = {}) {
   return { client, http, getSocket: () => socket };
 }
 
+function generatedFixture({
+  expirationCount = 5,
+  strikeCount = 50,
+  maxFrameBytes,
+  maxConcurrentBatches,
+  failedBatchIndex = -1,
+  summaryTime = 0,
+} = {}) {
+  const chain = generatedChainResponse({
+    expirationCount,
+    strikeCount,
+  });
+  const sockets = [];
+  const client = new TastytradeLiveOptionSnapshotClient({
+    oauth: { getAccessToken: async () => "access-token" },
+    http: {
+      get: jest.fn(async () => ({ data: chain.response })),
+    },
+    quoteTokens: {
+      getQuoteToken: async () => ({
+        token: "quote-token",
+        url: "wss://tasty-openapi-ws.dxfeed.com/realtime",
+      }),
+    },
+    socketFactory: () => {
+      const socket = new SubscriptionDrivenSocket({
+        failOnSubscription: sockets.length === failedBatchIndex,
+        summaryTime,
+      });
+      sockets.push(socket);
+      return socket;
+    },
+    clock: () => NOW,
+    ...(maxFrameBytes === undefined
+      ? {}
+      : { maxDxlinkSubscriptionFrameBytes: maxFrameBytes }),
+    ...(maxConcurrentBatches === undefined
+      ? {}
+      : { maxConcurrentDxlinkBatches: maxConcurrentBatches }),
+  });
+  return { client, sockets, expirations: chain.expirations };
+}
+
 describe("unified live option snapshot", () => {
   test("merges Summary.openInterest by exact streamer symbol without zero fill", () => {
     const states = new Map([
@@ -324,6 +537,7 @@ describe("unified live option snapshot", () => {
       }),
     );
     expect(result).toMatchObject({
+      contract_version: "1.1.0",
       status: "AVAILABLE",
       underlying: "SPXW",
       canonical_chain_underlying: "SPX",
@@ -336,6 +550,28 @@ describe("unified live option snapshot", () => {
       quote_complete: true,
       greeks_complete: true,
       summary_complete: true,
+      transport: {
+        strategy: "BOUNDED_AUTO_CHUNK",
+        batch_count: 1,
+        complete_batches: 1,
+        failed_batches: 0,
+      },
+      event_timestamp_alignment: {
+        status: "ALIGNED",
+        aligned_contracts: 2,
+      },
+      cohort_alignment: {
+        status: "CONFIRMED",
+        confirmed_contracts: 2,
+      },
+      oi_freshness: {
+        status: "CONFIRMED",
+        confirmed_contracts: 2,
+      },
+      greeks_freshness: {
+        status: "CONFIRMED",
+        confirmed_contracts: 2,
+      },
       temporal_alignment: {
         status: "ALIGNED",
         aligned_contracts: 2,
@@ -349,7 +585,7 @@ describe("unified live option snapshot", () => {
       },
       gamma_concentration_proxy: {
         methodology: "OI_BASED_UNSIGNED_GAMMA_CONCENTRATION",
-        status: "AVAILABLE",
+        status: "COMPLETE",
         total_concentration: "2000",
         gamma_risk: "UNKNOWN",
         dealer_gex_status: "UNKNOWN",
@@ -372,10 +608,14 @@ describe("unified live option snapshot", () => {
         gamma_proxy_methodology:
           "OI_BASED_UNSIGNED_GAMMA_CONCENTRATION",
         gamma_proxy_completeness: {
-          status: "AVAILABLE",
+          status: "COMPLETE",
           coverage_ratio: "1",
           snapshot_complete: true,
           temporal_alignment: "ALIGNED",
+          event_timestamp_alignment: "ALIGNED",
+          cohort_alignment: "CONFIRMED",
+          oi_freshness: "CONFIRMED",
+          greeks_freshness: "CONFIRMED",
         },
         dealer_gex_status: "UNKNOWN",
         evidence_role: "SUPPORTING_EVIDENCE",
@@ -431,6 +671,7 @@ describe("unified live option snapshot", () => {
       snapshot_id: result.snapshot_id,
       methodology: "OI_BASED_UNSIGNED_GAMMA_CONCENTRATION",
       evidence_role: "SUPPORTING_EVIDENCE",
+      record_version: "1.1.0",
     });
     const subscription = getSocket().sent.find(
       (message) =>
@@ -485,7 +726,7 @@ describe("unified live option snapshot", () => {
     });
   });
 
-  test("keeps receive-time-only cohorts explicit and the proxy partial", async () => {
+  test("confirms the current Gamma/OI cohort when Summary only has receive time", async () => {
     const { client } = fixture({
       quoteTime: 0,
       summaryTime: 0,
@@ -502,8 +743,25 @@ describe("unified live option snapshot", () => {
     });
 
     expect(result).toMatchObject({
-      status: "PARTIAL",
+      status: "AVAILABLE",
       snapshot_complete: true,
+      event_timestamp_alignment: {
+        status: "UNVERIFIABLE",
+        aligned_contracts: 0,
+        unverifiable_contracts: 2,
+      },
+      cohort_alignment: {
+        status: "CONFIRMED",
+        confirmed_contracts: 2,
+      },
+      oi_freshness: {
+        status: "CONFIRMED",
+        confirmed_contracts: 2,
+      },
+      greeks_freshness: {
+        status: "CONFIRMED",
+        confirmed_contracts: 2,
+      },
       temporal_alignment: {
         status: "UNVERIFIABLE",
         aligned_contracts: 0,
@@ -511,7 +769,7 @@ describe("unified live option snapshot", () => {
         incomplete_contracts: 0,
       },
       gamma_concentration_proxy: {
-        status: "PARTIAL",
+        status: "COMPLETE",
         total_concentration: "2000",
         gamma_risk: "UNKNOWN",
         dealer_gex_status: "UNKNOWN",
@@ -521,27 +779,79 @@ describe("unified live option snapshot", () => {
           coverage_ratio: "1",
         },
         warnings: expect.arrayContaining([
-          "SOURCE_TEMPORAL_ALIGNMENT_UNVERIFIABLE_PROXY_REMAINS_PARTIAL",
+          "EVENT_TIMESTAMP_ALIGNMENT_UNVERIFIABLE_NON_BLOCKING_FOR_CURRENT_COHORT",
         ]),
       },
       market_data_handoff: {
         gamma_concentration_proxy: "2000",
         gamma_proxy_completeness: {
-          status: "PARTIAL",
+          status: "COMPLETE",
           snapshot_complete: true,
           temporal_alignment: "UNVERIFIABLE",
+          event_timestamp_alignment: "UNVERIFIABLE",
+          cohort_alignment: "CONFIRMED",
+          oi_freshness: "CONFIRMED",
+          greeks_freshness: "CONFIRMED",
         },
       },
       warnings: expect.arrayContaining([
         "QUOTE_PROVIDER_TIMESTAMP_UNAVAILABLE_USED_LOCAL_RECEIVE_TIME",
         "SUMMARY_PROVIDER_TIMESTAMP_UNAVAILABLE_USED_LOCAL_RECEIVE_TIME",
-        "SOURCE_TEMPORAL_ALIGNMENT_UNVERIFIABLE",
+        "EVENT_TIMESTAMP_ALIGNMENT_UNVERIFIABLE",
       ]),
     });
   });
 
-  test("fails temporal alignment closed instead of promoting a partial cohort", async () => {
+  test("records provider event-time mismatch without degrading a fresh current cohort", async () => {
     const { client } = fixture({ greeksTime: NOW - 10_000 });
+
+    const result = await client.getLiveOptionSnapshot({
+      underlying: "SPXW",
+      expirations: [EXPIRATION],
+      around_price: "100",
+      strike_count: 1,
+      phase: "LIVE_SUPPORT",
+      deadline_ms: 1000,
+      max_temporal_skew_ms: 100,
+    });
+
+    expect(result).toMatchObject({
+      status: "AVAILABLE",
+      snapshot_complete: true,
+      event_timestamp_alignment: {
+        status: "MISALIGNED",
+        misaligned_contracts: 2,
+        max_skew_ms: 10000,
+      },
+      cohort_alignment: {
+        status: "CONFIRMED",
+      },
+      oi_freshness: {
+        status: "CONFIRMED",
+      },
+      greeks_freshness: {
+        status: "CONFIRMED",
+      },
+      temporal_alignment: {
+        status: "MISALIGNED",
+        misaligned_contracts: 2,
+        max_skew_ms: 10000,
+      },
+      gamma_concentration_proxy: {
+        status: "COMPLETE",
+        total_concentration: "2000",
+        dealer_gex_status: "UNKNOWN",
+        data_completeness: {
+          temporally_unaligned: 2,
+          eligible_contracts: 2,
+          coverage_ratio: "1",
+        },
+      },
+    });
+  });
+
+  test("keeps provider-timestamp-free Greeks out of a confirmed Gamma proxy", async () => {
+    const { client } = fixture({ greeksTime: 0 });
 
     const result = await client.getLiveOptionSnapshot({
       underlying: "SPXW",
@@ -556,19 +866,253 @@ describe("unified live option snapshot", () => {
     expect(result).toMatchObject({
       status: "PARTIAL",
       snapshot_complete: true,
-      temporal_alignment: {
-        status: "MISALIGNED",
-        misaligned_contracts: 2,
-        max_skew_ms: 10000,
+      cohort_alignment: {
+        status: "CONFIRMED",
+      },
+      oi_freshness: {
+        status: "CONFIRMED",
+      },
+      greeks_freshness: {
+        status: "UNKNOWN",
+        unknown_contracts: 2,
       },
       gamma_concentration_proxy: {
         status: "NOT_AVAILABLE",
         dealer_gex_status: "UNKNOWN",
         data_completeness: {
-          temporally_unaligned: 2,
           eligible_contracts: 0,
+          greeks_freshness_not_confirmed: 2,
+        },
+        warnings: expect.arrayContaining([
+          "GREEKS_FRESHNESS_NOT_CONFIRMED",
+        ]),
+      },
+    });
+  });
+
+  test("chunks subscriptions at the configured encoded frame boundary", () => {
+    const subscriptions = [
+      { type: "Greeks", symbol: ".SPXW260929C7600" },
+      { type: "Summary", symbol: ".SPXW260929C7600" },
+      { type: "Greeks", symbol: ".SPXW260929P7600" },
+    ];
+    const twoSubscriptionLimit = dxlinkSubscriptionFrameBytes(
+      subscriptions.slice(0, 2),
+    );
+
+    expect(
+      dxlinkSubscriptionFrameBytes(subscriptions),
+    ).toBeGreaterThan(twoSubscriptionLimit);
+    expect(DXLINK_SAFE_SUBSCRIPTION_FRAME_BYTES).toBeLessThan(65_536);
+    const batches = chunkDxlinkSubscriptions(
+      subscriptions,
+      twoSubscriptionLimit,
+    );
+
+    expect(batches.map((batch) => batch.subscriptions.length)).toEqual([
+      2, 1,
+    ]);
+    expect(
+      batches.every(
+        (batch) =>
+          batch.frame_bytes <= twoSubscriptionLimit &&
+          batch.frame_bytes ===
+            dxlinkSubscriptionFrameBytes(batch.subscriptions),
+      ),
+    ).toBe(true);
+  });
+
+  test("auto-chunks a five-expiration SPX/SPXW snapshot without identity loss", async () => {
+    const { client, sockets, expirations } = generatedFixture();
+
+    const result = await client.getLiveOptionSnapshot({
+      underlying: "SPX",
+      expirations,
+      around_price: "7683.69",
+      strike_count: 50,
+      include_quotes: false,
+      include_greeks: true,
+      include_summary: true,
+      phase: "LIVE_SUPPORT",
+      deadline_ms: 5000,
+      max_temporal_skew_ms: 1000,
+    });
+
+    expect(result).toMatchObject({
+      status: "AVAILABLE",
+      snapshot_complete: true,
+      greeks_complete: true,
+      summary_complete: true,
+      transport: {
+        strategy: "BOUNDED_AUTO_CHUNK",
+        requested_subscriptions: 2000,
+        complete_batches: result.transport.batch_count,
+        partial_batches: 0,
+        timed_out_batches: 0,
+        failed_batches: 0,
+      },
+      event_timestamp_alignment: {
+        status: "UNVERIFIABLE",
+      },
+      cohort_alignment: {
+        status: "CONFIRMED",
+        confirmed_contracts: 1000,
+      },
+      oi_freshness: {
+        status: "CONFIRMED",
+        confirmed_contracts: 1000,
+      },
+      greeks_freshness: {
+        status: "CONFIRMED",
+        confirmed_contracts: 1000,
+      },
+      data_completeness: {
+        selected_contracts: 1000,
+        greeks: {
+          gamma_available_contracts: 1000,
+        },
+        summary: {
+          open_interest_available_contracts: 1000,
+        },
+      },
+      gamma_concentration_proxy: {
+        status: "COMPLETE",
+        data_completeness: {
+          total_contracts: 1000,
+          eligible_contracts: 1000,
+          coverage_ratio: "1",
         },
       },
     });
+    expect(result.transport.batch_count).toBeGreaterThan(1);
+    expect(result.contracts).toHaveLength(1000);
+    expect(
+      new Set(
+        result.contracts.map((contract) => contract.streamer_symbol),
+      ).size,
+    ).toBe(1000);
+    const addFrames = sockets.flatMap((socket) =>
+      socket.sent.filter(
+        (message) =>
+          message.type === "FEED_SUBSCRIPTION" && message.add,
+      ),
+    );
+    expect(addFrames).toHaveLength(result.transport.batch_count);
+    expect(
+      addFrames.every(
+        (message) =>
+          Buffer.byteLength(JSON.stringify(message), "utf8") <=
+          DXLINK_SAFE_SUBSCRIPTION_FRAME_BYTES,
+      ),
+    ).toBe(true);
+  });
+
+  test("preserves Gamma concentration across one-frame and chunked reads", async () => {
+    const unchunked = generatedFixture({
+      expirationCount: 1,
+      strikeCount: 4,
+    });
+    const chunked = generatedFixture({
+      expirationCount: 1,
+      strikeCount: 4,
+      maxFrameBytes: 512,
+    });
+    const request = {
+      underlying: "SPX",
+      expirations: unchunked.expirations,
+      around_price: "7683.69",
+      strike_count: 4,
+      include_quotes: false,
+      include_greeks: true,
+      include_summary: true,
+      phase: "LIVE_SUPPORT",
+      deadline_ms: 5000,
+      max_temporal_skew_ms: 1000,
+    };
+
+    const [oneFrameResult, chunkedResult] = await Promise.all([
+      unchunked.client.getLiveOptionSnapshot(request),
+      chunked.client.getLiveOptionSnapshot(request),
+    ]);
+
+    expect(oneFrameResult.transport.batch_count).toBe(1);
+    expect(chunkedResult.transport.batch_count).toBeGreaterThan(1);
+    expect(
+      chunkedResult.gamma_concentration_proxy.total_concentration,
+    ).toBe(
+      oneFrameResult.gamma_concentration_proxy.total_concentration,
+    );
+    expect(
+      chunkedResult.gamma_concentration_proxy.by_strike,
+    ).toEqual(oneFrameResult.gamma_concentration_proxy.by_strike);
+    expect(
+      chunkedResult.contracts.map((contract) => ({
+        symbol: contract.streamer_symbol,
+        gamma: contract.greeks.gamma,
+        open_interest: contract.summary.open_interest,
+      })),
+    ).toEqual(
+      oneFrameResult.contracts.map((contract) => ({
+        symbol: contract.streamer_symbol,
+        gamma: contract.greeks.gamma,
+        open_interest: contract.summary.open_interest,
+      })),
+    );
+  });
+
+  test("returns partial batch provenance while preserving successful symbols", async () => {
+    const { client, expirations } = generatedFixture({
+      expirationCount: 1,
+      strikeCount: 4,
+      maxFrameBytes: 512,
+      maxConcurrentBatches: 1,
+      failedBatchIndex: 1,
+    });
+
+    const result = await client.getLiveOptionSnapshot({
+      underlying: "SPX",
+      expirations,
+      around_price: "7683.69",
+      strike_count: 4,
+      include_quotes: false,
+      include_greeks: true,
+      include_summary: true,
+      phase: "LIVE_SUPPORT",
+      deadline_ms: 5000,
+      max_temporal_skew_ms: 1000,
+    });
+
+    expect(result.status).toBe("PARTIAL");
+    expect(result.snapshot_complete).toBe(false);
+    expect(result.contracts).toHaveLength(16);
+    expect(
+      new Set(
+        result.contracts.map((contract) => contract.streamer_symbol),
+      ).size,
+    ).toBe(16);
+    expect(result.transport.batch_count).toBeGreaterThan(1);
+    expect(result.transport.failed_batches).toBe(1);
+    expect(result.transport.complete_batches).toBeGreaterThan(0);
+    const failedBatch = result.transport.batches.find(
+      (batch) => batch.status === "FAILED",
+    );
+    expect(failedBatch).toMatchObject({
+      batch_index: 2,
+      status: "FAILED",
+      error: expect.stringContaining("TEST_BATCH_FAILURE"),
+    });
+    expect(failedBatch.affected_symbols.length).toBeGreaterThan(0);
+    expect(
+      result.gamma_concentration_proxy.data_completeness
+        .eligible_contracts,
+    ).toBeGreaterThan(0);
+    expect(result.gamma_concentration_proxy.status).toBe("PARTIAL");
+    expect(result.warnings).toEqual(
+      expect.arrayContaining([
+        "DXLINK_BATCH_FAILED",
+        "GREEKS_COVERAGE_INCOMPLETE",
+        "SUMMARY_OPEN_INTEREST_COVERAGE_INCOMPLETE",
+      ]),
+    );
   });
 });

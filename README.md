@@ -33,7 +33,7 @@ The project is intentionally separate from the official
 
 | Tool | Purpose |
 | --- | --- |
-| `tastytrade_get_live_option_snapshot` | Merge exact SPX/SPXW chain metadata with DXLink Quote, Greeks, and `Summary.openInterest`, then calculate a research-only unsigned Gamma concentration proxy |
+| `tastytrade_get_live_option_snapshot` | Auto-chunk and merge exact SPX/SPXW DXLink Quote, Greeks, and `Summary.openInterest` cohorts, then calculate a research-only unsigned Gamma concentration proxy |
 | `tastytrade_price_option_package` | Price verticals, iron condors, and double diagonals with explicit native/synthetic provenance |
 | `tastytrade_discover_historical_spx_candidates` | Reconstruct timestamp-safe historical SPXW candidates under a versioned resolution profile, with exact-timestamp Backtester fallback |
 | `tastytrade_discover_historical_spx_candidates_range` | Run the same candidate discovery over an explicit trading calendar with bounded concurrency, deadlines, immutable-cache diagnostics, and resumable partial progress |
@@ -51,9 +51,9 @@ The project is intentionally separate from the official
 | `tastytrade_get_historical_candles` | Retrieve normalized DXLink OHLCV candles without resampling |
 
 Use MCP `tools/list` for the complete JSON input schemas.
-The direct live snapshot, timestamp/completeness contract, OI-based unsigned
-Gamma concentration methodology, semantic limits, regression handoff, and
-opt-in live gate are documented in
+The direct live snapshot, bounded DXLink batch provenance, event/cohort
+freshness contract, OI-based unsigned Gamma concentration methodology,
+semantic limits, regression handoff, and opt-in live gate are documented in
 [`docs/live-option-snapshot.md`](docs/live-option-snapshot.md).
 The shared profile contract and the optional seven-date live capability gate
 are documented in
