@@ -178,7 +178,7 @@ After deployment, verify:
 1. `/healthz` returns HTTP 200.
 2. The protected-resource metadata names Entra and the `mcp.read` scope.
 3. `/mcp` without a bearer token returns HTTP 401 with `resource_metadata`.
-4. A real Entra token connects, lists all 22 tools, and can call a local-only
+4. A real Entra token connects, lists all 23 tools, and can call a local-only
    tool such as `tastytrade_price_option_package`.
 5. A live provider smoke test can call
    `tastytrade_get_historical_spx_candidate_universe` and verify bounded
@@ -324,7 +324,7 @@ with:
 - HTTP 200 from `/healthz`, valid RFC 9728 protected-resource metadata, and
   HTTP 401 with the required resource metadata and `mcp.read` scope from
   unauthenticated `/mcp`;
-- an Entra delegated `mcp.read` token listing all 22 MCP tools and an
+- an Entra delegated `mcp.read` token listing all 23 MCP tools and an
   authenticated local package-pricing call returning a `1` synthetic natural
   credit;
 - a production `BYPASS` request for the exact #70 2026-08-24 grid completing
@@ -361,7 +361,7 @@ with:
 - HTTP 200 from `/healthz` and RFC 9728 protected-resource metadata;
 - HTTP 401 plus the correct resource metadata and scope from unauthenticated
   `/mcp`;
-- an Entra delegated `mcp.read` token listing all 22 MCP tools and exposing
+- an Entra delegated `mcp.read` token listing all 23 MCP tools and exposing
   the range continuation schema;
 - an authenticated local package-pricing call returning a `1` synthetic
   natural credit;
