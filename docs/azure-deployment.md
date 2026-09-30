@@ -22,16 +22,16 @@ tastytrade OAuth credentials in Azure Key Vault-backed Container App secrets.
 - Health URL:
   `https://tastytrade-research-mcp.victoriousfield-047d2c99.westus2.azurecontainerapps.io/healthz`
 - Production revision:
-  `tastytrade-research-mcp--main-5eafdca`
+  `tastytrade-research-mcp--main-6670bb2`
 - ACR image:
-  `hplintradingmcp.azurecr.io/tastytrade-research-mcp:main-5eafdca`
+  `hplintradingmcp.azurecr.io/tastytrade-research-mcp:main-6670bb2`
 - Image digest:
-  `sha256:e4c06ceeaff217c3d8f4a8ed4a452891e348326d9248c62940dd4ac3eae2229b`
+  `sha256:f57ef75719b6d0b5ead86f6165a9d768773458f3ebb9974b06a405ecd3275cc8`
 - Source commit:
-  `5eafdcae9c391e33ab77d2db177a43c1a1828a5d`
+  `6670bb2211d6a1c0486088d1e457a60544450b82`
 - Managed identity: `mi-tastytrade-research-mcp`
 - Rollback revision:
-  `tastytrade-research-mcp--main-a9df74d`
+  `tastytrade-research-mcp--main-5eafdca`
 
 Production OAuth uses Entra resource application
 `f6c77904-5bf9-46cf-96f9-be5f2e841054` and delegated scope
@@ -166,12 +166,12 @@ provider domain. HTTP 429 responses can extend the shared cooldown through
 so a restarted replica does not immediately retry deferred checkpoints.
 
 For emergency rollback, move 100% traffic to the still-active revision
-`tastytrade-research-mcp--main-a9df74d`. That revision contains the hardened
-Level 2 unified snapshot, bounded DXLink batching, separate cohort/freshness
-evidence, and unsigned Gamma concentration proxy, but predates the Level 3
-heuristic signing model and bounded gamma-flip research tool. It retains the
-same Entra OAuth, Key Vault-backed tastytrade configuration, persistent Azure
-Files mount, and process-wide Backtester request gate.
+`tastytrade-research-mcp--main-5eafdca`. That revision contains the Level 2
+unified snapshot, bounded DXLink batching, and Level 3 heuristic signed-GEX
+research, but predates the expiry-aware shared DXLink authentication lifecycle
+and one-reconnect `UNAUTHORIZED` recovery. It retains the same Entra OAuth,
+Key Vault-backed tastytrade configuration, persistent Azure Files mount, and
+process-wide Backtester request gate.
 
 After deployment, verify:
 
@@ -214,7 +214,45 @@ After deployment, verify:
     bounds gamma-flip search to the caller's range, and remains
     `RESEARCH_ONLY` with `production_gate_eligible=false`.
 
-## Current heuristic-signed-GEX deployment verification
+## Current DXLink authentication-lifecycle deployment verification
+
+Revision `tastytrade-research-mcp--main-6670bb2` was verified on 2026-09-30
+with:
+
+- ACR build run `cc14` producing digest
+  `sha256:f57ef75719b6d0b5ead86f6165a9d768773458f3ebb9974b06a405ecd3275cc8`;
+- source commit `6670bb2211d6a1c0486088d1e457a60544450b82`;
+- all 24 test suites and 306 tests passing against the exact source before the
+  image build;
+- one healthy replica with the managed identity, Key Vault-backed tastytrade
+  secrets, Entra OAuth settings, one-replica scale, Azure Files cache mount,
+  and process-wide Backtester request gate preserved;
+- 100% production traffic, with `main-5eafdca` healthy and active at 0% as the
+  immediate rollback revision and superseded `main-a9df74d` deactivated;
+- HTTP 200 from `/healthz`, valid RFC 9728 protected-resource metadata, HTTP
+  401 with `resource_metadata` from unauthenticated `/mcp`, 24 authenticated
+  tools, and a local package-pricing smoke returning a `1` synthetic natural
+  credit;
+- a revision-specific live snapshot returning contract version `1.2.0`,
+  `AVAILABLE`, `CONFIRMED` DXLink authentication from a fresh API quote token,
+  exact Quote/Greeks/open-interest coverage of 2/2, one complete transport
+  batch, and no provider error;
+- a same-process historical SPX daily-candle request reusing the shared quote
+  token from cache with `CONFIRMED` authentication, two completed bars, no
+  failure reasons, and no token value in diagnostics;
+- the same live snapshot and completed-candle checks passing through the
+  promoted production FQDN; and
+- a production-scale Level 2/Level 3 regression gate selecting 600 unique
+  contracts across five expirations with 1,800 subscriptions in two complete
+  batches. The largest frame was 49,110 bytes under the 49,152-byte limit,
+  Gamma and OI coverage were 600/600, cohort/OI/Greeks freshness were
+  `CONFIRMED`, the unsigned Level 2 result was `COMPLETE`, the exact
+  `snapshot_id` was preserved, current-Gamma and 53-scenario spot-repriced
+  evidence were `AVAILABLE`, one bounded heuristic crossing was returned at
+  `7729`, and the result remained `RESEARCH_ONLY` with
+  `production_gate_eligible=false`.
+
+## Previous heuristic-signed-GEX deployment verification
 
 Revision `tastytrade-research-mcp--main-5eafdca` was verified on 2026-09-29
 with:
