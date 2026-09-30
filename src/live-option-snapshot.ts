@@ -5,10 +5,16 @@ import { ExactDecimal, type DecimalInput } from "./decimal.js";
 import {
   DXLINK_OPEN,
   DxlinkAbortedError,
+  DxlinkAuthFailedError,
+  DxlinkAuthenticationError,
   TastytradeDxlinkTokenClient,
   assertDxlinkNotAborted,
   createTastytradeApiHttpClient,
   decodeDxlinkMessageData,
+  dxlinkAuthenticationError,
+  withDxlinkAuthRecovery,
+  type DxlinkAuthDiagnostics,
+  type DxlinkProviderError,
   type DxlinkQuoteToken,
   type DxlinkQuoteTokenProvider,
   type DxlinkSocket,
@@ -17,7 +23,7 @@ import {
 } from "./dxlink.js";
 import { TastytradeOAuthClient } from "./oauth-client.js";
 
-export const LIVE_OPTION_SNAPSHOT_CONTRACT_VERSION = "1.1.0";
+export const LIVE_OPTION_SNAPSHOT_CONTRACT_VERSION = "1.2.0";
 export const GAMMA_CONCENTRATION_METHODOLOGY =
   "OI_BASED_UNSIGNED_GAMMA_CONCENTRATION";
 export const GAMMA_CONCENTRATION_METHODOLOGY_VERSION = "1.0.0";
@@ -320,6 +326,8 @@ export type LiveOptionSnapshotResult = {
     greeks: "DXLink Greeks";
     open_interest: "DXLink Summary.openInterest";
   };
+  dxlink_auth: DxlinkAuthDiagnostics;
+  provider_error: DxlinkProviderError | null;
   underlying: LiveOptionUnderlying;
   canonical_chain_underlying: "SPX";
   underlying_price: string;
@@ -433,7 +441,7 @@ export type LiveOptionSnapshotResult = {
   };
   regression_record: {
     record_type: "LIVE_OPTION_GAMMA_CONCENTRATION";
-    record_version: "1.1.0";
+    record_version: typeof LIVE_OPTION_SNAPSHOT_CONTRACT_VERSION;
     request_id: string;
     snapshot_id: string;
     as_of: string;
@@ -506,6 +514,7 @@ type LiveOptionSnapshotReadResult = {
   states: Map<string, LiveOptionEventState>;
   unmatchedSymbols: string[];
   timedOut: boolean;
+  authConfirmed: boolean;
 };
 
 export type LiveOptionDxlinkSubscriptionBatch = {
@@ -517,6 +526,7 @@ type LiveOptionSnapshotAggregateReadResult = {
   states: Map<string, LiveOptionEventState>;
   unmatchedSymbols: string[];
   timedOut: boolean;
+  authConfirmed: boolean;
   transport: LiveOptionSnapshotResult["transport"];
 };
 
@@ -634,6 +644,71 @@ export function chunkDxlinkSubscriptions(
     });
   }
   return batches;
+}
+
+function notAttemptedAuthDiagnostics(): DxlinkAuthDiagnostics {
+  return {
+    status: "NOT_ATTEMPTED",
+    token_source: "NONE",
+    token_reused: false,
+    refresh_attempted: false,
+    retry_count: 0,
+  };
+}
+
+function resetLiveOptionEventStates(
+  states: Map<string, LiveOptionEventState>,
+): void {
+  for (const state of states.values()) {
+    state.quote = null;
+    state.greeks = null;
+    state.summary = null;
+  }
+}
+
+function authFailureSnapshotRead(
+  subscriptions: LiveOptionDxlinkSubscription[],
+  states: Map<string, LiveOptionEventState>,
+  maxFrameBytes: number,
+  maxConcurrentBatches: number,
+  error: DxlinkAuthFailedError,
+): LiveOptionSnapshotAggregateReadResult {
+  const batches = chunkDxlinkSubscriptions(subscriptions, maxFrameBytes);
+  return {
+    states,
+    unmatchedSymbols: [],
+    timedOut: false,
+    authConfirmed: false,
+    transport: {
+      strategy: "BOUNDED_AUTO_CHUNK",
+      max_frame_bytes: maxFrameBytes,
+      max_concurrent_batches: maxConcurrentBatches,
+      requested_subscriptions: subscriptions.length,
+      batch_count: batches.length,
+      complete_batches: 0,
+      partial_batches: 0,
+      timed_out_batches: 0,
+      failed_batches: batches.length,
+      batches: batches.map((batch, index) => ({
+        batch_index: index + 1,
+        symbol_count: new Set(
+          batch.subscriptions.map((subscription) => subscription.symbol),
+        ).size,
+        subscription_count: batch.subscriptions.length,
+        frame_bytes: batch.frame_bytes,
+        status: "FAILED",
+        affected_symbols: [
+          ...new Set(
+            batch.subscriptions.map(
+              (subscription) => subscription.symbol,
+            ),
+          ),
+        ].sort(),
+        unmatched_symbols: [],
+        error: error.message,
+      })),
+    },
+  };
 }
 
 function asRecord(value: unknown, field: string): Record<string, unknown> {
@@ -1895,6 +1970,7 @@ export class TastytradeLiveOptionSnapshotClient {
       states,
       unmatchedSymbols: [],
       timedOut: false,
+      authConfirmed: false,
       transport: {
         strategy: "BOUNDED_AUTO_CHUNK",
         max_frame_bytes: this.maxDxlinkSubscriptionFrameBytes,
@@ -1908,14 +1984,52 @@ export class TastytradeLiveOptionSnapshotClient {
         batches: [],
       },
     };
+    let dxlinkAuth = notAttemptedAuthDiagnostics();
+    let providerError: DxlinkProviderError | null = null;
     if (subscriptions.length > 0) {
-      const quoteToken = await this.quoteTokens.getQuoteToken(input.signal);
-      snapshotRead = await this.readSnapshotBatches(
-        quoteToken,
-        subscriptions,
-        input,
-        states,
-      );
+      let snapshotDeadlineAt: number | null = null;
+      try {
+        const recovery = await withDxlinkAuthRecovery(
+          this.quoteTokens,
+          async (quoteToken, retryCount) => {
+            if (retryCount === 1) {
+              resetLiveOptionEventStates(states);
+            }
+            const now = this.clock();
+            snapshotDeadlineAt ??= now + input.deadlineMs;
+            return this.readSnapshotBatches(
+              quoteToken,
+              subscriptions,
+              {
+                ...input,
+                deadlineMs: Math.max(1, snapshotDeadlineAt - now),
+              },
+              states,
+            );
+          },
+          input.signal,
+        );
+        snapshotRead = recovery.value;
+        dxlinkAuth = snapshotRead.authConfirmed
+          ? recovery.dxlinkAuth
+          : {
+              ...recovery.dxlinkAuth,
+              status: "NOT_CONFIRMED",
+            };
+        providerError = recovery.providerError;
+      } catch (error) {
+        if (!(error instanceof DxlinkAuthFailedError)) throw error;
+        resetLiveOptionEventStates(states);
+        dxlinkAuth = error.dxlinkAuth;
+        providerError = error.providerError;
+        snapshotRead = authFailureSnapshotRead(
+          subscriptions,
+          states,
+          this.maxDxlinkSubscriptionFrameBytes,
+          this.maxConcurrentDxlinkBatches,
+          error,
+        );
+      }
     }
     const retrievedAtMs = this.clock();
     const retrievedAt = isoTimestamp(retrievedAtMs);
@@ -2118,6 +2232,13 @@ export class TastytradeLiveOptionSnapshotClient {
     if (snapshotRead.transport.failed_batches > 0) {
       warnings.push("DXLINK_BATCH_FAILED");
     }
+    if (dxlinkAuth.status === "REFRESHED") {
+      warnings.push("DXLINK_AUTH_RECOVERED");
+    } else if (dxlinkAuth.status === "FAILED") {
+      warnings.push("DXLINK_AUTH_FAILED");
+    } else if (dxlinkAuth.status === "NOT_CONFIRMED") {
+      warnings.push("DXLINK_AUTH_NOT_CONFIRMED");
+    }
     if (snapshotRead.unmatchedSymbols.length > 0) {
       warnings.push("UNMATCHED_DXLINK_SYMBOLS_IGNORED");
     }
@@ -2251,6 +2372,8 @@ export class TastytradeLiveOptionSnapshotClient {
         greeks: "DXLink Greeks",
         open_interest: "DXLink Summary.openInterest",
       },
+      dxlink_auth: dxlinkAuth,
+      provider_error: providerError,
       underlying: input.underlying,
       canonical_chain_underlying: "SPX",
       underlying_price: input.aroundPrice,
@@ -2349,7 +2472,7 @@ export class TastytradeLiveOptionSnapshotClient {
       },
       regression_record: {
         record_type: "LIVE_OPTION_GAMMA_CONCENTRATION",
-        record_version: "1.1.0",
+        record_version: LIVE_OPTION_SNAPSHOT_CONTRACT_VERSION,
         request_id: requestId,
         snapshot_id: snapshotId,
         as_of: retrievedAt,
@@ -2376,6 +2499,13 @@ export class TastytradeLiveOptionSnapshotClient {
     >(batches.length);
     const unmatchedSymbols = new Set<string>();
     const aggregateDeadlineAt = this.clock() + input.deadlineMs;
+    const attemptController = new AbortController();
+    const attemptSignal = input.signal
+      ? AbortSignal.any([input.signal, attemptController.signal])
+      : attemptController.signal;
+    const attemptInput = { ...input, signal: attemptSignal };
+    let authFailure: DxlinkAuthenticationError | null = null;
+    let authenticatedBatches = 0;
     let nextBatchIndex = 0;
 
     const readNextBatch = async () => {
@@ -2411,10 +2541,11 @@ export class TastytradeLiveOptionSnapshotClient {
           const result = await this.readSnapshot(
             quoteToken,
             batch.subscriptions,
-            input,
+            attemptInput,
             states,
             remainingDeadlineMs,
           );
+          if (result.authConfirmed) authenticatedBatches += 1;
           for (const symbol of result.unmatchedSymbols) {
             unmatchedSymbols.add(symbol);
           }
@@ -2449,6 +2580,12 @@ export class TastytradeLiveOptionSnapshotClient {
                 : "DXLink batch deadline elapsed before all subscriptions were received.",
           };
         } catch (error) {
+          if (error instanceof DxlinkAuthenticationError) {
+            authFailure ??= error;
+            attemptController.abort();
+            return;
+          }
+          if (authFailure && !input.signal?.aborted) return;
           if (
             error instanceof DxlinkAbortedError ||
             input.signal?.aborted
@@ -2486,6 +2623,7 @@ export class TastytradeLiveOptionSnapshotClient {
         () => readNextBatch(),
       ),
     );
+    if (authFailure) throw authFailure;
     const completeBatches = batchResults.filter(
       (batch) => batch.status === "COMPLETE",
     ).length;
@@ -2502,6 +2640,9 @@ export class TastytradeLiveOptionSnapshotClient {
       states,
       unmatchedSymbols: [...unmatchedSymbols].sort(),
       timedOut: partialBatches > 0 || timedOutBatches > 0,
+      authConfirmed:
+        batches.length > 0 &&
+        authenticatedBatches === batches.length,
       transport: {
         strategy: "BOUNDED_AUTO_CHUNK",
         max_frame_bytes: this.maxDxlinkSubscriptionFrameBytes,
@@ -2534,6 +2675,8 @@ export class TastytradeLiveOptionSnapshotClient {
       let deadline: ReturnType<typeof setTimeout> | null = null;
       let abortListener: (() => void) | null = null;
       let messageQueue = Promise.resolve();
+      let authSent = false;
+      let authConfirmed = false;
 
       const send = (message: Record<string, unknown>) => {
         socket.send(JSON.stringify(message));
@@ -2572,6 +2715,7 @@ export class TastytradeLiveOptionSnapshotClient {
           states,
           unmatchedSymbols: [...unmatchedSymbols].sort(),
           timedOut,
+          authConfirmed,
         });
       };
       const fail = (error: Error) => {
@@ -2585,10 +2729,16 @@ export class TastytradeLiveOptionSnapshotClient {
           subscriptionSatisfied(states, subscription),
         );
       const processMessage = (message: Record<string, unknown>) => {
+        const authError = dxlinkAuthenticationError(message, authSent);
+        if (authError) {
+          fail(authError);
+          return;
+        }
         if (
           message.type === "AUTH_STATE" &&
           message.state === "UNAUTHORIZED"
         ) {
+          authSent = true;
           send({
             type: "AUTH",
             channel: 0,
@@ -2598,6 +2748,7 @@ export class TastytradeLiveOptionSnapshotClient {
           message.type === "AUTH_STATE" &&
           message.state === "AUTHORIZED"
         ) {
+          authConfirmed = true;
           send({
             type: "CHANNEL_REQUEST",
             channel: 3,

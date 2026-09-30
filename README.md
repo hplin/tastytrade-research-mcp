@@ -383,6 +383,8 @@ snapshot boundary.
 The normalized output includes:
 
 - deterministic request and cohort identity;
+- `dxlink_auth` recovery provenance and a sanitized `provider_error` when
+  authentication required recovery;
 - requested and actual UTC ranges;
 - `source_time`, `bar_start`, `bar_end`, `available_at`, and `retrieved_at`
   per bar;
@@ -465,13 +467,22 @@ cause, and live native-hour findings are documented in
 
 ### Rate limits and retries
 
-- API quote tokens are cached for 23 hours, below their documented 24-hour
-  lifetime.
+- API quote tokens use the provider's `expires-at` timestamp with a one-minute
+  safety margin. The previous 23-hour bound remains only as a fallback when
+  the provider omits expiry metadata.
+- Historical candles and live option snapshots share one quote-token lifecycle
+  in the production service. A post-`AUTH` `UNAUTHORIZED` invalidates both the
+  cached quote token and cached OAuth access token, reacquires credentials,
+  rebuilds the WebSocket connection, and retries exactly once.
+- Successful recovery returns `dxlink_auth.status = REFRESHED` with
+  `retry_count = 1`. A second rejection returns explicit `AUTH_FAILED`
+  diagnostics; a timeout before `AUTH_STATE/AUTHORIZED` is
+  `NOT_CONFIRMED`. Tokens are never included.
 - The quote-token REST request retries network errors, `429`, and `5xx` up to
   three attempts with capped exponential backoff and jitter.
 - A candle snapshot has a configurable `deadline_ms` (maximum 60 seconds).
-- WebSocket snapshot failures are returned explicitly and are not silently
-  retried or merged.
+- Non-authentication WebSocket failures are returned explicitly and are not
+  silently retried or merged.
 - Received events, returned rows, and memory are bounded independently as
   documented above.
 - DXLink permits at most 5 concurrent sessions and 100 Candle subscriptions

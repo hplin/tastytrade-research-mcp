@@ -10,8 +10,13 @@ import {
   DXLINK_OPEN,
   TastytradeDxlinkTokenClient,
   decodeDxlinkMessageData,
+  dxlinkAuthenticationError,
   dxlinkMessageDataByteLength,
+  withDxlinkAuthRecovery,
+  type DxlinkAuthDiagnostics,
+  type DxlinkProviderError,
   type DxlinkQuoteToken,
+  type DxlinkQuoteTokenProvider,
   type DxlinkSocket,
   type DxlinkSocketFactory,
   type TastytradeAccessTokenProvider,
@@ -181,6 +186,8 @@ export type HistoricalCandlesResult = {
   resolution_profile: ResolutionProfile;
   source: string;
   source_timestamp_unit: "epoch_milliseconds" | "RFC3339";
+  dxlink_auth?: DxlinkAuthDiagnostics;
+  provider_error?: DxlinkProviderError | null;
   snapshot_complete: boolean;
   snapshot_truncated: boolean;
   provider_snapshot_complete: boolean;
@@ -295,6 +302,7 @@ type SnapshotSymbolState = {
 
 type SnapshotReadResult = {
   symbolStates: Map<string, SnapshotSymbolState>;
+  authConfirmed: boolean;
   requestFailureReason: HistoricalCandlesFailureReason | null;
   requestCounters: HistoricalCandlesResourceCounters & {
     unmatched_received_events: number;
@@ -977,7 +985,7 @@ export function edgeCoverageWarnings(
 }
 
 export class TastytradeHistoricalCandlesClient {
-  private readonly quoteTokens: TastytradeDxlinkTokenClient;
+  private readonly quoteTokens: DxlinkQuoteTokenProvider;
 
   constructor(
     oauth: TastytradeAccessTokenProvider = new TastytradeOAuthClient(),
@@ -993,13 +1001,16 @@ export class TastytradeHistoricalCandlesClient {
     private readonly socketFactory: DxlinkSocketFactory = (url) =>
       new WebSocket(url) as unknown as DxlinkSocket,
     private readonly clock: () => number = () => Date.now(),
+    quoteTokens?: DxlinkQuoteTokenProvider,
   ) {
     assertTrustedHosts();
-    this.quoteTokens = new TastytradeDxlinkTokenClient(
-      oauth,
-      http,
-      this.clock,
-    );
+    this.quoteTokens =
+      quoteTokens ??
+      new TastytradeDxlinkTokenClient(
+        oauth,
+        http,
+        this.clock,
+      );
   }
 
   async getHistoricalCandles(
@@ -1140,17 +1151,35 @@ export class TastytradeHistoricalCandlesClient {
     ) {
       throw new Error("instruments must have unique streamer_symbol values.");
     }
-    const quoteToken = await this.quoteTokens.getQuoteToken(input.signal);
-    assertNotAborted(input.signal);
-    const snapshot = await this.readSnapshot({
-      quoteToken,
-      candleSymbols,
-      startMs,
-      endMs,
-      session,
-      budgets,
-      signal: input.signal,
-    });
+    let snapshotDeadlineAt: number | null = null;
+    const recovery = await withDxlinkAuthRecovery(
+      this.quoteTokens,
+      async (quoteToken) => {
+        assertNotAborted(input.signal);
+        const now = this.clock();
+        snapshotDeadlineAt ??= now + budgets.deadlineMs;
+        return this.readSnapshot({
+          quoteToken,
+          candleSymbols,
+          startMs,
+          endMs,
+          session,
+          budgets: {
+            ...budgets,
+            deadlineMs: Math.max(1, snapshotDeadlineAt - now),
+          },
+          signal: input.signal,
+        });
+      },
+      input.signal,
+    );
+    const snapshot = recovery.value;
+    const dxlinkAuth: DxlinkAuthDiagnostics = snapshot.authConfirmed
+      ? recovery.dxlinkAuth
+      : {
+          ...recovery.dxlinkAuth,
+          status: "NOT_CONFIRMED",
+        };
     const retrievedAt = new Date(this.clock()).toISOString();
     const requestId = stableRequestId({
       instruments,
@@ -1285,6 +1314,8 @@ export class TastytradeHistoricalCandlesClient {
         resolution_profile: effectiveProfile,
         source: "tastytrade-dxlink" as const,
         source_timestamp_unit: "epoch_milliseconds" as const,
+        dxlink_auth: dxlinkAuth,
+        provider_error: recovery.providerError,
         snapshot_complete: snapshotComplete,
         snapshot_truncated: state.providerSnipped,
         provider_snapshot_complete: state.providerComplete,
@@ -1416,6 +1447,8 @@ export class TastytradeHistoricalCandlesClient {
       let abortListener: (() => void) | null = null;
       let messageQueue = Promise.resolve();
       let stage: HistoricalCandlesTimeoutStage = "CONNECTING";
+      let authSent = false;
+      let authConfirmed = false;
 
       const send = (message: Record<string, unknown>) => {
         socket.send(JSON.stringify(message));
@@ -1455,6 +1488,7 @@ export class TastytradeHistoricalCandlesClient {
         cleanup();
         resolve({
           symbolStates,
+          authConfirmed,
           requestFailureReason,
           requestCounters,
           unmatchedSymbols: [...unmatchedSymbols.keys()].sort(),
@@ -1783,11 +1817,18 @@ export class TastytradeHistoricalCandlesClient {
         }
       };
       const processMessage = (message: Record<string, unknown>) => {
+        const authError = dxlinkAuthenticationError(message, authSent);
+        if (authError) {
+          stage = "AUTHENTICATING";
+          fail(authError);
+          return;
+        }
         if (
           message.type === "AUTH_STATE" &&
           message.state === "UNAUTHORIZED"
         ) {
           stage = "AUTHENTICATING";
+          authSent = true;
           send({
             type: "AUTH",
             channel: 0,
@@ -1797,6 +1838,7 @@ export class TastytradeHistoricalCandlesClient {
           message.type === "AUTH_STATE" &&
           message.state === "AUTHORIZED"
         ) {
+          authConfirmed = true;
           stage = "OPENING_FEED_CHANNEL";
           send({
             type: "CHANNEL_REQUEST",

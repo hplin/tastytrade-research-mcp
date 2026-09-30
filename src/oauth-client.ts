@@ -10,6 +10,11 @@ export class TastytradeOAuthClient {
   private accessToken: string | null = null;
   private expiresAt = 0;
 
+  invalidateAccessToken(): void {
+    this.accessToken = null;
+    this.expiresAt = 0;
+  }
+
   async getAccessToken(): Promise<string> {
     const now = Date.now();
     if (this.accessToken && now < this.expiresAt - 60_000) return this.accessToken;

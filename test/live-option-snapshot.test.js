@@ -22,8 +22,11 @@ class FakeSocket {
   sent = [];
   closeCalls = [];
 
-  constructor(batches) {
+  constructor(batches, options = {}) {
     this.batches = batches;
+    this.unauthorizedTokens = new Set(
+      options.unauthorizedTokens ?? [],
+    );
     queueMicrotask(() => {
       this.readyState = 1;
       this.onopen?.();
@@ -41,11 +44,20 @@ class FakeSocket {
           state: "UNAUTHORIZED",
         });
       } else if (message.type === "AUTH") {
-        this.emit({
-          type: "AUTH_STATE",
-          channel: 0,
-          state: "AUTHORIZED",
-        });
+        if (this.unauthorizedTokens.has(message.token)) {
+          this.emit({
+            type: "ERROR",
+            channel: 0,
+            error: "UNAUTHORIZED",
+            message: "Authentication failed",
+          });
+        } else {
+          this.emit({
+            type: "AUTH_STATE",
+            channel: 0,
+            state: "AUTHORIZED",
+          });
+        }
       } else if (message.type === "CHANNEL_REQUEST") {
         this.emit({
           type: "CHANNEL_OPENED",
@@ -417,6 +429,34 @@ function fixture(options = {}) {
   return { client, http, getSocket: () => socket };
 }
 
+function authRecoveryFixture(tokens, unauthorizedTokens) {
+  const sockets = [];
+  let tokenIndex = 0;
+  const quoteTokens = {
+    getQuoteToken: jest.fn(async () => ({
+      token: tokens[Math.min(tokenIndex++, tokens.length - 1)],
+      url: "wss://tasty-openapi-ws.dxfeed.com/realtime",
+    })),
+    invalidateQuoteToken: jest.fn(),
+  };
+  const client = new TastytradeLiveOptionSnapshotClient({
+    oauth: { getAccessToken: async () => "access-token" },
+    http: {
+      get: jest.fn(async () => ({ data: chainResponse() })),
+    },
+    quoteTokens,
+    socketFactory: () => {
+      const socket = new FakeSocket(liveBatches(), {
+        unauthorizedTokens,
+      });
+      sockets.push(socket);
+      return socket;
+    },
+    clock: () => NOW,
+  });
+  return { client, quoteTokens, sockets };
+}
+
 function generatedFixture({
   expirationCount = 5,
   strikeCount = 50,
@@ -537,7 +577,7 @@ describe("unified live option snapshot", () => {
       }),
     );
     expect(result).toMatchObject({
-      contract_version: "1.1.0",
+      contract_version: "1.2.0",
       status: "AVAILABLE",
       underlying: "SPXW",
       canonical_chain_underlying: "SPX",
@@ -671,7 +711,7 @@ describe("unified live option snapshot", () => {
       snapshot_id: result.snapshot_id,
       methodology: "OI_BASED_UNSIGNED_GAMMA_CONCENTRATION",
       evidence_role: "SUPPORTING_EVIDENCE",
-      record_version: "1.1.0",
+      record_version: "1.2.0",
     });
     const subscription = getSocket().sent.find(
       (message) =>
@@ -687,6 +727,114 @@ describe("unified live option snapshot", () => {
         { type: "Summary", symbol: PUT_SYMBOL },
       ]),
     );
+  });
+
+  test("recovers the live snapshot once with a fresh quote token", async () => {
+    const { client, quoteTokens, sockets } = authRecoveryFixture(
+      ["synthetic-stale-token", "synthetic-fresh-token"],
+      ["synthetic-stale-token"],
+    );
+
+    const result = await client.getLiveOptionSnapshot({
+      underlying: "SPXW",
+      expirations: [EXPIRATION],
+      around_price: "100",
+      strike_count: 1,
+      include_quotes: true,
+      include_greeks: true,
+      include_summary: true,
+      phase: "LIVE_SUPPORT",
+      deadline_ms: 1000,
+      max_temporal_skew_ms: 1000,
+    });
+
+    expect(result).toMatchObject({
+      status: "AVAILABLE",
+      snapshot_complete: true,
+      quote_complete: true,
+      greeks_complete: true,
+      summary_complete: true,
+      dxlink_auth: {
+        status: "REFRESHED",
+        token_source: "QUOTE_TOKEN_PROVIDER",
+        token_reused: false,
+        refresh_attempted: true,
+        retry_count: 1,
+      },
+      provider_error: {
+        code: "UNAUTHORIZED",
+        message: "Authentication failed",
+      },
+      transport: {
+        complete_batches: 1,
+        failed_batches: 0,
+      },
+      gamma_concentration_proxy: {
+        status: "COMPLETE",
+        dealer_gex_status: "UNKNOWN",
+      },
+      warnings: expect.arrayContaining(["DXLINK_AUTH_RECOVERED"]),
+    });
+    expect(quoteTokens.invalidateQuoteToken).toHaveBeenCalledTimes(1);
+    expect(quoteTokens.getQuoteToken).toHaveBeenCalledTimes(2);
+    expect(sockets).toHaveLength(2);
+    expect(JSON.stringify(result)).not.toContain("synthetic-stale-token");
+    expect(JSON.stringify(result)).not.toContain("synthetic-fresh-token");
+  });
+
+  test("reports AUTH_FAILED after one live snapshot reconnect retry", async () => {
+    const { client, quoteTokens, sockets } = authRecoveryFixture(
+      ["synthetic-stale-token", "synthetic-fresh-token"],
+      ["synthetic-stale-token", "synthetic-fresh-token"],
+    );
+
+    const result = await client.getLiveOptionSnapshot({
+      underlying: "SPXW",
+      expirations: [EXPIRATION],
+      around_price: "100",
+      strike_count: 1,
+      include_quotes: true,
+      include_greeks: true,
+      include_summary: true,
+      phase: "LIVE_SUPPORT",
+      deadline_ms: 1000,
+      max_temporal_skew_ms: 1000,
+    });
+
+    expect(result).toMatchObject({
+      status: "NOT_AVAILABLE",
+      snapshot_complete: false,
+      dxlink_auth: {
+        status: "FAILED",
+        token_source: "QUOTE_TOKEN_PROVIDER",
+        token_reused: false,
+        refresh_attempted: true,
+        retry_count: 1,
+      },
+      provider_error: {
+        code: "UNAUTHORIZED",
+        message: "Authentication failed",
+      },
+      transport: {
+        complete_batches: 0,
+        failed_batches: 1,
+        batches: [
+          expect.objectContaining({
+            status: "FAILED",
+            error: expect.stringContaining("AUTH_FAILED"),
+          }),
+        ],
+      },
+      warnings: expect.arrayContaining([
+        "DXLINK_AUTH_FAILED",
+        "DXLINK_BATCH_FAILED",
+      ]),
+    });
+    expect(quoteTokens.invalidateQuoteToken).toHaveBeenCalledTimes(1);
+    expect(quoteTokens.getQuoteToken).toHaveBeenCalledTimes(2);
+    expect(sockets).toHaveLength(2);
+    expect(JSON.stringify(result)).not.toContain("synthetic-stale-token");
+    expect(JSON.stringify(result)).not.toContain("synthetic-fresh-token");
   });
 
   test("keeps missing open interest null and excludes it from the proxy", async () => {

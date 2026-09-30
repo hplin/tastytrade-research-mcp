@@ -1,5 +1,5 @@
 import { readFileSync } from "node:fs";
-import { describe, expect, test } from "@jest/globals";
+import { describe, expect, jest, test } from "@jest/globals";
 import {
   TastytradeHistoricalCandlesClient,
   canonicalizeDxlinkCandleSymbol,
@@ -86,6 +86,9 @@ class FakeSocket {
       channel: 3,
     };
     this.useBlob = options.useBlob ?? false;
+    this.unauthorizedTokens = new Set(
+      options.unauthorizedTokens ?? [],
+    );
     this.closeCalls = [];
     queueMicrotask(() => {
       this.readyState = 1;
@@ -100,7 +103,16 @@ class FakeSocket {
       if (message.type === "SETUP") {
         this.emit({ type: "AUTH_STATE", channel: 0, state: "UNAUTHORIZED" });
       } else if (message.type === "AUTH") {
-        this.emit({ type: "AUTH_STATE", channel: 0, state: "AUTHORIZED" });
+        if (this.unauthorizedTokens.has(message.token)) {
+          this.emit({
+            type: "ERROR",
+            channel: 0,
+            error: "UNAUTHORIZED",
+            message: "Authentication failed",
+          });
+        } else {
+          this.emit({ type: "AUTH_STATE", channel: 0, state: "AUTHORIZED" });
+        }
       } else if (message.type === "CHANNEL_REQUEST") {
         this.emit({ type: "CHANNEL_OPENED", channel: 3, service: "FEED" });
       } else if (message.type === "FEED_SETUP") {
@@ -158,6 +170,32 @@ function clientWithRows(
     clock,
   );
   return { client, getSocket: () => socket };
+}
+
+function clientWithAuthTokens(rows, tokens, unauthorizedTokens) {
+  const sockets = [];
+  let tokenIndex = 0;
+  const quoteTokens = {
+    getQuoteToken: jest.fn(async () => ({
+      token: tokens[Math.min(tokenIndex++, tokens.length - 1)],
+      url: "wss://tasty-openapi-dxlink-md-ws.dxfeed.com/realtime",
+    })),
+    invalidateQuoteToken: jest.fn(),
+  };
+  const client = new TastytradeHistoricalCandlesClient(
+    { getAccessToken: async () => "access-token" },
+    undefined,
+    () => {
+      const socket = new FakeSocket([rows], {
+        unauthorizedTokens,
+      });
+      sockets.push(socket);
+      return socket;
+    },
+    () => Date.parse("2026-09-25T12:00:00.000Z"),
+    quoteTokens,
+  );
+  return { client, quoteTokens, sockets };
 }
 
 describe("DXLink candle normalization", () => {
@@ -762,6 +800,101 @@ describe("DXLink candle normalization", () => {
         end_time: "2026-09-24T15:00:00.000Z",
       }),
     ).rejects.toThrow("Expected a dxfeed.com host over wss");
+  });
+
+  test("refreshes credentials and reconnects once after UNAUTHORIZED", async () => {
+    const timestamp = Date.parse("2026-09-24T14:00:00.000Z");
+    const { client, quoteTokens, sockets } = clientWithAuthTokens(
+      [
+        row(timestamp, 4),
+        marker(timestamp - 1),
+      ],
+      ["synthetic-stale-token", "synthetic-fresh-token"],
+      ["synthetic-stale-token"],
+    );
+
+    const result = await client.getHistoricalCandles({
+      symbol: "SPY",
+      instrument_type: "EQUITY",
+      interval: "1h",
+      start_time: "2026-09-24T14:00:00.000Z",
+      end_time: "2026-09-24T15:00:00.000Z",
+      deadline_ms: 1000,
+    });
+
+    expect(result).toMatchObject({
+      status: "AVAILABLE",
+      snapshot_complete: true,
+      dxlink_auth: {
+        status: "REFRESHED",
+        token_source: "QUOTE_TOKEN_PROVIDER",
+        token_reused: false,
+        refresh_attempted: true,
+        retry_count: 1,
+      },
+      provider_error: {
+        code: "UNAUTHORIZED",
+        message: "Authentication failed",
+      },
+    });
+    expect(result.candles).toHaveLength(1);
+    expect(quoteTokens.invalidateQuoteToken).toHaveBeenCalledTimes(1);
+    expect(quoteTokens.getQuoteToken).toHaveBeenCalledTimes(2);
+    expect(sockets).toHaveLength(2);
+    expect(
+      sockets.map(
+        (socket) =>
+          socket.sent.find((message) => message.type === "AUTH").token,
+      ),
+    ).toEqual([
+      "synthetic-stale-token",
+      "synthetic-fresh-token",
+    ]);
+  });
+
+  test("fails with AUTH_FAILED after one candle reconnect retry", async () => {
+    const timestamp = Date.parse("2026-09-24T14:00:00.000Z");
+    const { client, quoteTokens, sockets } = clientWithAuthTokens(
+      [
+        row(timestamp, 4),
+        marker(timestamp - 1),
+      ],
+      ["synthetic-stale-token", "synthetic-fresh-token"],
+      ["synthetic-stale-token", "synthetic-fresh-token"],
+    );
+
+    let caught;
+    try {
+      await client.getHistoricalCandles({
+        symbol: "SPY",
+        instrument_type: "EQUITY",
+        interval: "1h",
+        start_time: "2026-09-24T14:00:00.000Z",
+        end_time: "2026-09-24T15:00:00.000Z",
+        deadline_ms: 1000,
+      });
+    } catch (error) {
+      caught = error;
+    }
+
+    expect(caught).toMatchObject({
+      code: "AUTH_FAILED",
+      dxlinkAuth: {
+        status: "FAILED",
+        refresh_attempted: true,
+        retry_count: 1,
+      },
+      providerError: {
+        code: "UNAUTHORIZED",
+        message: "Authentication failed",
+      },
+    });
+    expect(caught.message).toContain("AUTH_FAILED");
+    expect(caught.message).not.toContain("synthetic-stale-token");
+    expect(caught.message).not.toContain("synthetic-fresh-token");
+    expect(quoteTokens.invalidateQuoteToken).toHaveBeenCalledTimes(1);
+    expect(quoteTokens.getQuoteToken).toHaveBeenCalledTimes(2);
+    expect(sockets).toHaveLength(2);
   });
 
   test("treats an old calendar replay estimate as advisory when actual events fit", async () => {

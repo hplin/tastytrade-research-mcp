@@ -1,7 +1,10 @@
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { afterEach, describe, expect, jest, test } from "@jest/globals";
-import { createResearchHttpServer } from "../dist/http-server.js";
+import {
+  createResearchHttpServer,
+  defaultResearchServices,
+} from "../dist/http-server.js";
 
 const API_KEY = "test-api-key-0123456789abcdef0123456789abcdef";
 const openServers = new Set();
@@ -59,6 +62,14 @@ afterEach(async () => {
 });
 
 describe("MCP HTTP server", () => {
+  test("shares one DXLink credential lifecycle across default consumers", () => {
+    const services = defaultResearchServices();
+
+    expect(services.candles.quoteTokens).toBe(
+      services.liveOptions.quoteTokens,
+    );
+  });
+
   test("exposes a public health check and protects MCP with bearer auth", async () => {
     const baseUrl = await listen(
       createResearchHttpServer({
