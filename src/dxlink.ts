@@ -9,12 +9,16 @@ import { TastytradeOAuthClient } from "./oauth-client.js";
 export type DxlinkQuoteToken = {
   token: string;
   url: string;
+  expiresAt?: number;
+  tokenSource?: "API_QUOTE_TOKEN" | "CACHE";
+  tokenReused?: boolean;
 };
 
 type QuoteTokenResponse = {
   data?: {
     token?: string;
     "dxlink-url"?: string;
+    "expires-at"?: string;
   };
 };
 
@@ -30,17 +34,75 @@ export type DxlinkSocket = {
 
 export type DxlinkSocketFactory = (url: string) => DxlinkSocket;
 
+export type DxlinkQuoteTokenRequest = {
+  forceRefresh?: boolean;
+};
+
 export type DxlinkQuoteTokenProvider = {
-  getQuoteToken(signal?: AbortSignal): Promise<DxlinkQuoteToken>;
+  getQuoteToken(
+    signal?: AbortSignal,
+    request?: DxlinkQuoteTokenRequest,
+  ): Promise<DxlinkQuoteToken>;
+  invalidateQuoteToken?(): void;
 };
 
 export type TastytradeAccessTokenProvider = {
   getAccessToken(): Promise<string>;
+  invalidateAccessToken?(): void;
 };
 
 export const DXLINK_OPEN = 1;
 
 const QUOTE_TOKEN_TTL_MS = 23 * 60 * 60_000;
+const QUOTE_TOKEN_EXPIRY_SKEW_MS = 60_000;
+
+export type DxlinkAuthStatus =
+  | "NOT_ATTEMPTED"
+  | "NOT_CONFIRMED"
+  | "CONFIRMED"
+  | "REFRESHED"
+  | "FAILED";
+
+export type DxlinkAuthDiagnostics = {
+  status: DxlinkAuthStatus;
+  token_source: "API_QUOTE_TOKEN" | "CACHE" | "QUOTE_TOKEN_PROVIDER" | "NONE";
+  token_reused: boolean;
+  refresh_attempted: boolean;
+  retry_count: 0 | 1;
+};
+
+export type DxlinkProviderError = {
+  code: "UNAUTHORIZED";
+  message: string;
+};
+
+export class DxlinkAuthenticationError extends Error {
+  readonly code = "AUTH_FAILED";
+  readonly providerError: DxlinkProviderError;
+
+  constructor(providerError: DxlinkProviderError) {
+    super(
+      `DXLink authentication failed: ${providerError.code}: ${providerError.message}`,
+    );
+    this.name = "DxlinkAuthenticationError";
+    this.providerError = providerError;
+  }
+}
+
+export class DxlinkAuthFailedError extends Error {
+  readonly code = "AUTH_FAILED";
+  readonly retryable = false;
+
+  constructor(
+    readonly dxlinkAuth: DxlinkAuthDiagnostics,
+    readonly providerError: DxlinkProviderError,
+  ) {
+    super(
+      `AUTH_FAILED: DXLink authentication failed after one credential refresh (${providerError.code}: ${providerError.message}).`,
+    );
+    this.name = "DxlinkAuthFailedError";
+  }
+}
 
 export class DxlinkAbortedError extends Error {
   readonly code = "PROVIDER_TIMEOUT";
@@ -83,6 +145,115 @@ function isRetryable(error: unknown): boolean {
     error.response.status === 429 ||
     error.response.status >= 500
   );
+}
+
+function isAuthorizationFailure(error: unknown): boolean {
+  if (!axios.isAxiosError(error)) return false;
+  return error.response?.status === 401 || error.response?.status === 403;
+}
+
+function providerErrorMessage(message: Record<string, unknown>): string {
+  return typeof message.message === "string" && message.message.trim()
+    ? message.message.trim()
+    : "Authentication failed";
+}
+
+export function dxlinkAuthenticationError(
+  message: Record<string, unknown>,
+  authSent: boolean,
+): DxlinkAuthenticationError | null {
+  const unauthorizedAuthState =
+    authSent &&
+    message.type === "AUTH_STATE" &&
+    message.state === "UNAUTHORIZED";
+  const unauthorizedError =
+    message.type === "ERROR" &&
+    typeof message.error === "string" &&
+    message.error.toUpperCase() === "UNAUTHORIZED";
+  if (!unauthorizedAuthState && !unauthorizedError) return null;
+  return new DxlinkAuthenticationError({
+    code: "UNAUTHORIZED",
+    message: providerErrorMessage(message),
+  });
+}
+
+function authDiagnostics(
+  quoteToken: DxlinkQuoteToken | null,
+  status: DxlinkAuthStatus,
+  retryCount: 0 | 1,
+): DxlinkAuthDiagnostics {
+  return {
+    status,
+    token_source:
+      quoteToken?.tokenSource ??
+      (quoteToken ? "QUOTE_TOKEN_PROVIDER" : "NONE"),
+    token_reused: quoteToken?.tokenReused ?? false,
+    refresh_attempted: retryCount === 1,
+    retry_count: retryCount,
+  };
+}
+
+export type DxlinkAuthRecoveryResult<T> = {
+  value: T;
+  dxlinkAuth: DxlinkAuthDiagnostics;
+  providerError: DxlinkProviderError | null;
+};
+
+export async function withDxlinkAuthRecovery<T>(
+  quoteTokens: DxlinkQuoteTokenProvider,
+  operation: (
+    quoteToken: DxlinkQuoteToken,
+    retryCount: 0 | 1,
+  ) => Promise<T>,
+  signal?: AbortSignal,
+): Promise<DxlinkAuthRecoveryResult<T>> {
+  let providerError: DxlinkProviderError | null = null;
+  let lastQuoteToken: DxlinkQuoteToken | null = null;
+
+  for (const retryCount of [0, 1] as const) {
+    assertDxlinkNotAborted(signal);
+    let quoteToken: DxlinkQuoteToken;
+    try {
+      quoteToken = await quoteTokens.getQuoteToken(
+        signal,
+        retryCount === 1 ? { forceRefresh: true } : undefined,
+      );
+      lastQuoteToken = quoteToken;
+    } catch (error) {
+      if (retryCount === 1 && providerError) {
+        throw new DxlinkAuthFailedError(
+          authDiagnostics(lastQuoteToken, "FAILED", 1),
+          providerError,
+        );
+      }
+      throw error;
+    }
+
+    try {
+      const value = await operation(quoteToken, retryCount);
+      return {
+        value,
+        dxlinkAuth: authDiagnostics(
+          quoteToken,
+          retryCount === 0 ? "CONFIRMED" : "REFRESHED",
+          retryCount,
+        ),
+        providerError,
+      };
+    } catch (error) {
+      if (!(error instanceof DxlinkAuthenticationError)) throw error;
+      providerError = error.providerError;
+      if (retryCount === 1) {
+        throw new DxlinkAuthFailedError(
+          authDiagnostics(quoteToken, "FAILED", 1),
+          providerError,
+        );
+      }
+      quoteTokens.invalidateQuoteToken?.();
+    }
+  }
+
+  throw new Error("DXLink authentication recovery exhausted unexpectedly.");
 }
 
 export function assertTrustedDxlinkUrl(value: string): string {
@@ -144,7 +315,11 @@ export function createTastytradeApiHttpClient(): AxiosInstance {
 export class TastytradeDxlinkTokenClient
   implements DxlinkQuoteTokenProvider
 {
-  private quoteToken: DxlinkQuoteToken | null = null;
+  private quoteToken: {
+    token: string;
+    url: string;
+    expiresAt: number;
+  } | null = null;
   private quoteTokenExpiresAt = 0;
 
   constructor(
@@ -157,14 +332,31 @@ export class TastytradeDxlinkTokenClient
     assertTrustedHosts();
   }
 
-  async getQuoteToken(signal?: AbortSignal): Promise<DxlinkQuoteToken> {
+  invalidateQuoteToken(): void {
+    this.quoteToken = null;
+    this.quoteTokenExpiresAt = 0;
+    this.oauth.invalidateAccessToken?.();
+  }
+
+  async getQuoteToken(
+    signal?: AbortSignal,
+    request: DxlinkQuoteTokenRequest = {},
+  ): Promise<DxlinkQuoteToken> {
     assertDxlinkNotAborted(signal);
-    const now = this.clock();
-    if (this.quoteToken && now < this.quoteTokenExpiresAt) {
-      return this.quoteToken;
+    if (request.forceRefresh) {
+      this.quoteToken = null;
+      this.quoteTokenExpiresAt = 0;
+    }
+    if (this.quoteToken && this.clock() < this.quoteTokenExpiresAt) {
+      return {
+        ...this.quoteToken,
+        tokenSource: "CACHE",
+        tokenReused: true,
+      };
     }
 
     let lastError: unknown;
+    let accessTokenRefreshAttempted = false;
     for (let attempt = 0; attempt < 3; attempt += 1) {
       try {
         const accessToken = await this.oauth.getAccessToken();
@@ -178,19 +370,56 @@ export class TastytradeDxlinkTokenClient
         );
         const token = response.data.data?.token;
         const url = response.data.data?.["dxlink-url"];
+        const expiresAtValue = response.data.data?.["expires-at"];
         if (!token || !url) {
           throw new Error(
             "Quote-token response did not contain token and dxlink-url.",
           );
         }
+        const now = this.clock();
+        const parsedExpiresAt =
+          typeof expiresAtValue === "string"
+            ? Date.parse(expiresAtValue)
+            : Number.NaN;
+        if (
+          typeof expiresAtValue === "string" &&
+          !Number.isFinite(parsedExpiresAt)
+        ) {
+          throw new Error(
+            "Quote-token response contained an invalid expires-at timestamp.",
+          );
+        }
+        const expiresAt = Number.isFinite(parsedExpiresAt)
+          ? parsedExpiresAt
+          : now + QUOTE_TOKEN_TTL_MS;
+        const usableUntil = expiresAt - QUOTE_TOKEN_EXPIRY_SKEW_MS;
+        if (usableUntil <= now) {
+          throw new Error(
+            "Quote-token response contained an expired or near-expiry token.",
+          );
+        }
         this.quoteToken = {
           token,
           url: assertTrustedDxlinkUrl(url),
+          expiresAt,
         };
-        this.quoteTokenExpiresAt = now + QUOTE_TOKEN_TTL_MS;
-        return this.quoteToken;
+        this.quoteTokenExpiresAt = usableUntil;
+        return {
+          ...this.quoteToken,
+          tokenSource: "API_QUOTE_TOKEN",
+          tokenReused: false,
+        };
       } catch (error) {
         lastError = error;
+        if (
+          isAuthorizationFailure(error) &&
+          !accessTokenRefreshAttempted &&
+          this.oauth.invalidateAccessToken
+        ) {
+          accessTokenRefreshAttempted = true;
+          this.oauth.invalidateAccessToken();
+          continue;
+        }
         if (!isRetryable(error) || attempt === 2) throw error;
         const baseDelay = 250 * 2 ** attempt;
         await wait(

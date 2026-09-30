@@ -9,6 +9,7 @@ import type { OAuthTokenVerifier } from "@modelcontextprotocol/sdk/server/auth/p
 import type { AuthInfo } from "@modelcontextprotocol/sdk/server/auth/types.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { TastytradeBacktesterClient } from "./backtester-client.js";
+import { TastytradeDxlinkTokenClient } from "./dxlink.js";
 import { evidenceCacheFromEnv } from "./evidence-cache.js";
 import { TastytradeHistoricalCandlesClient } from "./historical-candles.js";
 import { TastytradeLiveOptionSnapshotClient } from "./live-option-snapshot.js";
@@ -57,10 +58,20 @@ class HttpRequestError extends Error {
 
 export function defaultResearchServices(): ResearchServices {
   const oauth = new TastytradeOAuthClient();
+  const quoteTokens = new TastytradeDxlinkTokenClient(oauth);
   return {
     backtester: new TastytradeBacktesterClient(oauth),
-    candles: new TastytradeHistoricalCandlesClient(oauth),
-    liveOptions: new TastytradeLiveOptionSnapshotClient({ oauth }),
+    candles: new TastytradeHistoricalCandlesClient(
+      oauth,
+      undefined,
+      undefined,
+      undefined,
+      quoteTokens,
+    ),
+    liveOptions: new TastytradeLiveOptionSnapshotClient({
+      oauth,
+      quoteTokens,
+    }),
     evidenceCache: evidenceCacheFromEnv(),
   };
 }

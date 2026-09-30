@@ -82,6 +82,8 @@ if (missingEnvironment.length > 0) {
           selected_contracts: result.contracts.length,
           gamma_and_open_interest_contracts:
             gammaAndOpenInterestContracts,
+          dxlink_auth: result.dxlink_auth,
+          provider_error: result.provider_error,
           snapshot_complete: result.snapshot_complete,
           transport: result.transport,
           event_timestamp_alignment:

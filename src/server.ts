@@ -13,6 +13,7 @@ import {
   type BacktesterRequestOptions,
   type JsonObject,
 } from "./backtester-client.js";
+import { TastytradeDxlinkTokenClient } from "./dxlink.js";
 import {
   TastytradeHistoricalCandlesClient,
   type HistoricalCandlesBatchInput,
@@ -83,6 +84,7 @@ import {
   priceOptionPackage,
   type PackagePricingInput,
 } from "./package-pricing.js";
+import { TastytradeOAuthClient } from "./oauth-client.js";
 import {
   createSpreadBacktest,
   prepareSpreadResearch,
@@ -1851,11 +1853,22 @@ function toolResult(data: unknown) {
 export function createResearchServer(
   services: ResearchServices = {},
 ): Server {
-  const backtester = services.backtester ?? new TastytradeBacktesterClient();
+  const oauth = new TastytradeOAuthClient();
+  const quoteTokens = new TastytradeDxlinkTokenClient(oauth);
+  const backtester =
+    services.backtester ?? new TastytradeBacktesterClient(oauth);
   const sourceCandles =
-    services.candles ?? new TastytradeHistoricalCandlesClient();
+    services.candles ??
+    new TastytradeHistoricalCandlesClient(
+      oauth,
+      undefined,
+      undefined,
+      undefined,
+      quoteTokens,
+    );
   const liveOptions =
-    services.liveOptions ?? new TastytradeLiveOptionSnapshotClient();
+    services.liveOptions ??
+    new TastytradeLiveOptionSnapshotClient({ oauth, quoteTokens });
   const evidenceCache =
     "evidenceCache" in services
       ? services.evidenceCache ?? null

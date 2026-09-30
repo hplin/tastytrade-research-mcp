@@ -96,6 +96,9 @@ marks only unfinished symbols with the applicable failure reason.
 Each result reports:
 
 - a deterministic request ID and requested/effective cohort identity;
+- `dxlink_auth` with quote-token source/reuse, refresh attempt, and retry
+  count, plus a sanitized `provider_error` when recovery followed an
+  authentication rejection;
 - `bar_start`, `bar_end`, `available_at`, and `retrieved_at` on every
   normalized candle, while retaining `source_time` as the bar-start
   compatibility field;
@@ -109,6 +112,16 @@ Each result reports:
 
 Diagnostics never include quote tokens, account identifiers, or private
 DXLink URL parameters.
+
+The initial `AUTH_STATE/UNAUTHORIZED` after `SETUP` is the protocol challenge
+that prompts `AUTH`. If DXLink sends another unauthorized state after that
+token, or an `ERROR/UNAUTHORIZED`, the client closes the socket, invalidates
+the shared quote-token and OAuth caches, reacquires credentials, and reruns
+the complete candle snapshot once. Recovery success reports
+`dxlink_auth.status = REFRESHED`. A second rejection throws explicit
+`AUTH_FAILED` with sanitized diagnostics and no credential value; no further
+retry occurs. A request that times out before observing
+`AUTH_STATE/AUTHORIZED` reports `NOT_CONFIRMED`.
 
 ## Private source-cache handoff
 

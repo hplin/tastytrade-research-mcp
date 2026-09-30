@@ -18,8 +18,10 @@ The endpoint joins one option-chain cohort by the exact tastytrade
 This is live support evidence only. It never places, replaces, validates, or
 cancels an order.
 
-Contract version `1.1.0` adds bounded DXLink auto-chunking plus separate
-event-time, current-request cohort, and source-freshness evidence.
+Contract version `1.2.0` adds expiry-aware shared authentication provenance
+and deterministic one-reconnect recovery. Version `1.1.0` added bounded
+DXLink auto-chunking plus separate event-time, current-request cohort, and
+source-freshness evidence.
 
 ## Request
 
@@ -75,6 +77,8 @@ Missing numeric provider values remain `null`. In particular, missing
 The result also includes:
 
 - `retrieved_at` and `chain_retrieved_at`;
+- `dxlink_auth`, including token source/reuse, refresh attempt, and retry
+  count, plus a sanitized `provider_error` when authentication was rejected;
 - `snapshot_complete`, `quote_complete`, `greeks_complete`, and
   `summary_complete`;
 - `transport`, including the encoded size and status of every DXLink batch
@@ -85,6 +89,32 @@ The result also includes:
 - stable `request_id` and per-observation `snapshot_id`;
 - a downstream `market_data_handoff`; and
 - a compact `regression_record`.
+
+## DXLink authentication lifecycle
+
+The live snapshot and historical candle clients use the same production
+quote-token manager. It honors the tastytrade `expires-at` timestamp with a
+one-minute safety margin and does not reuse a token indefinitely after an
+OAuth session refresh or WebSocket reconnect.
+
+DXLink's first `AUTH_STATE/UNAUTHORIZED` after `SETUP` is the normal challenge
+that prompts the client to send `AUTH`. A later `AUTH_STATE/UNAUTHORIZED`, or
+an `ERROR` with `error = UNAUTHORIZED`, is an authentication rejection. The
+client then:
+
+1. closes all sockets from that snapshot attempt;
+2. invalidates the cached quote token and OAuth access token;
+3. reacquires a quote token and rebuilds every affected connection; and
+4. retries the snapshot exactly once.
+
+A recovered result reports `dxlink_auth.status = REFRESHED`,
+`refresh_attempted = true`, and `retry_count = 1`. If the fresh credential is
+also rejected, the result is `NOT_AVAILABLE`, every affected transport batch
+is `FAILED`, `dxlink_auth.status = FAILED`, and the batch error begins with
+`AUTH_FAILED`. `provider_error` preserves only the provider code and message;
+credential values are never returned. If the request deadline expires before
+every batch observes `AUTH_STATE/AUTHORIZED`, status is `NOT_CONFIRMED`
+rather than claiming a verified session.
 
 ## Timestamp, cohort, and freshness evidence
 
