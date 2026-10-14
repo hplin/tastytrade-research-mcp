@@ -577,7 +577,7 @@ describe("unified live option snapshot", () => {
       }),
     );
     expect(result).toMatchObject({
-      contract_version: "1.2.0",
+      contract_version: "1.3.0",
       status: "AVAILABLE",
       underlying: "SPXW",
       canonical_chain_underlying: "SPX",
@@ -711,7 +711,7 @@ describe("unified live option snapshot", () => {
       snapshot_id: result.snapshot_id,
       methodology: "OI_BASED_UNSIGNED_GAMMA_CONCENTRATION",
       evidence_role: "SUPPORTING_EVIDENCE",
-      record_version: "1.2.0",
+      record_version: "1.3.0",
     });
     const subscription = getSocket().sent.find(
       (message) =>

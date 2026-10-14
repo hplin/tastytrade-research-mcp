@@ -18,7 +18,8 @@ The endpoint joins one option-chain cohort by the exact tastytrade
 This is live support evidence only. It never places, replaces, validates, or
 cancels an order.
 
-Contract version `1.2.0` adds expiry-aware shared authentication provenance
+Contract version `1.3.0` adds native timing with explicit UNKNOWN provenance and
+optional exact-package quote/Greek quality handoff. Version `1.2.0` added expiry-aware shared authentication provenance
 and deterministic one-reconnect recovery. Version `1.1.0` added bounded
 DXLink auto-chunking plus separate event-time, current-request cohort, and
 source-freshness evidence.
@@ -73,6 +74,11 @@ Each contract includes:
 
 Missing numeric provider values remain `null`. In particular, missing
 `Summary.openInterest` is never converted to zero.
+
+Exercise style is `EUROPEAN` with source `SPX_PRODUCT_SPECIFICATION`, not a
+claimed per-contract provider field. Multiplier and AM/PM settlement still come
+from the option chain; strict package checks compare them against exact OCC
+identity and the caller's expected contract terms.
 
 The result also includes:
 
@@ -130,6 +136,40 @@ event therefore returns:
 Local receive time is an explicit fallback, not a claimed provider event
 time. The result reports provider/local timestamp counts and warnings.
 
+Version 1.3 additionally exposes, per event:
+
+- `provider_event_timestamp` and `provider_event_timestamp_source`; missing
+  native values are **null / UNKNOWN**, never copied from receipt time;
+- `as_of`, the native provider timestamp only (null when unknown);
+- `received_at` and `available_at`, local receipt time; availability here means
+  available to this collector, not an independently known original publication;
+- `retrieved_at`, local collection completion time;
+- `source`, the DXLink event category, and `provider_symbol`, the original
+  DXLink `eventSymbol` (a streamer symbol, not a relabeled OCC symbol); and
+- `timestamp_provenance` for native, side, receipt, availability and retrieval
+  timestamps.
+
+Quote native time is the last side change (`max(bidTime, askTime)`), while
+strict quote freshness uses **both** side times, including the oldest side.
+Provider fields use documented epoch milliseconds without seconds/milliseconds
+guessing. Native provider time is not asserted to be an exchange execution
+timestamp. Greek `time` is event time: `calculation_timestamp` remains
+null / UNKNOWN because an independent model calculation time is not supplied.
+IV source is `DXLink Greeks.volatility`; IV recency uses that event's native
+time, not local receipt. Greek flags preserve transaction/snapshot completion
+separately from arrival.
+
+There is no single native timestamp for the entire multi-event snapshot:
+top-level `as_of` is null / UNKNOWN. Top-level `available_at`, `retrieved_at`
+and `chain_retrieved_at` identify local collection clocks. Legacy proxy,
+handoff and regression `*_as_of` aliases remain collection time, now with
+explicit `*_as_of_source = LOCAL_COLLECTION_TIME`.
+
+The compact parser honors negotiated `FEED_CONFIG.eventFields`, including
+reordering and omitted fields. When no layout is supplied it retains the
+requested legacy layout. Missing numeric fields remain null; missing Greek
+flags make strict Greek content completion unprovable.
+
 `event_timestamp_alignment` compares provider event timestamps across all
 requested event categories:
 
@@ -163,6 +203,162 @@ also support `STALE` and `UNKNOWN`.
 These statuses describe acquisition freshness for this request, not a
 separately approved market-recency SLA. Provider/receive timestamps and
 `age_ms` remain explicit so downstream research can apply a versioned policy.
+
+### Strict exact-package handoff (optional, no implicit readiness)
+
+Supply `exact_package` inside `request` to select exactly 2, 3 or 4 OCC legs,
+including cross-expiry calendars. Exact selection overrides nearest-strike
+selection, not expiration/root scope. Each leg must be in `expirations` and
+the requested root scope; missing chain legs stay visible in the handoff.
+The existing #47 OCC parser is reused. OCC padding, action, ratio, expiry,
+multiplier, settlement and exercise style are retained with a request
+fingerprint. No historical evidence is rewritten.
+
+Example `exact_package` (add to the request above with matching expirations):
+
+```json
+{
+  "legs": [
+    {
+      "provider_symbol": "SPXW  261014C06000000",
+      "action": "BUY_TO_OPEN",
+      "ratio": 1,
+      "settlement": "PM",
+      "multiplier": "100",
+      "exercise_style": "EUROPEAN"
+    },
+    {
+      "provider_symbol": "SPXW  261015C06000000",
+      "action": "SELL_TO_OPEN",
+      "ratio": 1,
+      "settlement": "PM",
+      "multiplier": "100",
+      "exercise_style": "EUROPEAN"
+    }
+  ],
+  "policy": {
+    "max_quote_age_ms": 5000,
+    "max_greeks_age_ms": 5000,
+    "max_iv_age_ms": 5000,
+    "max_quote_greek_skew_ms": 1000,
+    "max_cross_leg_skew_ms": 1000,
+    "max_receive_skew_ms": 1000,
+    "require_quote_size": true,
+    "require_open_interest": true,
+    "require_volume": false,
+    "session": {
+      "start_at": "2026-10-14T13:30:00.000Z",
+      "end_at": "2026-10-14T20:00:00.000Z",
+      "time_zone": "America/New_York",
+      "utc_offset_minutes": -240
+    }
+  }
+}
+```
+
+All six age/skew thresholds, all three presence requirements, and the session
+policy are **mandatory**; the example numbers are not server defaults.
+FinPilot/caller owns the approved session window (including holidays and early
+closes). The collector checks current retrieval and quote/Greek native times
+against that window and verifies the actual New York DST offset. It does not
+reconstruct a historical RTH calendar. Past-dated contracts are incompatible;
+strict AM-settled SPX packages also exclude expiration-day contracts
+conservatively. Mixed SPX/SPXW roots or AM/PM settlement packages fail closed;
+same-root, same-settlement cross-expiry packages are supported.
+
+The result's `exact_package_quality` is also included in
+`market_data_handoff.exact_package_quality`. It exposes:
+
+- every requested leg and its observation or null, validity and reason codes;
+- oldest quote/Greek age, per-leg quote-versus-Greek skew (both quote sides),
+  across-leg native skew and receive-time skew;
+- content completeness independently from authenticated transport completion;
+- policy, fingerprint, receipt-cohort boundary and timestamp provenance; and
+- `READY` or `NOT_READY`, with destination `FINPILOT_GATE` only.
+
+Positive, non-crossed bid/ask and complete delta/gamma/theta/vega/rho plus
+positive IV are required. Greek transaction/snapshot flags must establish
+content completion. Sizes must be positive when the policy requires them.
+Required OI may use exact-current-request Summary receipt; unknown Summary
+native time **does not** become quote/Greek timing evidence. OI zero is valid.
+This preserves #87: a complete unsigned Gamma+OI proxy remains possible with
+unknown Summary event time, confirmed exact cohort, locally acquired OI and
+fresh native Greeks. Stricter exact-package failure does not change that
+separate legacy Gamma evidence.
+
+`Quote`/`Greeks`/`Summary` do not supply option trading volume in this
+contract. `summary.day_volume` is null with `day_volume_source = UNKNOWN`.
+Official streaming examples supply `dayVolume` via **Trade**, not Summary.
+No Trade subscription or volume source has been invented: a
+`require_volume: true` policy fails closed with `MISSING_VOLUME`.
+
+Reason codes include `MISSING_LEG`, `MISSING_QUOTE`, `ABSENT_QUOTE_TIME`,
+`INVALID_QUOTE`, `CROSSED_QUOTE`, `MISSING_QUOTE_SIZE`, `PARTIAL_GREEKS`,
+`ABSENT_GREEKS_TIME`, `MISSING_IV`, `STALE_QUOTE`, `STALE_GREEKS`, `STALE_IV`,
+`QUOTE_GREEK_SKEW`, `CROSS_LEG_SKEW`, `PARTIAL_COHORT`,
+`MISSING_OPEN_INTEREST`, `MISSING_VOLUME`, `PROVIDER_SYMBOL_MISMATCH`,
+`INCOMPATIBLE_CONTRACT`, `INCOMPATIBLE_SETTLEMENT`, `FUTURE_TIMESTAMP`,
+`TRANSPORT_INCOMPLETE`, `SESSION_ANOMALY` and `DST_ANOMALY`.
+`content_complete` means fields arrived, not that prices, timing or identity
+passed validity. A complete transport can therefore still have invalid content
+or a missing exact leg.
+
+Omitting `exact_package` returns null quality, **not READY**. Existing defaults
+are unchanged: 25 strikes, 5000 ms request deadline, 5000 ms legacy temporal
+skew, all three categories enabled. Legacy Greek/OI acquisition freshness is
+request-bound, not a new approved age SLA. None of these defaults elevate
+exact-package readiness.
+
+READY is only a data-quality handoff. `order_authorized`,
+`production_gate_eligible` and `live_permission_backfill` are always false;
+`research_only` is always true. FinPilot owns grades, strategy, GO/capital and
+production decisions. Heuristic signed Gamma remains research-only;
+**ZeroGEX remains the only current live SPX Gamma regime source** under the
+owner's policy.
+
+### Local integration evidence and official-source audit
+
+```bash
+npm run build
+node scripts/probe-live-option-quality-fixtures.mjs
+npm test -- --runTestsByPath test/live-option-quality.test.js test/live-option-snapshot.test.js
+```
+
+The probe and fixtures are synthetic sanitized LIVE_SUPPORT data with mocked
+REST, token provider and DXLink sockets; they exercise the actual client,
+handshake, subscription fields, reordered compact decoding, normalization,
+exact selection and handoff. They cover synchronized 2/3/4-leg packages,
+cross-expiry 2/4-leg packages, missing chain legs and missing event legs.
+Jest additionally covers native-time absence, skew, stale IV, crossed quotes,
+partial Greeks/flags, metadata mismatches, session/DST anomalies and thresholds.
+They are **not real-provider validation**.
+
+Real live validation is **BLOCKED: no operational authorization or provider
+session used for #99 implementation**. No credentials, entitlements, broker
+mutations, provider acquisitions, deployments or services were accessed.
+The pre-existing live Gamma/OI probe remains separately opt-in; it can accept
+`TASTYTRADE_LIVE_OPTION_EXACT_PACKAGE_JSON` containing the full explicit policy
+and reports `exact_package_quality_outcome` independently from its legacy
+Gamma/OI outcome. This documentation does not authorize running it.
+
+Official public references audited for field semantics (not account entitlement):
+
+- [tastytrade streaming guide](https://developer.tastytrade.com/docs/guides/stream-market-data/):
+  Quote/Greeks/Summary field selection, exact streamer symbols, compact layout,
+  and Trade-only `dayVolume` in the documented example.
+- [dxFeed Quote](https://docs.dxfeed.com/dxfeed/api/com/dxfeed/event/market/Quote.html):
+  bid/ask change time in epoch milliseconds; last change is the maximum side
+  time, not proof that both sides are fresh.
+- [dxFeed Greeks](https://docs.dxfeed.com/dxfeed/api/com/dxfeed/event/option/Greeks.html):
+  `time` is event time in milliseconds, volatility/Greeks are model values,
+  and flags carry transaction/snapshot semantics.
+- [dxFeed MarketEvent](https://docs.dxfeed.com/dxfeed/api/com/dxfeed/event/market/MarketEvent.html):
+  event creation time can be zero/unavailable on network events. Summary
+  receipt is not an original native event time.
+- [Cboe SPX specifications](https://www.cboe.com/tradable-products/sp-500/spx-options/spx-specifications):
+  SPX/SPXW multiplier 100, European exercise, and distinct standard/weekly
+  expiry trading conventions. Chain settlement is preserved and compared,
+  never guessed from a date or entitlement.
 
 The whole snapshot is complete when:
 

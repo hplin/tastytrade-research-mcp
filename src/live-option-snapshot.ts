@@ -22,8 +22,15 @@ import {
   type TastytradeAccessTokenProvider,
 } from "./dxlink.js";
 import { TastytradeOAuthClient } from "./oauth-client.js";
+import {
+  EXACT_LIVE_OPTION_PACKAGE_SCHEMA,
+  evaluateExactLiveOptionPackage,
+  validateExactLiveOptionPackage,
+  type ExactLiveOptionPackage,
+} from "./live-option-quality.js";
+import { parseHistoricalOptionSymbol } from "./historical-option-package.js";
 
-export const LIVE_OPTION_SNAPSHOT_CONTRACT_VERSION = "1.2.0";
+export const LIVE_OPTION_SNAPSHOT_CONTRACT_VERSION = "1.3.0";
 export const GAMMA_CONCENTRATION_METHODOLOGY =
   "OI_BASED_UNSIGNED_GAMMA_CONCENTRATION";
 export const GAMMA_CONCENTRATION_METHODOLOGY_VERSION = "1.0.0";
@@ -74,6 +81,7 @@ export type LiveOptionSnapshotInput = {
   phase: LiveOptionPhase;
   deadline_ms?: number;
   max_temporal_skew_ms?: number;
+  exact_package?: ExactLiveOptionPackage;
   signal?: AbortSignal;
 };
 
@@ -138,6 +146,7 @@ export const LIVE_OPTION_SNAPSHOT_INPUT_SCHEMA = {
           maximum: 300000,
           default: 5000,
         },
+        exact_package: EXACT_LIVE_OPTION_PACKAGE_SCHEMA,
       },
       required: [
         "underlying",
@@ -163,6 +172,7 @@ type NormalizedLiveOptionSnapshotInput = {
   phase: LiveOptionPhase;
   deadlineMs: number;
   maxTemporalSkewMs: number;
+  exactPackage?: ExactLiveOptionPackage;
   signal?: AbortSignal;
 };
 
@@ -178,9 +188,31 @@ export type LiveOptionContractMetadata = {
   dte: number | null;
   multiplier: string | null;
   settlement: string | null;
+  exercise_style: "EUROPEAN";
+  exercise_style_source: "SPX_PRODUCT_SPECIFICATION";
 };
 
-export type LiveOptionQuote = {
+export type LiveOptionEventTiming = {
+  provider_event_timestamp: string | null;
+  provider_event_timestamp_source: "PROVIDER_SIDE_TIME" | "PROVIDER_EVENT_TIME" | "UNKNOWN";
+  as_of: string | null;
+  available_at: string;
+  retrieved_at: string;
+  received_at: string;
+  provider_symbol: string;
+  source: "DXLink Quote" | "DXLink Greeks" | "DXLink Summary";
+  timestamp_provenance: {
+    provider_event_timestamp: "Quote.bidTime/askTime" | "Greeks.time" | "Summary.eventTime" | "UNKNOWN";
+    as_of: "PROVIDER_EVENT_TIME" | "UNKNOWN";
+    received_at: "LOCAL_RECEIVE_TIME";
+    available_at: "LOCAL_RECEIVE_TIME";
+    retrieved_at: "LOCAL_COLLECTION_TIME";
+    bid_time?: "Quote.bidTime" | "UNKNOWN";
+    ask_time?: "Quote.askTime" | "UNKNOWN";
+  };
+};
+
+export type LiveOptionQuote = LiveOptionEventTiming & {
   bid: string | null;
   ask: string | null;
   bid_size: string | null;
@@ -192,7 +224,7 @@ export type LiveOptionQuote = {
   received_at: string;
 };
 
-export type LiveOptionGreeks = {
+export type LiveOptionGreeks = LiveOptionEventTiming & {
   delta: string | null;
   gamma: string | null;
   theta: string | null;
@@ -203,10 +235,17 @@ export type LiveOptionGreeks = {
   timestamp: string;
   timestamp_source: "PROVIDER_EVENT_TIME" | "LOCAL_RECEIVE_TIME";
   received_at: string;
+  calculation_timestamp: null;
+  calculation_timestamp_source: "UNKNOWN";
+  iv_source: "DXLink Greeks.volatility";
+  event_flags: number | null;
+  content_complete: boolean;
 };
 
-export type LiveOptionSummary = {
+export type LiveOptionSummary = LiveOptionEventTiming & {
   open_interest: string | null;
+  day_volume: null;
+  day_volume_source: "UNKNOWN";
   timestamp: string;
   timestamp_source: "PROVIDER_EVENT_TIME" | "LOCAL_RECEIVE_TIME";
   received_at: string;
@@ -274,6 +313,7 @@ export type GammaConcentrationProxy = {
   production_gate_eligible: false;
   underlying_price: string;
   proxy_as_of: string;
+  proxy_as_of_source: "LOCAL_COLLECTION_TIME";
   total_concentration: string;
   by_strike: GammaConcentrationGroup[];
   by_expiration: GammaConcentrationGroup[];
@@ -340,6 +380,15 @@ export type LiveOptionSnapshotResult = {
   production_gate_eligible: false;
   retrieved_at: string;
   chain_retrieved_at: string;
+  available_at: string;
+  as_of: null;
+  timestamp_provenance: {
+    retrieved_at: "LOCAL_COLLECTION_TIME";
+    available_at: "LOCAL_COLLECTION_TIME";
+    chain_retrieved_at: "LOCAL_CHAIN_RETRIEVAL_TIME";
+    as_of: "UNKNOWN";
+  };
+  exact_package_quality: ReturnType<typeof evaluateExactLiveOptionPackage> | null;
   snapshot_complete: boolean;
   quote_complete: boolean;
   greeks_complete: boolean;
@@ -422,9 +471,11 @@ export type LiveOptionSnapshotResult = {
   contracts: LiveOptionSnapshotContract[];
   gamma_concentration_proxy: GammaConcentrationProxy;
   market_data_handoff: {
+    exact_package_quality: ReturnType<typeof evaluateExactLiveOptionPackage> | null;
     gamma_concentration_proxy: string | null;
     gamma_proxy_methodology: typeof GAMMA_CONCENTRATION_METHODOLOGY;
     gamma_proxy_as_of: string;
+    gamma_proxy_as_of_source: "LOCAL_COLLECTION_TIME";
     gamma_proxy_completeness: {
       status: GammaConcentrationProxy["status"];
       coverage_ratio: string;
@@ -445,6 +496,7 @@ export type LiveOptionSnapshotResult = {
     request_id: string;
     snapshot_id: string;
     as_of: string;
+    as_of_source: "LOCAL_COLLECTION_TIME";
     methodology: typeof GAMMA_CONCENTRATION_METHODOLOGY;
     methodology_version: typeof GAMMA_CONCENTRATION_METHODOLOGY_VERSION;
     evidence_role: LiveOptionEvidenceRole;
@@ -489,6 +541,9 @@ type RawGreeksEvent = {
   vega: string | null;
   timeMs: number | null;
   receivedAtMs: number;
+  eventFlags: number | null;
+  contentComplete: boolean;
+  snapshotPending?: boolean;
 };
 
 type RawSummaryEvent = {
@@ -762,11 +817,12 @@ function nonNegativeDecimalOrNull(value: unknown): string | null {
 }
 
 function providerEpochMilliseconds(value: unknown): number | null {
+  if ((typeof value !== "number" && typeof value !== "string") ||
+      (typeof value === "string" && !value.trim())) return null;
   const numeric = Number(value);
   if (!Number.isFinite(numeric) || numeric <= 0) return null;
-  const milliseconds = numeric < 100_000_000_000 ? numeric * 1000 : numeric;
-  return Number.isSafeInteger(Math.trunc(milliseconds))
-    ? Math.trunc(milliseconds)
+  return Number.isSafeInteger(numeric) && numeric <= 8_640_000_000_000_000
+    ? numeric
     : null;
 }
 
@@ -845,6 +901,22 @@ function normalizeInput(
       "At least one of include_quotes, include_greeks, or include_summary must be true.",
     );
   }
+  const exactPackage = input.exact_package
+    ? validateExactLiveOptionPackage(input.exact_package)
+    : undefined;
+  if (exactPackage) {
+    if (!includeQuotes || !includeGreeks ||
+        ((exactPackage.policy.require_open_interest || exactPackage.policy.require_volume) && !includeSummary)) {
+      throw new Error("exact_package requires Quote, Greeks, and any policy-required Summary subscriptions.");
+    }
+    for (const leg of exactPackage.legs) {
+      const parsed = parseHistoricalOptionSymbol(leg.provider_symbol);
+      if (!expirations.includes(parsed.expiration) ||
+          (underlying === "SPXW" && !leg.provider_symbol.startsWith("SPXW  "))) {
+        throw new Error("Exact-package legs must belong to the requested expirations and root scope.");
+      }
+    }
+  }
   return {
     underlying,
     expirations: [...expirations].sort(),
@@ -873,6 +945,7 @@ function normalizeInput(
       "max_temporal_skew_ms",
       0,
     ),
+    ...(exactPackage ? { exactPackage } : {}),
     ...(input.signal ? { signal: input.signal } : {}),
   };
 }
@@ -884,7 +957,7 @@ function stableId(value: unknown): string {
 }
 
 function parseRows(payload: unknown, width: number): unknown[][] {
-  if (!Array.isArray(payload)) return [];
+  if (!Array.isArray(payload) || !Number.isSafeInteger(width) || width < 1) return [];
   if (payload.length > 0 && Array.isArray(payload[0])) {
     return payload.filter(Array.isArray) as unknown[][];
   }
@@ -898,13 +971,21 @@ function parseRows(payload: unknown, width: number): unknown[][] {
 export function parseDxlinkLiveOptionData(
   data: unknown,
   receivedAtMs: number,
+  eventFields?: Partial<Record<LiveOptionDxlinkEventType, readonly string[]>>,
 ): ParsedLiveOptionEvent[] {
   if (!Array.isArray(data)) return [];
   const events: ParsedLiveOptionEvent[] = [];
   for (let index = 0; index + 1 < data.length; index += 2) {
     const type = data[index];
+    if (type !== "Quote" && type !== "Greeks" && type !== "Summary") continue;
+    const defaults = type === "Quote" ? QUOTE_FIELDS : type === "Greeks" ? GREEKS_FIELDS : SUMMARY_FIELDS;
+    const fields = eventFields?.[type as LiveOptionDxlinkEventType] ?? defaults;
+    const rows = parseRows(data[index + 1], fields.length).map((row) => {
+      const values = new Map(fields.map((field, column) => [field, row[column]]));
+      return defaults.map((field) => values.get(field));
+    });
     if (type === "Quote") {
-      for (const row of parseRows(data[index + 1], QUOTE_FIELDS.length)) {
+      for (const row of rows) {
         const symbol = stringOrNull(row[1]);
         if (!symbol) continue;
         events.push({
@@ -920,14 +1001,19 @@ export function parseDxlinkLiveOptionData(
         });
       }
     } else if (type === "Greeks") {
-      for (const row of parseRows(data[index + 1], GREEKS_FIELDS.length)) {
+      for (const row of rows) {
         const symbol = stringOrNull(row[1]);
         if (!symbol) continue;
-        const flags = Number(row[2]);
+        const flags = typeof row[2] === "number" ||
+          (typeof row[2] === "string" && /^\d+$/.test(row[2]))
+          ? Number(row[2])
+          : NaN;
         events.push({
           type,
           symbol,
           removed: Number.isFinite(flags) && (flags & REMOVE_EVENT) !== 0,
+          eventFlags: Number.isSafeInteger(flags) && flags >= 0 ? flags : null,
+          contentComplete: Number.isSafeInteger(flags) && (flags & (1 | 4)) === 0,
           timeMs: providerEpochMilliseconds(row[4]),
           price: decimalOrNull(row[6]),
           volatility: decimalOrNull(row[7]),
@@ -940,7 +1026,7 @@ export function parseDxlinkLiveOptionData(
         });
       }
     } else if (type === "Summary") {
-      for (const row of parseRows(data[index + 1], SUMMARY_FIELDS.length)) {
+      for (const row of rows) {
         const symbol = stringOrNull(row[1]);
         if (!symbol) continue;
         events.push({
@@ -970,6 +1056,11 @@ export function mergeLiveOptionEvents(
     if (event.type === "Quote") {
       state.quote = event;
     } else if (event.type === "Greeks") {
+      const flags = event.eventFlags ?? 0;
+      const snapshotPending = (flags & 4) !== 0 ||
+        state.greeks?.snapshotPending === true;
+      event.snapshotPending = snapshotPending && (flags & (8 | 16)) === 0;
+      event.contentComplete = Number.isSafeInteger(event.eventFlags) && !event.snapshotPending && (flags & 1) === 0;
       state.greeks = event.removed ? null : event;
     } else {
       state.summary = event;
@@ -1102,7 +1193,7 @@ function selectContracts(
               ExactDecimal.parse(right.strikePrice),
             );
       });
-      for (const selected of parsedStrikes.slice(0, input.strikeCount)) {
+      for (const selected of input.exactPackage ? parsedStrikes : parsedStrikes.slice(0, input.strikeCount)) {
         const sides = [
           {
             type: "CALL" as const,
@@ -1120,6 +1211,7 @@ function selectContracts(
           },
         ];
         for (const side of sides) {
+          if (input.exactPackage && !input.exactPackage.legs.some((leg) => leg.provider_symbol === side.symbol)) continue;
           if (!side.symbol || !side.streamer) {
             warnings.push(
               `MISSING_${side.type}_IDENTITY:${root}/${expirationDate}/${selected.strikePrice}`,
@@ -1138,6 +1230,8 @@ function selectContracts(
             dte,
             multiplier,
             settlement,
+            exercise_style: "EUROPEAN",
+            exercise_style_source: "SPX_PRODUCT_SPECIFICATION",
           });
         }
       }
@@ -1199,13 +1293,47 @@ function eventTimestamp(
       };
 }
 
-function normalizeQuote(event: RawQuoteEvent): LiveOptionQuote {
+function nativeTiming(
+  event: ParsedLiveOptionEvent,
+  providerTime: number | null,
+  retrievedAt: string,
+): LiveOptionEventTiming {
+  const native = providerTime === null ? null : isoTimestamp(providerTime);
+  const received = isoTimestamp(event.receivedAtMs);
+  return {
+    provider_event_timestamp: native,
+    provider_event_timestamp_source: native === null ? "UNKNOWN" :
+      event.type === "Quote" ? "PROVIDER_SIDE_TIME" : "PROVIDER_EVENT_TIME",
+    as_of: native,
+    received_at: received,
+    available_at: received,
+    retrieved_at: retrievedAt,
+    provider_symbol: event.symbol,
+    source: `DXLink ${event.type}` as LiveOptionEventTiming["source"],
+    timestamp_provenance: {
+      provider_event_timestamp: native === null ? "UNKNOWN" :
+        event.type === "Quote" ? "Quote.bidTime/askTime" :
+          event.type === "Greeks" ? "Greeks.time" : "Summary.eventTime",
+      as_of: native === null ? "UNKNOWN" : "PROVIDER_EVENT_TIME",
+      received_at: "LOCAL_RECEIVE_TIME",
+      available_at: "LOCAL_RECEIVE_TIME",
+      retrieved_at: "LOCAL_COLLECTION_TIME",
+      ...(event.type === "Quote" ? {
+        bid_time: event.bidTimeMs === null ? "UNKNOWN" as const : "Quote.bidTime" as const,
+        ask_time: event.askTimeMs === null ? "UNKNOWN" as const : "Quote.askTime" as const,
+      } : {}),
+    },
+  };
+}
+
+function normalizeQuote(event: RawQuoteEvent, retrievedAt: string): LiveOptionQuote {
   const sideTimes = [event.bidTimeMs, event.askTimeMs].filter(
     (value): value is number => value !== null,
   );
   const providerTimestamp =
     sideTimes.length === 0 ? null : Math.max(...sideTimes);
   return {
+    ...nativeTiming(event, providerTimestamp, retrievedAt),
     bid: event.bid,
     ask: event.ask,
     bid_size: event.bidSize,
@@ -1226,9 +1354,10 @@ function normalizeQuote(event: RawQuoteEvent): LiveOptionQuote {
   };
 }
 
-function normalizeGreeks(event: RawGreeksEvent): LiveOptionGreeks {
+function normalizeGreeks(event: RawGreeksEvent, retrievedAt: string): LiveOptionGreeks {
   const timestamp = eventTimestamp(event.timeMs, event.receivedAtMs);
   return {
+    ...nativeTiming(event, event.timeMs, retrievedAt),
     delta: event.delta,
     gamma: event.gamma,
     theta: event.theta,
@@ -1239,16 +1368,24 @@ function normalizeGreeks(event: RawGreeksEvent): LiveOptionGreeks {
     timestamp: timestamp.timestamp,
     timestamp_source: timestamp.timestampSource,
     received_at: isoTimestamp(event.receivedAtMs),
+    calculation_timestamp: null,
+    calculation_timestamp_source: "UNKNOWN",
+    iv_source: "DXLink Greeks.volatility",
+    event_flags: event.eventFlags,
+    content_complete: event.contentComplete,
   };
 }
 
-function normalizeSummary(event: RawSummaryEvent): LiveOptionSummary {
+function normalizeSummary(event: RawSummaryEvent, retrievedAt: string): LiveOptionSummary {
   const timestamp = eventTimestamp(
     event.eventTimeMs,
     event.receivedAtMs,
   );
   return {
+    ...nativeTiming(event, event.eventTimeMs, retrievedAt),
     open_interest: event.openInterest,
+    day_volume: null,
+    day_volume_source: "UNKNOWN",
     timestamp: timestamp.timestamp,
     timestamp_source: timestamp.timestampSource,
     received_at: isoTimestamp(event.receivedAtMs),
@@ -1777,6 +1914,7 @@ export function calculateGammaConcentrationProxy(
     production_gate_eligible: false,
     underlying_price: underlyingPrice.toString(),
     proxy_as_of: asOf,
+    proxy_as_of_source: "LOCAL_COLLECTION_TIME",
     total_concentration: total.toString(),
     by_strike: byStrike,
     by_expiration: groupedConcentration(
@@ -1928,6 +2066,7 @@ export class TastytradeLiveOptionSnapshotClient {
       phase: input.phase,
       deadline_ms: input.deadlineMs,
       max_temporal_skew_ms: input.maxTemporalSkewMs,
+      ...(input.exactPackage ? { exact_package: input.exactPackage } : {}),
     });
     const accessToken = await this.oauth.getAccessToken();
     assertDxlinkNotAborted(input.signal);
@@ -2035,9 +2174,9 @@ export class TastytradeLiveOptionSnapshotClient {
     const retrievedAt = isoTimestamp(retrievedAtMs);
     const contracts = selected.contracts.map((metadata) => {
       const state = snapshotRead.states.get(metadata.streamer_symbol)!;
-      const quote = state.quote ? normalizeQuote(state.quote) : null;
-      const greeks = state.greeks ? normalizeGreeks(state.greeks) : null;
-      const summary = state.summary ? normalizeSummary(state.summary) : null;
+      const quote = state.quote ? normalizeQuote(state.quote, retrievedAt) : null;
+      const greeks = state.greeks ? normalizeGreeks(state.greeks, retrievedAt) : null;
+      const summary = state.summary ? normalizeSummary(state.summary, retrievedAt) : null;
       const temporalAlignment = contractAlignment(
         quote,
         greeks,
@@ -2360,6 +2499,17 @@ export class TastytradeLiveOptionSnapshotClient {
           )
           ? "PARTIAL"
           : "NOT_AVAILABLE";
+    const exactPackageQuality = input.exactPackage
+      ? evaluateExactLiveOptionPackage(
+          input.exactPackage,
+          contracts,
+          retrievedAt,
+          snapshotRead.transport.batch_count > 0 &&
+            snapshotRead.transport.complete_batches === snapshotRead.transport.batch_count &&
+            dxlinkAuth.status !== "NOT_CONFIRMED",
+          chainRetrievedAt,
+        )
+      : null;
     return {
       contract_version: LIVE_OPTION_SNAPSHOT_CONTRACT_VERSION,
       request_id: requestId,
@@ -2386,6 +2536,15 @@ export class TastytradeLiveOptionSnapshotClient {
       production_gate_eligible: false,
       retrieved_at: retrievedAt,
       chain_retrieved_at: chainRetrievedAt,
+      available_at: retrievedAt,
+      as_of: null,
+      timestamp_provenance: {
+        retrieved_at: "LOCAL_COLLECTION_TIME",
+        available_at: "LOCAL_COLLECTION_TIME",
+        chain_retrieved_at: "LOCAL_CHAIN_RETRIEVAL_TIME",
+        as_of: "UNKNOWN",
+      },
+      exact_package_quality: exactPackageQuality,
       snapshot_complete: snapshotComplete,
       quote_complete: quoteCoverage.complete,
       greeks_complete: greeksCoverageBase.complete,
@@ -2450,12 +2609,14 @@ export class TastytradeLiveOptionSnapshotClient {
       contracts,
       gamma_concentration_proxy: gammaProxy,
       market_data_handoff: {
+        exact_package_quality: exactPackageQuality,
         gamma_concentration_proxy:
           gammaProxy.status === "NOT_AVAILABLE"
             ? null
             : gammaProxy.total_concentration,
         gamma_proxy_methodology: GAMMA_CONCENTRATION_METHODOLOGY,
         gamma_proxy_as_of: retrievedAt,
+        gamma_proxy_as_of_source: "LOCAL_COLLECTION_TIME",
         gamma_proxy_completeness: {
           status: gammaProxy.status,
           coverage_ratio: gammaProxy.data_completeness.coverage_ratio,
@@ -2476,6 +2637,7 @@ export class TastytradeLiveOptionSnapshotClient {
         request_id: requestId,
         snapshot_id: snapshotId,
         as_of: retrievedAt,
+        as_of_source: "LOCAL_COLLECTION_TIME",
         methodology: GAMMA_CONCENTRATION_METHODOLOGY,
         methodology_version: GAMMA_CONCENTRATION_METHODOLOGY_VERSION,
         evidence_role: "SUPPORTING_EVIDENCE",
@@ -2670,6 +2832,7 @@ export class TastytradeLiveOptionSnapshotClient {
       const socket = this.socketFactory(quoteToken.url);
       const unmatchedSymbols = new Set<string>();
       let subscribed = false;
+      let negotiatedEventFields: Partial<Record<LiveOptionDxlinkEventType, readonly string[]>> | undefined;
       let settled = false;
       let keepalive: ReturnType<typeof setInterval> | null = null;
       let deadline: ReturnType<typeof setTimeout> | null = null;
@@ -2775,6 +2938,22 @@ export class TastytradeLiveOptionSnapshotClient {
           message.channel === 3 &&
           !subscribed
         ) {
+          if (message.eventFields !== undefined) {
+            const configured = asRecord(message.eventFields, "FEED_CONFIG.eventFields");
+            negotiatedEventFields = {};
+            for (const type of ["Quote", "Greeks", "Summary"] as const) {
+              const fields = configured[type];
+              if (fields === undefined) continue;
+              if (!Array.isArray(fields) || fields.length === 0 ||
+                  fields.some((field) => typeof field !== "string") ||
+                  new Set(fields).size !== fields.length ||
+                  !fields.includes("eventSymbol")) {
+                fail(new Error(`Invalid DXLink ${type} negotiated field layout.`));
+                return;
+              }
+              negotiatedEventFields[type] = fields;
+            }
+          }
           subscribed = true;
           send(subscriptionMessage(subscriptions));
         } else if (
@@ -2784,6 +2963,7 @@ export class TastytradeLiveOptionSnapshotClient {
           const events = parseDxlinkLiveOptionData(
             message.data,
             this.clock(),
+            negotiatedEventFields,
           );
           for (const symbol of mergeLiveOptionEvents(states, events)) {
             unmatchedSymbols.add(symbol);

@@ -60,7 +60,7 @@ final data.
 
 | Tool | Purpose |
 | --- | --- |
-| `tastytrade_get_live_option_snapshot` | Auto-chunk and merge exact SPX/SPXW DXLink Quote, Greeks, and `Summary.openInterest` cohorts, then calculate a research-only unsigned Gamma concentration proxy |
+| `tastytrade_get_live_option_snapshot` | Auto-chunk and merge exact SPX/SPXW DXLink Quote, Greeks, and `Summary.openInterest` cohorts; preserve native/local timing, evaluate optional 2/3/4-leg exact packages with caller quality policy for FinPilot evidence handoff, and calculate a research-only unsigned Gamma concentration proxy |
 | `tastytrade_compute_heuristic_signed_gex` | Apply an explicit versioned research signing hypothesis to one unified snapshot, with separate current-Gamma signed GEX and optional bounded spot-repriced heuristic gamma flip |
 | `tastytrade_price_option_package` | Price verticals, iron condors, and double diagonals with explicit native/synthetic provenance |
 | `tastytrade_discover_historical_spx_candidates` | Reconstruct timestamp-safe historical SPXW candidates under a versioned resolution profile, with exact-timestamp Backtester fallback |
