@@ -1,0 +1,45 @@
+{
+  "provenance": "SYNTHETIC schema regression: invented IDs, contracts, prices and times; represents integer quantity and epoch-millisecond updated-at types observed in historical GET. Not incident evidence.",
+  "order": {
+    "id": 880000001,
+    "status": "Filled",
+    "price": "1.250000000000000001",
+    "price-effect": "Debit",
+    "order-type": "Limit",
+    "time-in-force": "Day",
+    "source": "OptionOmega",
+    "received-at": "2026-10-12T17:00:00.000Z",
+    "terminal-at": "2026-10-12T17:00:00.123Z",
+    "updated-at": 1791824400123,
+    "legs": [
+      {
+        "symbol": "SPXW  261012C06000000",
+        "action": "Buy to Close",
+        "quantity": 1,
+        "remaining-quantity": 0,
+        "fills": [
+          {
+            "fill-id": "invented-buy-fill",
+            "quantity": 1,
+            "fill-price": "2.000000000000000001",
+            "filled-at": "2026-10-12T17:00:00.123Z"
+          }
+        ]
+      },
+      {
+        "symbol": "SPXW  261012C06040000",
+        "action": "Sell to Close",
+        "quantity": 1,
+        "remaining-quantity": 0,
+        "fills": [
+          {
+            "fill-id": "invented-sell-fill",
+            "quantity": 1,
+            "fill-price": "0.75",
+            "filled-at": "2026-10-12T17:00:00.123Z"
+          }
+        ]
+      }
+    ]
+  }
+}

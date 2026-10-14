@@ -86,6 +86,13 @@ import {
 } from "./package-pricing.js";
 import { TastytradeOAuthClient } from "./oauth-client.js";
 import {
+  BROKER_HISTORY_SCHEMA, TastytradeBrokerHistoryClient,
+  type BrokerHistoryInput, type BrokerHistoryService,
+} from "./broker-history.js";
+import {
+  OO_BROKER_AUDIT_SCHEMA, buildOOBrokerAudit, type OOBrokerAuditInput,
+} from "./oo-broker-audit.js";
+import {
   createSpreadBacktest,
   prepareSpreadResearch,
   runSpreadSimulation,
@@ -1617,6 +1624,21 @@ const ID_SCHEMA = {
 
 export const TOOLS: Tool[] = [
   {
+    name: "tastytrade_get_historical_orders",
+    description: "Read-only paginated SPX/SPXW broker historical orders for an explicitly selected Traditional IRA and ET-date or offset-time window. Returns masked account, available lifecycle fields, exact decimals and definite coverage gaps; not a recent/live order snapshot.",
+    inputSchema: BROKER_HISTORY_SCHEMA,
+  },
+  {
+    name: "tastytrade_get_historical_transactions",
+    description: "Read-only paginated SPX/SPXW broker historical transactions/executions, exact per-leg prices, quantities, fees and original/UTC/ET timestamps. No trading or mutations. Inaccessible, empty and incomplete results are explicit.",
+    inputSchema: BROKER_HISTORY_SCHEMA,
+  },
+  {
+    name: "tastytrade_audit_oo_broker_orders",
+    description: "Research-only OO versus broker historical SPXW audit. Optional structured/text Activity Log, explicit order/leg evidence, independent call/put cash flows, clock discrepancies, conservative completeness, evidence matrix and Traditional Chinese summary. No root-cause or marketability claims without evidence.",
+    inputSchema: OO_BROKER_AUDIT_SCHEMA,
+  },
+  {
     name: "tastytrade_get_backtest_available_dates",
     description:
       "List tastytrade Backtester symbols and their available historical date ranges. Use this before regression tests to verify SPY, XSP, SPX, or other symbol coverage.",
@@ -1813,6 +1835,7 @@ export type LiveOptionSnapshotService = {
 };
 
 export type ResearchServices = {
+  brokerHistory?: BrokerHistoryService;
   backtester?: BacktesterService;
   candles?: HistoricalCandlesService;
   liveOptions?: LiveOptionSnapshotService;
@@ -1854,6 +1877,7 @@ export function createResearchServer(
   services: ResearchServices = {},
 ): Server {
   const oauth = new TastytradeOAuthClient();
+  const brokerHistory = services.brokerHistory ?? new TastytradeBrokerHistoryClient(oauth);
   const quoteTokens = new TastytradeDxlinkTokenClient(oauth);
   const backtester =
     services.backtester ?? new TastytradeBacktesterClient(oauth);
@@ -1924,6 +1948,12 @@ export function createResearchServer(
     }
 
     switch (request.params.name) {
+      case "tastytrade_get_historical_orders":
+        return toolResult(await brokerHistory.getOrders(requestArg<BrokerHistoryInput>(args)));
+      case "tastytrade_get_historical_transactions":
+        return toolResult(await brokerHistory.getTransactions(requestArg<BrokerHistoryInput>(args)));
+      case "tastytrade_audit_oo_broker_orders":
+        return toolResult(await buildOOBrokerAudit(brokerHistory, requestArg<OOBrokerAuditInput>(args)));
       case "tastytrade_get_backtest_available_dates":
         return toolResult(await backtester.getAvailableDates());
       case "tastytrade_list_backtests":

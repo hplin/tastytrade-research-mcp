@@ -29,6 +29,33 @@ The project is intentionally separate from the official
 | `tastytrade_cancel_backtest` | `POST /backtests/{id}/cancel` | Cancel only a Backtester job |
 | `tastytrade_simulate_trade` | `POST /simulate-trade` | Simulate one exact historical trade |
 
+### Read-only broker history and OO audit
+
+| Tool | Purpose |
+| --- | --- |
+| `tastytrade_get_historical_orders` | Paginated historical SPX/SPXW orders, all statuses, available lifecycle timestamps and explicit coverage |
+| `tastytrade_get_historical_transactions` | Exact-decimal per-leg historical executions, transaction cash flows, fees and UTC/ET timestamps |
+| `tastytrade_audit_oo_broker_orders` | OO-to-broker ID/leg correlation, attempts, independent call/put cash flows, evidence matrix and Traditional Chinese summary |
+
+These tools dynamically resolve an explicitly selected Traditional IRA, mask
+account identifiers, and expose only broker GET requests. They do not use the
+recent/live order snapshot. See [broker history and OO audit](docs/broker-history-audit.md)
+for window semantics, privacy, completeness, quote limitations, and a
+[synthetic FinPilot input](docs/examples/oo-broker-audit-synthetic.json).
+Engineering fixtures remain explicitly synthetic, not live acceptance evidence.
+Authorized October 12–13 ET broker queries enumerated 59 orders and 76 transactions
+with complete provider-result pagination, not exhaustive lifecycle-event history.
+User-provided original OO Activity Log text for both days is now available
+privately and correlated through source-bound normalization. Its clocks have
+whole-second precision; ET is attributed to the user context, not embedded offsets.
+One October 12 exhaustion episode is identified; a second reported episode retains
+a definite identification-coverage gap, not an invented failure or proof of absence.
+Issue #102 remains open pending independent acceptance of the actual evidence.
+Fees and cash flows are reconciled when available; final fee,
+settlement and campaign incompleteness remains an explicit evidence limitation,
+with definitive claims suppressed, not a new requirement to acquire unavailable
+final data.
+
 ### Research and regression tools
 
 | Tool | Purpose |
@@ -85,7 +112,7 @@ runner guidance are documented in
 ## Private historical evidence cache
 
 The historical candle, SPX candidate/universe, and exact-package tools accept
-an opt-in `evidence_cache` policy. The server exposes 24 tools, including the
+an opt-in `evidence_cache` policy. The server exposes 27 tools, including the
 local-only historical quote normalizer, deterministic execution-model
 adapter, and historical replay report builder.
 `READ_WRITE` stores sanitized source observations and normalized results as

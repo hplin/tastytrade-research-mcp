@@ -178,7 +178,7 @@ describe("MCP research server", () => {
     await client.connect(clientTransport);
     try {
       const tools = await client.listTools();
-      expect(tools.tools).toHaveLength(24);
+      expect(tools.tools).toHaveLength(27);
       expect(tools.tools.map((tool) => tool.name)).toEqual(
         expect.arrayContaining([
           "tastytrade_get_live_option_snapshot",

@@ -1,0 +1,48 @@
+{
+  "provenance": "SYNTHETIC example only; not live acceptance evidence. Replace normalized events with authorized original OO evidence.",
+  "tool": "tastytrade_audit_oo_broker_orders",
+  "arguments": {
+    "request": {
+      "account": {"type": "Traditional IRA"},
+      "start": "2026-10-12",
+      "end": "2026-10-14",
+      "page_size": 100,
+      "max_pages": 100,
+      "strategy_name": "MEIC+Ladder-V1-Early-1300-1400-C175-SL75",
+      "activity_log": {
+        "events": [
+          {
+            "kind": "STOP_TRIGGERED",
+            "timestamp": "2026-10-13T14:06:00-04:00",
+            "symbols": ["SPXW  261013C07800000", "SPXW  261013C07840000"],
+            "price": "3.65",
+            "campaign_id": "synthetic-call-side"
+          },
+          {
+            "kind": "RETRY_LIMIT_EXHAUSTED",
+            "timestamp": "2026-10-13T14:06:51-04:00",
+            "symbols": ["SPXW  261013C07800000", "SPXW  261013C07840000"]
+          },
+          {
+            "kind": "FILL_REPORTED",
+            "timestamp": "2026-10-13T14:06:57-04:00",
+            "order_id": "514128125",
+            "symbols": ["SPXW  261013C07800000", "SPXW  261013C07840000"],
+            "price": "8.15",
+            "campaign_id": "synthetic-call-side"
+          }
+        ]
+      }
+    }
+  },
+  "expected_invariants": {
+    "masked_account": true,
+    "quote_evidence": "QUOTE_EVIDENCE_UNAVAILABLE",
+    "marketability": "UNVERIFIED",
+    "liquidity": "UNVERIFIED",
+    "october_12_missing_evidence": "DATA_COVERAGE_GAP_NO_IDS_OR_ROOT_CAUSE_INFERRED",
+    "original_oo_and_broker_clocks_preserved": true,
+    "never_infer_retry_ids_from_nearby_orders": true,
+    "live_operational_acceptance": "OUTSTANDING"
+  }
+}
