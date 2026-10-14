@@ -197,6 +197,28 @@ async function withCache(run) {
 }
 
 describe("approval-gated bounded historical provider adapter", () => {
+  test.each(["BID", "ASK"])(
+    "rejects unsupported %s candle aggregation before provider retrieval",
+    async (priceType) => {
+      const transport = transportWith(async () => {
+        throw new Error("must not be called");
+      });
+      const adapter = new BoundedHistoricalProviderAdapter(
+        approvedConfig(),
+        transport,
+      );
+      await expect(adapter.getHistoricalCandles({
+        symbol: "SPX",
+        instrument_type: "INDEX",
+        interval: "1m",
+        price_type: priceType,
+        start_time: "2026-08-25T14:00:00Z",
+        end_time: "2026-08-25T14:01:00Z",
+      })).rejects.toThrow("supports LAST price_type only");
+      expect(transport.fetchPage).not.toHaveBeenCalled();
+    },
+  );
+
   test("blocks unapproved providers, untrusted hosts, and tastytrade credential reuse", () => {
     const transport = transportWith(async () => {
       throw new Error("must not be called");

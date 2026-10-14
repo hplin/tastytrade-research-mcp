@@ -87,7 +87,11 @@ snapshot, every selected observation is within
 `max_temporal_skew_minutes`. Otherwise `reference_value` is null and the result
 is `NOT_AVAILABLE` with explicit missing, stale, or alignment warnings.
 
-Historical Candle events do not provide bid and ask prices. Therefore:
+These package tools request LAST candles, which do not provide synchronized
+bid and ask quotes. The direct candle tool can separately request BID/ASK
+OHLC aggregates (see [historical-candles.md](historical-candles.md)), but those
+series are not executable quotes and are not used by these package tools.
+Therefore:
 
 - `reference_value` is a trade/candle-derived valuation reference;
 - `synthetic_mid` and `synthetic_natural` remain null;

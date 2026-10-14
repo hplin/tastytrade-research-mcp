@@ -74,6 +74,76 @@ snapshot, or no usable contract evidence because of retention or entitlement.
 Those outcomes remain separate from symbol mismatch and are not inferred to
 be authorization failures without provider evidence.
 
+## Explicit LAST, BID, and ASK aggregates
+
+`tastytrade_get_historical_candles` accepts optional `price_type: LAST | BID |
+ASK`. Omission preserves the existing LAST subscription and request/cache
+identity. BID and ASK request separate DXLink `price=bid` and `price=ask`
+OHLC series; the result identifies its `price_type` and
+`evidence_class: VALUATION_ONLY`.
+
+For example, request the recent short-leg ASK aggregate:
+
+```json
+{
+  "request": {
+    "symbol": "SPXW  261013C07800000",
+    "streamer_symbol": ".SPXW261013C7800",
+    "instrument_type": "OPTION",
+    "interval": "1m",
+    "price_type": "ASK",
+    "start_time": "2026-10-13T18:03:00Z",
+    "end_time": "2026-10-13T18:12:00Z",
+    "deadline_ms": 18000,
+    "max_output_candles": 100,
+    "max_received_events": 40000,
+    "max_buffer_bytes": 10000000
+  }
+}
+```
+
+The direct candle range retains its existing bar-start semantics. Before
+evaluating a checkpoint or counting completed observations, require
+`available_at <= checkpoint`; a row starting at the range end is not a
+completed bar at that time.
+
+These are aggregated price series, **not synchronized event-time NBBO**.
+Separate bid and ask closes can come from different source events within a
+bar; equal bar timestamps do not establish quote synchronization. The source
+does not supply bid/ask sizes, last-quote event timestamps, executable package
+prices, or verified fills. `bid_volume` and `ask_volume` are volumes, not
+quote sizes. Missing bars remain missing; no last-price, other-price-type,
+current-quote, or coarser-resolution substitution is performed.
+`AVAILABLE` can still describe a completed provider snapshot with internal
+missing-bar warnings; it is not a continuous quote-coverage assertion.
+
+[dxFeed documents](https://kb.dxfeed.com/en/data-services/aggregated-services/candle-types.html)
+approximately 14 calendar days of BID/ASK/MARK candle history, subject also
+to candle-count limits and entitlement. That documentation is not a promise
+of complete SPXW coverage under the tastytrade account.
+
+A 2026-10-14 UTC read-only probe of the existing entitlement returned these
+completed 1m aggregates for 2026-10-13 14:03–14:12 ET:
+
+| Exact contract | BID bars | ASK bars |
+| --- | ---: | ---: |
+| `SPXW  261013C07800000` | 9 | 9 |
+| `SPXW  261013C07840000` | 6 | 7 |
+
+For `SPXW  260702C07475000` on 2026-07-02, BID and ASK 1m
+subscriptions both returned marker-only `SNAPSHOT_SNIP` and zero bars.
+LAST 5m/15m/30m session queries also returned SNIP; separate LAST 1h and 1d
+queries returned seven and one bars respectively. Short 1m/5m attempts
+alternated between SNIP and snapshot timeout. This is resolution-dependent
+availability, not proof of a particular retention or entitlement cause.
+Hourly/daily valuation does not establish minute-level stop ordering.
+The probe assumed the July 2 expiration; it did not reconstruct the complete
+incident inventory or verify a deployed commit.
+
+Historical package, discovery, and execution-evidence tools retain their
+LAST/reference-only behavior. BID/ASK candle aggregates are not promoted to
+the quote-backed handoff. External-provider enablement remains unchanged.
+
 ## Snapshot and transaction lifecycle
 
 Lifecycle is tracked independently for each canonical symbol.
@@ -131,3 +201,7 @@ When the private backend is configured, requests may opt into `READ_WRITE`,
 changes bar timing or resolution semantics. See
 [`evidence-cache.md`](evidence-cache.md) for identity, revision, corruption,
 quota, and offline-replay rules.
+LAST, BID, and ASK have distinct cache fingerprints and manifests; an exact
+manifest for one price type cannot satisfy another. The dormant bounded-history
+adapter supports LAST candles only and rejects BID/ASK rather than silently
+returning a different series.

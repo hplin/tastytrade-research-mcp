@@ -45,6 +45,18 @@ export type InstrumentType =
 
 export type InstrumentLifecycle = "ACTIVE" | "EXPIRED" | "UNKNOWN";
 
+export type HistoricalCandlePriceType = "LAST" | "BID" | "ASK";
+
+export function normalizeHistoricalCandlePriceType(
+  value: HistoricalCandlePriceType | undefined,
+): HistoricalCandlePriceType {
+  if (value === undefined) return "LAST";
+  if (value !== "LAST" && value !== "BID" && value !== "ASK") {
+    throw new Error("price_type must be LAST, BID, or ASK.");
+  }
+  return value;
+}
+
 export type CandleSession =
   | {
       kind: "ALL";
@@ -67,6 +79,7 @@ export type HistoricalCandlesInput = {
   instrument_type: InstrumentType;
   lifecycle?: InstrumentLifecycle;
   interval: string;
+  price_type?: HistoricalCandlePriceType;
   start_time: string;
   end_time: string;
   session?: CandleSession;
@@ -91,6 +104,7 @@ export type HistoricalCandleInstrument = {
 export type HistoricalCandlesBatchInput = {
   instruments: HistoricalCandleInstrument[];
   interval: string;
+  price_type?: HistoricalCandlePriceType;
   start_time: string;
   end_time: string;
   session?: CandleSession;
@@ -172,6 +186,8 @@ export type HistoricalCandlesResult = {
   streamer_symbol: string;
   instrument_type: InstrumentType;
   interval: string;
+  price_type?: HistoricalCandlePriceType;
+  evidence_class?: "VALUATION_ONLY";
   requested_range: {
     start: string;
     end: string;
@@ -1026,6 +1042,7 @@ export class TastytradeHistoricalCandlesClient {
         },
       ],
       interval: input.interval,
+      price_type: input.price_type,
       start_time: input.start_time,
       end_time: input.end_time,
       session: input.session,
@@ -1083,6 +1100,7 @@ export class TastytradeHistoricalCandlesClient {
       };
     });
     const interval = input.interval.trim();
+    const priceType = normalizeHistoricalCandlePriceType(input.price_type);
     const intervalMs = intervalMilliseconds(interval);
     const providerPeriod = canonicalCandlePeriod(interval);
     const start = normalizeTimestamp(input.start_time, "start_time");
@@ -1137,10 +1155,12 @@ export class TastytradeHistoricalCandlesClient {
       interval.toLowerCase(),
     );
     const session = sessionConfiguration(candleSession(effectiveProfile));
+    const priceAttribute =
+      priceType === "LAST" ? "" : `,price=${priceType.toLowerCase()}`;
     const candleSymbols = instruments.map((instrument) =>
       session.kind === "REGULAR"
-        ? `${instrument.streamerSymbol}{=${providerPeriod},a=s,tho=true}`
-        : `${instrument.streamerSymbol}{=${providerPeriod}}`,
+        ? `${instrument.streamerSymbol}{=${providerPeriod}${priceAttribute},a=s,tho=true}`
+        : `${instrument.streamerSymbol}{=${providerPeriod}${priceAttribute}}`,
     );
     const canonicalCandleSymbols = candleSymbols.map(
       canonicalizeDxlinkCandleSymbol,
@@ -1184,6 +1204,7 @@ export class TastytradeHistoricalCandlesClient {
     const requestId = stableRequestId({
       instruments,
       interval,
+      ...(priceType === "LAST" ? {} : { price_type: priceType }),
       start,
       end,
       resolution_profile: normalizedProfile,
@@ -1231,6 +1252,13 @@ export class TastytradeHistoricalCandlesClient {
       const warnings = [
         ...gapWarnings(candles, intervalMs, session),
         ...coverageWarnings,
+        ...(priceType === "LAST"
+          ? []
+          : [
+              "BID_ASK_CANDLE_AGGREGATES_NOT_SYNCHRONIZED_QUOTES",
+              "BID_ASK_CANDLE_SIZES_UNAVAILABLE",
+              "VALUATION_ONLY_NOT_EXECUTABLE",
+            ]),
       ];
       const failureReasons: HistoricalCandlesFailureReason[] = [];
       const addFailureReason = (reason: HistoricalCandlesFailureReason) => {
@@ -1300,6 +1328,8 @@ export class TastytradeHistoricalCandlesClient {
         streamer_symbol: instrument.streamerSymbol,
         instrument_type: instrument.instrumentType,
         interval,
+        price_type: priceType,
+        evidence_class: "VALUATION_ONLY" as const,
         requested_range: { start, end },
         actual_range:
           candles.length === 0

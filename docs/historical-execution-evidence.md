@@ -94,8 +94,9 @@ The probe uses the already-authorized tastytrade DXLink candle source at an
 older and a recent 07:30 America/Los_Angeles checkpoint. It records
 per-field support without changing provider enablement. DXLink candles can
 provide timestamped close/IV valuation evidence when retained, but the
-current source does not expose historical bid, ask, bid size, ask size, or
-native package quotes. Those fields remain unsupported/null, and the probe
+default LAST-candle path does not expose synchronized historical bid, ask,
+bid size, ask size, or native package quotes. Those fields remain
+unsupported/null in this quote-backed contract, and the probe
 always reports `six_month_coverage_pass: false`. Enabling a separate quote
 provider remains subject to
 [`historical-provider-decision.md`](historical-provider-decision.md).
@@ -111,3 +112,11 @@ The exact sanitized result is retained in
 [`historical-quote-capability-2026-09-26.json`](historical-quote-capability-2026-09-26.json).
 This is a capability result, not a six-month coverage pass and not evidence
 that a quote-backed execution model can run on those dates.
+
+The direct candle tool now accepts explicit BID/ASK aggregation subscriptions.
+A 2026-10-14 UTC probe retrieved recent SPXW bid/ask OHLC series, but the
+separate aggregates lack synchronized quote event times and sizes and have
+incomplete exact-leg coverage. July 2 1m BID/ASK remained snipped with zero
+bars. They are not converted into the quote observations required by this
+normalizer. See [historical-candles.md](historical-candles.md) for the bounded
+capability and retention distinction.

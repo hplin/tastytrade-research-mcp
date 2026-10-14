@@ -199,6 +199,156 @@ function clientWithAuthTokens(rows, tokens, unauthorizedTokens) {
 }
 
 describe("DXLink candle normalization", () => {
+  test.each(["BID", "ASK"])(
+    "requests explicit %s aggregates without claiming executable quotes",
+    async (priceType) => {
+      const timestamp = Date.parse("2026-09-24T14:00:00.000Z");
+      const symbol = `SPY{price=${priceType.toLowerCase()},=m}`;
+      const { client, getSocket } = clientWithRows([
+        row(timestamp, 4, "100", symbol),
+        marker(timestamp - 1, symbol),
+      ]);
+      const result = await client.getHistoricalCandles({
+        symbol: "SPY",
+        instrument_type: "EQUITY",
+        interval: "1m",
+        price_type: priceType,
+        start_time: "2026-09-24T14:00:00.000Z",
+        end_time: "2026-09-24T14:01:00.000Z",
+      });
+      const subscription = getSocket().sent.find(
+        (message) => message.type === "FEED_SUBSCRIPTION" && message.add,
+      );
+      expect(subscription.add[0].symbol).toBe(
+        `SPY{=m,price=${priceType.toLowerCase()}}`,
+      );
+      expect(result).toMatchObject({
+        status: "AVAILABLE",
+        price_type: priceType,
+        evidence_class: "VALUATION_ONLY",
+        candles: [
+          expect.objectContaining({
+            close: "100",
+            available_at: "2026-09-24T14:01:00.000Z",
+          }),
+        ],
+        warnings: expect.arrayContaining([
+          "BID_ASK_CANDLE_AGGREGATES_NOT_SYNCHRONIZED_QUOTES",
+          "BID_ASK_CANDLE_SIZES_UNAVAILABLE",
+          "VALUATION_ONLY_NOT_EXECUTABLE",
+        ]),
+      });
+      expect(result.candles[0].provider_evidence).toBeUndefined();
+    },
+  );
+
+  test("preserves BID identity under regular-session alignment", async () => {
+    const timestamp = Date.parse("2026-09-24T14:00:00.000Z");
+    const symbol = "SPY{tho=true,price=bid,=m,a=s}";
+    const { client, getSocket } = clientWithRows([
+      row(timestamp, 4, "100", symbol),
+      marker(timestamp - 1, symbol),
+    ]);
+    const result = await client.getHistoricalCandles({
+      symbol: "SPY",
+      instrument_type: "EQUITY",
+      interval: "1m",
+      price_type: "BID",
+      session: { kind: "REGULAR", timezone: "America/New_York" },
+      start_time: "2026-09-24T14:00:00.000Z",
+      end_time: "2026-09-24T14:01:00.000Z",
+    });
+    expect(getSocket().sent.find(
+      (message) => message.type === "FEED_SUBSCRIPTION" && message.add,
+    ).add[0].symbol).toBe("SPY{=m,price=bid,a=s,tho=true}");
+    expect(result).toMatchObject({ status: "AVAILABLE", price_type: "BID" });
+  });
+
+  test("keeps omitted and explicit LAST request identities unchanged", async () => {
+    const timestamp = Date.parse("2026-09-24T14:00:00.000Z");
+    const request = {
+      symbol: "SPY",
+      instrument_type: "EQUITY",
+      interval: "1m",
+      start_time: "2026-09-24T14:00:00.000Z",
+      end_time: "2026-09-24T14:01:00.000Z",
+    };
+    const run = async (priceType) => clientWithRows([
+      row(timestamp, 4, "100", "SPY{=m}"),
+      marker(timestamp - 1, "SPY{=m}"),
+    ]).client.getHistoricalCandles({ ...request, price_type: priceType });
+    const omitted = await run(undefined);
+    const explicit = await run("LAST");
+    expect(omitted.request_id).toBe(explicit.request_id);
+    expect(omitted.price_type).toBe("LAST");
+    expect(omitted.warnings).not.toContain(
+      "BID_ASK_CANDLE_AGGREGATES_NOT_SYNCHRONIZED_QUOTES",
+    );
+  });
+
+  test("rejects invalid price types before subscribing", async () => {
+    const { client, getSocket } = clientWithRows([]);
+    await expect(client.getHistoricalCandles({
+      symbol: "SPY",
+      instrument_type: "EQUITY",
+      interval: "1m",
+      price_type: "MARK",
+      start_time: "2026-09-24T14:00:00.000Z",
+      end_time: "2026-09-24T14:01:00.000Z",
+    })).rejects.toThrow("price_type must be LAST, BID, or ASK.");
+    expect(getSocket()).toBeUndefined();
+  });
+
+  test("does not substitute LAST data for a missing BID snapshot", async () => {
+    const timestamp = Date.parse("2026-09-24T14:00:00.000Z");
+    const { client } = clientWithRows([
+      row(timestamp, 4, "100", "SPY{=m}"),
+      marker(timestamp - 1, "SPY{=m}"),
+    ]);
+    const result = await client.getHistoricalCandles({
+      symbol: "SPY",
+      instrument_type: "EQUITY",
+      interval: "1m",
+      price_type: "BID",
+      start_time: "2026-09-24T14:00:00.000Z",
+      end_time: "2026-09-24T14:01:00.000Z",
+      deadline_ms: 50,
+    });
+    expect(result).toMatchObject({
+      status: "NOT_AVAILABLE",
+      price_type: "BID",
+      candles: [],
+      failure_reasons: expect.arrayContaining(["SNAPSHOT_TIMEOUT"]),
+      transport_diagnostics: {
+        unmatched_received_symbols: ["SPY{=m}"],
+      },
+    });
+  });
+
+  test("retains snipped ASK evidence as unavailable without price-type fallback", async () => {
+    const timestamp = Date.parse("2026-09-24T14:00:00.000Z");
+    const { client, getSocket } = clientWithRows([
+      marker(timestamp, "SPY{=m,price=ask}", 20),
+    ]);
+    const result = await client.getHistoricalCandles({
+      symbol: "SPY",
+      instrument_type: "EQUITY",
+      interval: "1m",
+      price_type: "ASK",
+      start_time: "2026-09-24T14:00:00.000Z",
+      end_time: "2026-09-24T14:01:00.000Z",
+    });
+    expect(result).toMatchObject({
+      status: "NOT_AVAILABLE",
+      price_type: "ASK",
+      snapshot_truncated: true,
+      failure_reasons: expect.arrayContaining(["PROVIDER_SNAPSHOT_SNIPPED"]),
+    });
+    expect(getSocket().sent.filter(
+      (message) => message.type === "FEED_SUBSCRIPTION" && message.add,
+    )).toHaveLength(1);
+  });
+
   test("canonicalizes only semantically equivalent CandleSymbol aliases", () => {
     expect(
       canonicalizeDxlinkCandleSymbol(

@@ -61,12 +61,19 @@ The mutable lookup fingerprint covers:
 - provider ID and non-sensitive dataset/license-scope IDs;
 - exact symbol, streamer symbol, and instrument type in request order;
 - requested, native, and effective aggregation;
-- session, alignment, and fixed `LAST` price type;
+- session, alignment, and explicit `LAST`, `BID`, or `ASK` price type;
 - exact request range and `as_of`;
 - the complete versioned resolution profile, including age/skew and fallback
   policy;
 - normalized resource policy;
 - normalization, model, and source revisions.
+
+Omitted candle `price_type` still means LAST and preserves the existing
+lookup identity. BID/ASK aggregates use separate fingerprints and manifests;
+provider results and exact-manifest replay must match the requested price
+type. Legacy results without `price_type` are treated as LAST only. This
+separation does not promote bid/ask OHLC aggregates into synchronized quote
+or execution evidence.
 
 `retrieved_at` is unknown before a provider call, so it is not part of the
 mutable lookup fingerprint. It is part of every immutable revision manifest,

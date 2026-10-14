@@ -12,11 +12,13 @@ import {
 } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import type { ExecutionReferences } from "./execution-evidence.js";
-import type {
-  CandleSession,
-  HistoricalCandlesBatchInput,
-  HistoricalCandlesInput,
-  HistoricalCandlesResult,
+import {
+  normalizeHistoricalCandlePriceType,
+  type CandleSession,
+  type HistoricalCandlePriceType,
+  type HistoricalCandlesBatchInput,
+  type HistoricalCandlesInput,
+  type HistoricalCandlesResult,
 } from "./historical-candles.js";
 import type { HistoricalSpxCandidateProgressOptions } from "./historical-spx-candidate-progress.js";
 import {
@@ -140,7 +142,7 @@ type SourceIdentity = {
   };
   session: ResolutionProfileSession;
   alignment: "MIDNIGHT" | "SESSION";
-  price_type: "LAST";
+  price_type: HistoricalCandlePriceType;
   request_range: {
     start: string;
     end: string;
@@ -1751,7 +1753,7 @@ export class FileEvidenceCache {
       },
       session: resolutionProfile.session,
       alignment: resolutionProfile.alignment,
-      price_type: "LAST",
+      price_type: normalizeHistoricalCandlePriceType(request.price_type),
       request_range: {
         start: normalizeRfc3339(request.start_time, "start_time"),
         end: normalizeRfc3339(request.end_time, "end_time"),
@@ -1963,6 +1965,8 @@ export class FileEvidenceCache {
         result.symbol !== expected.symbol ||
         result.streamer_symbol !== expected.streamer_symbol ||
         result.instrument_type !== expected.instrument_type ||
+        normalizeHistoricalCandlePriceType(result.price_type) !==
+          plan.sourceIdentity.price_type ||
         result.interval !== plan.sourceIdentity.aggregation.effective ||
         normalizeRfc3339(
           result.requested_range.start,
@@ -2834,6 +2838,7 @@ function singleToBatch(
       },
     ],
     interval: request.interval,
+    price_type: request.price_type,
     start_time: request.start_time,
     end_time: request.end_time,
     session: request.session,
@@ -2974,6 +2979,7 @@ export class CachedHistoricalCandlesService {
           instrument_type: instrument.instrument_type,
           lifecycle: instrument.lifecycle,
           interval: request.interval,
+          price_type: request.price_type,
           start_time: request.start_time,
           end_time: request.end_time,
           session: request.session,

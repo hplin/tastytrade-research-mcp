@@ -1518,6 +1518,12 @@ const HISTORICAL_CANDLES_SCHEMA = {
           type: "string",
           pattern: "^[1-9][0-9]*(s|m|h|d|w)$",
         },
+        price_type: {
+          type: "string",
+          enum: ["LAST", "BID", "ASK"],
+          description:
+            "Defaults to LAST. BID/ASK select separate historical price OHLC aggregates, not synchronized NBBO, quote sizes, or executable prices. Retention and coverage depend on the provider.",
+        },
         start_time: RFC3339_SCHEMA,
         end_time: RFC3339_SCHEMA,
         session: CANDLE_SESSION_SCHEMA,
@@ -1779,7 +1785,7 @@ export const TOOLS: Tool[] = [
   {
     name: "tastytrade_get_historical_candles",
     description:
-      "Retrieve normalized historical OHLCV candles with explicit bar_start, bar_end, available_at, retrieved_at, and versioned resolution/cohort metadata. Supports private immutable cache/offline replay, exact UTC/session windows, canonical provider symbol matching, independent resource budgets, and no resampling.",
+      "Retrieve historical LAST/BID/ASK price OHLC aggregates with explicit bar_start, bar_end, available_at, retrieved_at, and versioned resolution/cohort metadata. BID/ASK candles are valuation-only aggregates, not synchronized NBBO, quote sizes, or executable prices. Supports price-type-isolated immutable cache/offline replay, exact UTC/session windows, canonical provider symbol matching, independent resource budgets, and no resampling.",
     inputSchema: HISTORICAL_CANDLES_SCHEMA,
   },
 ];
