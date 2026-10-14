@@ -31,6 +31,8 @@ export function mockLiveOptionPackage({
   omitFields = {},
   missingEventLeg = false,
   root = "SPXW",
+  dispatchFeedData = (message, socket) => socket.emit(message),
+  clientOptions = {},
 } = {}) {
   const legs = Array.from({ length: legCount }, (_, index) => {
     const expiration = root === "SPX"
@@ -69,9 +71,11 @@ export function mockLiveOptionPackage({
   }];
   mutateChain(items);
   const frames = [];
+  const sockets = [];
   class FixtureSocket {
     readyState = 0;
     fields = {};
+    timers = new Set();
     constructor() {
       queueMicrotask(() => {
         this.readyState = 1;
@@ -79,6 +83,13 @@ export function mockLiveOptionPackage({
       });
     }
     emit(message) { this.onmessage?.({ data: JSON.stringify(message) }); }
+    schedule(callback, delayMs) {
+      const timer = setTimeout(() => {
+        this.timers.delete(timer);
+        if (this.readyState === 1) callback();
+      }, delayMs);
+      this.timers.add(timer);
+    }
     send(text) {
       const frame = JSON.parse(text);
       frames.push(frame);
@@ -105,11 +116,15 @@ export function mockLiveOptionPackage({
             mutateEvent(event, type, symbol);
             data.push(type, this.fields[type].map((field) => event[field]));
           }
-          this.emit({ type: "FEED_DATA", channel: 3, data });
+          dispatchFeedData({ type: "FEED_DATA", channel: 3, data }, this, sockets.indexOf(this));
         }
       });
     }
-    close() { this.readyState = 3; }
+    close() {
+      this.readyState = 3;
+      for (const timer of this.timers) clearTimeout(timer);
+      this.timers.clear();
+    }
   }
   const client = new TastytradeLiveOptionSnapshotClient({
     oauth: { getAccessToken: async () => "fixture-only" },
@@ -117,8 +132,13 @@ export function mockLiveOptionPackage({
     quoteTokens: { getQuoteToken: async () => ({
       token: "fixture-only", url: "wss://tasty-openapi-ws.dxfeed.com/realtime",
     }) },
-    socketFactory: () => new FixtureSocket(),
+    socketFactory: () => {
+      const socket = new FixtureSocket();
+      sockets.push(socket);
+      return socket;
+    },
     clock: () => NOW,
+    ...clientOptions,
   });
   const request = {
     underlying: root, expirations, around_price: "9999", strike_count: 1,
@@ -126,5 +146,5 @@ export function mockLiveOptionPackage({
     phase: "LIVE_SUPPORT", deadline_ms: 100, max_temporal_skew_ms: 1000,
     exact_package: { legs, policy: structuredClone(policy) },
   };
-  return { client, request, frames };
+  return { client, request, frames, sockets };
 }

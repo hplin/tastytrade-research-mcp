@@ -286,6 +286,20 @@ unknown Summary event time, confirmed exact cohort, locally acquired OI and
 fresh native Greeks. Stricter exact-package failure does not change that
 separate legacy Gamma evidence.
 
+For exact-package collection, each symbol's Greek snapshot and transaction
+state survives `REMOVE_EVENT` independently of the retained observation.
+`SNAPSHOT_END` or `SNAPSHOT_SNIP` completes a snapshot; a known flag set without
+`TX_PENDING` completes a transaction. Unknown flags prove neither completion.
+The collector waits for both pending states to finish, or the existing bounded
+request deadline, including across subscription chunks. Authentication retry
+clears both states together with all observations.
+
+If every requested event category arrived but Greek completion is still pending
+at the deadline, transport batches remain `COMPLETE` and strict content remains
+incomplete with `PARTIAL_GREEKS`; `SNAPSHOT_DEADLINE_EXCEEDED` records the collection
+deadline separately. Requests without `exact_package` retain arrival-based
+collection and the separate legacy Gamma/OI semantics.
+
 `Quote`/`Greeks`/`Summary` do not supply option trading volume in this
 contract. `summary.day_volume` is null with `day_volume_source = UNKNOWN`.
 Official streaming examples supply `dayVolume` via **Trade**, not Summary.

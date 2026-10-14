@@ -543,7 +543,6 @@ type RawGreeksEvent = {
   receivedAtMs: number;
   eventFlags: number | null;
   contentComplete: boolean;
-  snapshotPending?: boolean;
 };
 
 type RawSummaryEvent = {
@@ -563,6 +562,8 @@ type LiveOptionEventState = {
   quote: RawQuoteEvent | null;
   greeks: RawGreeksEvent | null;
   summary: RawSummaryEvent | null;
+  greeksSnapshotPending?: boolean;
+  greeksTransactionPending?: boolean;
 };
 
 type LiveOptionSnapshotReadResult = {
@@ -620,6 +621,10 @@ const SUMMARY_FIELDS = [
 ] as const;
 
 const REMOVE_EVENT = 2;
+const TX_PENDING = 1;
+const SNAPSHOT_BEGIN = 4;
+const SNAPSHOT_END = 8;
+const SNAPSHOT_SNIP = 16;
 const DEFAULT_STRIKE_COUNT = 25;
 const DEFAULT_DEADLINE_MS = 5_000;
 const DEFAULT_MAX_TEMPORAL_SKEW_MS = 5_000;
@@ -718,6 +723,8 @@ function resetLiveOptionEventStates(
     state.quote = null;
     state.greeks = null;
     state.summary = null;
+    state.greeksSnapshotPending = false;
+    state.greeksTransactionPending = false;
   }
 }
 
@@ -1056,11 +1063,16 @@ export function mergeLiveOptionEvents(
     if (event.type === "Quote") {
       state.quote = event;
     } else if (event.type === "Greeks") {
-      const flags = event.eventFlags ?? 0;
-      const snapshotPending = (flags & 4) !== 0 ||
-        state.greeks?.snapshotPending === true;
-      event.snapshotPending = snapshotPending && (flags & (8 | 16)) === 0;
-      event.contentComplete = Number.isSafeInteger(event.eventFlags) && !event.snapshotPending && (flags & 1) === 0;
+      const flags = event.eventFlags;
+      const flagsKnown = flags !== null && Number.isSafeInteger(flags) && flags >= 0;
+      if (flagsKnown) {
+        if ((flags & SNAPSHOT_BEGIN) !== 0) state.greeksSnapshotPending = true;
+        if ((flags & (SNAPSHOT_END | SNAPSHOT_SNIP)) !== 0) state.greeksSnapshotPending = false;
+        state.greeksTransactionPending = (flags & TX_PENDING) !== 0;
+      }
+      // REMOVE_EVENT deletes an observation, not the symbol's pending protocol state.
+      event.contentComplete = flagsKnown &&
+        !state.greeksSnapshotPending && !state.greeksTransactionPending;
       state.greeks = event.removed ? null : event;
     } else {
       state.summary = event;
@@ -2668,6 +2680,7 @@ export class TastytradeLiveOptionSnapshotClient {
     const attemptInput = { ...input, signal: attemptSignal };
     let authFailure: DxlinkAuthenticationError | null = null;
     let authenticatedBatches = 0;
+    let collectionTimedOut = false;
     let nextBatchIndex = 0;
 
     const readNextBatch = async () => {
@@ -2686,6 +2699,7 @@ export class TastytradeLiveOptionSnapshotClient {
         const remainingDeadlineMs =
           aggregateDeadlineAt - this.clock();
         if (remainingDeadlineMs <= 0) {
+          collectionTimedOut = true;
           batchResults[batchIndex] = {
             batch_index: batchIndex + 1,
             symbol_count: symbols.length,
@@ -2707,6 +2721,7 @@ export class TastytradeLiveOptionSnapshotClient {
             states,
             remainingDeadlineMs,
           );
+          collectionTimedOut ||= result.timedOut;
           if (result.authConfirmed) authenticatedBatches += 1;
           for (const symbol of result.unmatchedSymbols) {
             unmatchedSymbols.add(symbol);
@@ -2721,12 +2736,10 @@ export class TastytradeLiveOptionSnapshotClient {
               (subscription) =>
                 !subscriptionSatisfied(states, subscription),
             ).length;
-          const status: LiveOptionDxlinkBatchStatus = result.timedOut
-            ? receivedSubscriptions > 0
-              ? "PARTIAL"
-              : "TIMED_OUT"
-            : affectedSymbols.length === 0
-              ? "COMPLETE"
+          const status: LiveOptionDxlinkBatchStatus = affectedSymbols.length === 0
+            ? "COMPLETE"
+            : result.timedOut && receivedSubscriptions === 0
+              ? "TIMED_OUT"
               : "PARTIAL";
           batchResults[batchIndex] = {
             batch_index: batchIndex + 1,
@@ -2801,7 +2814,7 @@ export class TastytradeLiveOptionSnapshotClient {
     return {
       states,
       unmatchedSymbols: [...unmatchedSymbols].sort(),
-      timedOut: partialBatches > 0 || timedOutBatches > 0,
+      timedOut: collectionTimedOut || partialBatches > 0 || timedOutBatches > 0,
       authConfirmed:
         batches.length > 0 &&
         authenticatedBatches === batches.length,
@@ -2888,9 +2901,12 @@ export class TastytradeLiveOptionSnapshotClient {
         reject(error);
       };
       const complete = () =>
-        subscriptions.every((subscription) =>
-          subscriptionSatisfied(states, subscription),
-        );
+        subscriptions.every((subscription) => {
+          if (!subscriptionSatisfied(states, subscription)) return false;
+          if (!input.exactPackage || subscription.type !== "Greeks") return true;
+          const state = states.get(subscription.symbol)!;
+          return !state.greeksSnapshotPending && !state.greeksTransactionPending;
+        });
       const processMessage = (message: Record<string, unknown>) => {
         const authError = dxlinkAuthenticationError(message, authSent);
         if (authError) {

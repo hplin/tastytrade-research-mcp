@@ -9,7 +9,142 @@ async function snapshot(options = {}) {
   return { ...fixture, result: await fixture.client.getLiveOptionSnapshot(fixture.request) };
 }
 
+function greekFlagFrame(message, socket, flags) {
+  const data = [];
+  for (let index = 0; index < message.data.length; index += 2) {
+    const type = message.data[index];
+    const row = message.data[index + 1];
+    if (type !== "Greeks") {
+      data.push(type, row);
+      continue;
+    }
+    for (const flag of flags) {
+      const copy = [...row];
+      copy[socket.fields.Greeks.indexOf("eventFlags")] = flag;
+      data.push(type, copy);
+    }
+  }
+  return { ...message, data };
+}
+
 describe("fixture/mock exact-package DXLink integration (not live provider validation)", () => {
+  test.each([
+    [4, 2, 0], [4, 2, null, 0], [4, 8 | 1, 2 | 1, null],
+    [4, 16 | 1, 2 | 1, null],
+  ])("unfinished Greek state survives removal/unknown flags: %j", async (...flags) => {
+    const { result, sockets } = await snapshot({
+      dispatchFeedData: (message, socket) => socket.emit(greekFlagFrame(message, socket, flags)),
+    });
+    expect(result.exact_package_quality).toMatchObject({
+      status: "NOT_READY", content_complete: false, transport_complete: true,
+      reasons: ["PARTIAL_GREEKS"],
+    });
+    expect(result.contracts.every((contract) => !contract.greeks.content_complete)).toBe(true);
+    expect(result.transport).toMatchObject({ complete_batches: 1, partial_batches: 0, timed_out_batches: 0 });
+    expect(result.warnings).toContain("SNAPSHOT_DEADLINE_EXCEEDED");
+    expect(result.gamma_concentration_proxy.status).toBe("COMPLETE");
+    expect(sockets.every((socket) => socket.readyState === 3)).toBe(true);
+  });
+
+  test.each([
+    [[4], [8]], [[4, 2, 0], [16]], [[1, 2 | 1], [0]],
+    [[4, 8 | 1], [0]], [[4, 16 | 1], [0]],
+  ])("strict collector waits for split-frame completion: %j -> %j", async (initial, completion) => {
+    let endEmitted = false;
+    const { result, sockets } = await snapshot({
+      dispatchFeedData: (message, socket) => {
+        socket.emit(greekFlagFrame(message, socket, initial));
+        socket.schedule(() => {
+          endEmitted = true;
+          socket.emit(greekFlagFrame(message, socket, completion));
+        }, 10);
+      },
+    });
+    expect(endEmitted).toBe(true);
+    expect(result.exact_package_quality).toMatchObject({
+      status: "READY", content_complete: true, transport_complete: true, reasons: [],
+      order_authorized: false, production_gate_eligible: false, live_permission_backfill: false,
+    });
+    expect(result.warnings).not.toContain("SNAPSHOT_DEADLINE_EXCEEDED");
+    expect(sockets.every((socket) => socket.readyState === 3 && socket.timers.size === 0)).toBe(true);
+  });
+
+  test.each([4, 1, 8 | 1, 16 | 1])("pending flags %i remain partial at the bounded deadline", async (flags) => {
+    const { result } = await snapshot({ mutateEvent: (event) => { event.eventFlags = flags; } });
+    expect(result.exact_package_quality).toMatchObject({
+      status: "NOT_READY", content_complete: false, transport_complete: true,
+      reasons: ["PARTIAL_GREEKS"],
+    });
+    expect(result.warnings).toContain("SNAPSHOT_DEADLINE_EXCEEDED");
+    expect(result.transport.batches[0]).toMatchObject({ status: "COMPLETE", affected_symbols: [], error: null });
+    expect(result.gamma_concentration_proxy.status).toBe("COMPLETE");
+  });
+
+  test("legacy collection still stops on arrival rather than Greek content completion", async () => {
+    let endEmitted = false;
+    const { client, request, sockets } = mockLiveOptionPackage({
+      dispatchFeedData: (message, socket) => {
+        socket.emit(greekFlagFrame(message, socket, [4]));
+        socket.schedule(() => {
+          endEmitted = true;
+          socket.emit(greekFlagFrame(message, socket, [8]));
+        }, 10);
+      },
+    });
+    delete request.exact_package;
+    const result = await client.getLiveOptionSnapshot(request);
+    expect(endEmitted).toBe(false);
+    expect(result.exact_package_quality).toBeNull();
+    expect(result.gamma_concentration_proxy.status).toBe("COMPLETE");
+    expect(result.transport.complete_batches).toBe(1);
+    expect(result.warnings).not.toContain("SNAPSHOT_DEADLINE_EXCEEDED");
+    expect(sockets[0].timers.size).toBe(0);
+  });
+
+  test("chunked strict collection waits on each Greek subscription", async () => {
+    let completedSockets = 0;
+    let pendingSockets = 0;
+    const { result, sockets } = await snapshot({
+      clientOptions: { maxDxlinkSubscriptionFrameBytes: 256, maxConcurrentDxlinkBatches: 1 },
+      dispatchFeedData: (message, socket) => {
+        socket.emit(greekFlagFrame(message, socket, [4]));
+        if (message.data.includes("Greeks")) {
+          pendingSockets += 1;
+          socket.schedule(() => {
+            completedSockets += 1;
+            socket.emit(greekFlagFrame(message, socket, [8]));
+          }, 10);
+        }
+      },
+    });
+    expect(result.transport.batch_count).toBeGreaterThan(1);
+    expect(pendingSockets).toBeGreaterThan(0);
+    expect(completedSockets).toBe(pendingSockets);
+    expect(result.exact_package_quality.status).toBe("READY");
+    expect(sockets.every((socket) => socket.readyState === 3)).toBe(true);
+  });
+
+  test("auth recovery clears pending snapshot and transaction state before retry", async () => {
+    let invalidations = 0;
+    const { result, sockets } = await snapshot({
+      clientOptions: {
+        quoteTokens: {
+          getQuoteToken: async () => ({ token: "fixture-only", url: "wss://tasty-openapi-ws.dxfeed.com/realtime" }),
+          invalidateQuoteToken: () => { invalidations += 1; },
+        },
+      },
+      dispatchFeedData: (message, socket, attempt) => {
+        socket.emit(greekFlagFrame(message, socket, attempt === 0 ? [4 | 1, 2 | 1] : [0]));
+        if (attempt === 0) socket.emit({ type: "AUTH_STATE", state: "UNAUTHORIZED" });
+      },
+    });
+    expect(invalidations).toBe(1);
+    expect(sockets).toHaveLength(2);
+    expect(result.dxlink_auth.retry_count).toBe(1);
+    expect(result.exact_package_quality.status).toBe("READY");
+    expect(result.warnings).not.toContain("SNAPSHOT_DEADLINE_EXCEEDED");
+  });
+
   test.each([
     { legCount: 2 }, { legCount: 3 }, { legCount: 4 },
     { legCount: 2, calendar: true }, { legCount: 4, calendar: true },
@@ -268,5 +403,35 @@ describe("fixture/mock exact-package DXLink integration (not live provider valid
       mergeLiveOptionEvents(states, events);
       expect(states.get(".SPXW").greeks.contentComplete).toBe(flags === 8);
     }
+  });
+
+  test.each([
+    [[4, 2, 0], true, false],
+    [[4, 2, null], true, false],
+    [[1, 3, null], false, true],
+    [[4, 9, null], false, true],
+    [[4, 17, null], false, true],
+    [[4, 10, 0], false, false],
+    [[4, 18, 0], false, false],
+    [[1, 2, 0], false, false],
+    [[4, 9, 0], false, false],
+    [[4, 17, 0], false, false],
+    [[4, 8, 4, 0], true, false],
+    [[4, 8, 1], false, true],
+    [[4, 12], false, false],
+    [[4, 20], false, false],
+  ])("Greek flag reset semantics: %j", (flags, snapshotPending, transactionPending) => {
+    const state = { quote: null, greeks: null, summary: null };
+    const states = new Map([[".SPXW", state]]);
+    for (const flag of flags) {
+      const events = parseDxlinkLiveOptionData(["Greeks", ["Greeks", ".SPXW", flag, 1, NOW, 0, 2, 0.2, 0.5, 0.01, -1, 0.1, 1]], NOW);
+      mergeLiveOptionEvents(states, events);
+      if (flag !== null && (flag & 2) !== 0) expect(state.greeks).toBeNull();
+    }
+    expect(state.greeksSnapshotPending ?? false).toBe(snapshotPending);
+    expect(state.greeksTransactionPending ?? false).toBe(transactionPending);
+    expect(state.greeks.contentComplete).toBe(
+      flags.at(-1) !== null && !snapshotPending && !transactionPending,
+    );
   });
 });
