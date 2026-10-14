@@ -128,8 +128,16 @@ Normalized text example:
 Unrecognized vendor prose, local time-only lines, unlabelled price numbers and
 ambiguous dates are **not guessed**; `OO_TEXT_LINES_UNPARSED` identifies that
 coverage gap. For native OO exports, normalize explicit log events into the JSON
-contract while preserving their original offset-bearing timestamps. The parser
-does not treat incidental language such as “Returning to normal trade management”
+contract while retaining the verbatim original source and line/hash bindings
+separately. Local AM/PM logs without an embedded zone require an explicit,
+attributed timezone context; never use the host timezone. Retain their original
+whole-second precision and distinguish the derived RFC3339 timestamp from the
+original local text. The JSON tool's `time.original` then denotes that derived
+input, not the raw local timestamp; the original-source binding remains separate.
+Do not turn opening valuation marks into execution prices, order-status limits
+into package fills, or repeated human fill notifications into extra executions.
+The parser does not treat incidental language such as
+“Returning to normal trade management”
 as proof of exhausted retries unless the supplied event explicitly identifies it.
 Raw text is never echoed, even on errors.
 
@@ -144,8 +152,12 @@ explicit replacement latency and per-leg fills. Absence of fills is limited to
 the returned history, not continuous execution telemetry. Episodes calculate
 stop-to-first-route and stop-to-final-fill only for explicitly associated orders.
 Cross-source latency is uncalibrated OO-to-broker timing, not a measured clock
-offset. `oo_minus_broker_ms` preserves both original clocks; e.g. 14:06:57 versus
-14:06:53 is +4000 ms without adjusting either clock.
+offset. `oo_minus_broker_ms` preserves supplied source clocks; the synthetic
+14:06:57 versus 14:06:53 example is +4000 ms without adjusting either clock.
+The actual user-provided whole-second 14:06:57 observation compared with broker
+execution 14:06:53.359 is +3641 ms. Its timezone comes from user ET context and its
+precision remains whole seconds: this recorded timestamp difference is neither
+calibrated clock skew nor demonstrated transport delay.
 
 Order-leg fills and transactions remain separate observations. `legs[].fills`
 retains order `id` (the fill-ID namespace), `exec_id` and `ext_exec_id`; transactions
@@ -257,14 +269,27 @@ queries, not exhaustive retained history or intermediate lifecycle events.
 Observed execution and available fee arithmetic are not proof of final fees,
 complete settlement or strategy/campaign lifetime evidence.
 
-**Outstanding original-source acceptance:** original OO precise event clocks
-and October 12 individual failure-episode identifying evidence or an attributable
-coverage disposition remain outstanding. The original authenticated
-October 13 Activity Log panel displayed no events with debug both off and on;
-captured OO summaries provide minute-level times, not event logs or verified
-precise source clocks. An empty displayed panel does not prove backend logs are
-absent. The October 12 historical strategy label differs from the current linked
-labels; no rename or configuration continuity is inferred.
+**Original user-provided Activity Log evidence:** verbatim text for both days is
+now preserved privately and correlated with the acquired broker records using
+derived JSON events bound to source hashes and numbered lines. This is original
+user-provided text, not synthetic replay or a browser capture. Its AM/PM weekday/
+date clocks have whole-second precision and no embedded offset; America/New_York
+is explicitly attributed to the user incident context. The earlier empty
+debug-off/on Activity Log panels and minute-level browser summaries did not
+supply this evidence or prove backend logs absent.
+
+October 13's explicit exhaustion and subsequent fill observations correlate to
+ten cancelled broker IDs and the final execution. October 12's supplied historical
+log identifies one explicit exhaustion episode: it reports ten attempts, while
+the initial observation set contains nine distinct cancelled broker IDs. Attempts
+are not assumed to equal unique IDs; no tenth order is invented. Its later
+retrigger and independent overlapping same-OCC stops remain distinct. A second
+user-reported failed episode is not uniquely identified by this supplied text;
+this is a definite identification-coverage disposition, not a fabricated second
+failure or proof that no second failure existed. Entry-to-exit campaign attribution
+is not inferred from shared OCC or chronology. The historical strategy label
+differs from current linked labels; no rename or configuration continuity is
+inferred.
 
 Fees and cash flows are reconciled **when available**, as required by the original
 conditional acceptance contract. Incomplete final fee, settlement and campaign
@@ -272,9 +297,10 @@ evidence remains explicitly reported, with unsupported definitive claims
 suppressed; it is not a new acceptance gate requiring acquisition of unavailable
 final data.
 
-Full issue acceptance remains false and issue #102 stays open. Fixtures and the
-example payload remain explicitly synthetic; neither fixture success nor
-completed broker enumeration substitutes for the missing original-source evidence.
+Issue #102 stays open pending independent acceptance of the actual evidence; this
+implementation and correlation work does not self-declare full acceptance.
+Fixtures and the example payload remain explicitly synthetic and separate from
+the private actual-source artifacts and their bounded coverage dispositions.
 `QUOTE_EVIDENCE_UNAVAILABLE` remains an allowed, explicit limitation, not evidence
 of marketability, blame or avoidable slippage.
 

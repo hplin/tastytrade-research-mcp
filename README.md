@@ -45,9 +45,13 @@ for window semantics, privacy, completeness, quote limitations, and a
 Engineering fixtures remain explicitly synthetic, not live acceptance evidence.
 Authorized October 12–13 ET broker queries enumerated 59 orders and 76 transactions
 with complete provider-result pagination, not exhaustive lifecycle-event history.
-Issue #102 remains open; full acceptance is outstanding on original OO precise
-clocks and, for October 12, identifying evidence or an attributable coverage
-disposition. Fees and cash flows are reconciled when available; final fee,
+User-provided original OO Activity Log text for both days is now available
+privately and correlated through source-bound normalization. Its clocks have
+whole-second precision; ET is attributed to the user context, not embedded offsets.
+One October 12 exhaustion episode is identified; a second reported episode retains
+a definite identification-coverage gap, not an invented failure or proof of absence.
+Issue #102 remains open pending independent acceptance of the actual evidence.
+Fees and cash flows are reconciled when available; final fee,
 settlement and campaign incompleteness remains an explicit evidence limitation,
 with definitive claims suppressed, not a new requirement to acquire unavailable
 final data.
