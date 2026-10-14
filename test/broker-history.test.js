@@ -220,6 +220,256 @@ describe("historical read-only broker client", () => {
 });
 
 describe("OO broker synthetic replay", () => {
+  const orderFill = (overrides = {}) => ({
+    "fill-id": "fill-3", quantity: "1", "fill-price": "8.37", "filled-at": fixture.broker_fill_time, ...overrides,
+  });
+  const auditReplay = data => buildOOBrokerAudit(clientWith(data.orders, data.transactions).client, {
+    ...input, start: "2026-10-13", activity_log: { events: data.events },
+  });
+  test.each([
+    ["timestamp", { "filled-at": "2026-10-13T14:08:00-04:00" }, "ORDER_FILL_PRICE_TIME_DISTRIBUTION_CONFLICT"],
+    ["price", { "fill-price": "99.99" }, "ORDER_FILL_PRICE_TIME_DISTRIBUTION_CONFLICT"],
+    ["exact price", { "fill-price": "8.370000000000000001" }, "ORDER_FILL_PRICE_TIME_DISTRIBUTION_CONFLICT"],
+    ["quantity", { quantity: "0.5" }, "ORDER_FILL_QUANTITY_CONFLICT"],
+    ["missing price", { "fill-price": undefined }, "ORDER_FILL_EVIDENCE_INCOMPLETE"],
+    ["missing time", { "filled-at": undefined }, "ORDER_FILL_EVIDENCE_INCOMPLETE"],
+    ["missing quantity", { quantity: undefined }, "ORDER_FILL_EVIDENCE_INCOMPLETE"],
+    ["negative quantity", { quantity: "-1" }, "ORDER_FILL_EVIDENCE_INCOMPLETE"],
+    ["submillisecond timestamp", { "filled-at": "2026-10-13T14:06:53.000000001-04:00" }, "ORDER_FILL_PRICE_TIME_DISTRIBUTION_CONFLICT"],
+  ])("conflicting/incomplete order fill %s suppresses every affected definitive consumer", async (_name, mutation, gap) => {
+    const data = replay();
+    data.orders.at(-1).legs[0].fills = [orderFill(mutation)];
+    const report = await auditReplay(data);
+    expect(report.coverage.gaps).toContain(gap);
+    expect(report.tags).toContain("UNRESOLVED");
+    expect(report.tags).not.toContain("CLOSED_CONFIRMED");
+    const attempt = report.attempts.at(-1);
+    expect(attempt).toMatchObject({
+      broker_first_fill: null, broker_last_fill: null,
+      execution_evidence: { timing_basis: "UNCONFIRMED", order_fill_scope: "SUPPLIED_LEGS_ONLY" },
+      broker_working_interval: { fill_observed: true },
+    });
+    expect(attempt.oo_fill_reports[0]).toMatchObject({ broker_time: null, oo_minus_broker_ms: null });
+    expect(attempt.legs[0].fills[0].time?.original).toBe(mutation["filled-at"] ?? (Object.hasOwn(mutation, "filled-at") ? undefined : fixture.broker_fill_time));
+    expect(report.transactions[2].time.original).toBe(fixture.broker_fill_time);
+    expect(report.episodes[0]).toMatchObject({
+      final_package_debit: null, stop_to_fill_difference_per_contract_usd: null, stop_to_final_fill_ms: null,
+      stop_to_first_route_ms: 1000,
+    });
+    expect(report.side_cash_flows[0].realized_gross).toBeNull();
+    expect(report.campaigns[0].realized_gross).toBeNull();
+    expect(report.summary_zh_tw).toContain("最終組合成交成本 未確認");
+    expect(report.summary_zh_tw).toContain("OO 減券商時間 未確認");
+    expect(report.summary_zh_tw).not.toContain("最終組合成交成本 8.15");
+  });
+  test("absent order fills preserve transaction-only timing, closure and costs without invented gaps", async () => {
+    const report = await auditReplay(replay());
+    expect(report.coverage.gaps).toEqual([]);
+    expect(report.tags).not.toContain("UNRESOLVED");
+    expect(report.attempts.at(-1).execution_evidence).toMatchObject({
+      timing_basis: "RECONCILED_TRANSACTIONS", order_fill_scope: "NOT_SUPPLIED", reconciliation_gaps: [],
+    });
+    expect(report.episodes[0]).toMatchObject({ stop_to_final_fill_ms: 53000, final_package_debit: "8.15" });
+    expect(report.attempts.at(-1).oo_fill_reports[0].oo_minus_broker_ms).toBe(4000);
+  });
+  test("fill IDs and execution IDs stay separate; exact buckets reconcile without invented identity", async () => {
+    const data = replay();
+    data.orders.at(-1).legs[0].fills = [orderFill({
+      "fill-id": "different-order-fill", "ext-exec-id": "order-external-id",
+      "filled-at": "2026-10-13T18:06:53.000Z",
+    })];
+    const report = await auditReplay(data);
+    expect(report.coverage.gaps).toEqual([]);
+    expect(report.attempts.at(-1).legs[0].fills[0]).toMatchObject({
+      id: "different-order-fill", exec_id: null, ext_exec_id: "order-external-id",
+    });
+    expect(report.transactions[2]).toMatchObject({ fill_id: "fill-3", exec_id: "fill-3", ext_exec_id: null });
+    expect(report.episodes[0]).toMatchObject({ stop_to_final_fill_ms: 53000, final_package_debit: "8.15" });
+    expect(report.attempts.at(-1).oo_fill_reports[0].broker_time.original).toBe(fixture.broker_fill_time);
+  });
+  test.each(["matching", "conflicting", "duplicate", "time conflict", "price conflict", "quantity conflict"])(
+    "shared external execution identity %s is reconciled explicitly", async mode => {
+      const data = replay();
+      data.transactions[2]["ext-exec-id"] = "external-3";
+      data.orders.at(-1).legs[0].fills = [orderFill({
+        "ext-exec-id": mode === "conflicting" ? "external-other" : "external-3",
+        ...(mode === "time conflict" ? { "filled-at": "2026-10-13T14:08:00-04:00" } : {}),
+        ...(mode === "price conflict" ? { "fill-price": "99.99" } : {}),
+        ...(mode === "quantity conflict" ? { quantity: "0.5" } : {}),
+      })];
+      if (mode === "duplicate") {
+        data.orders.at(-1).legs[0].fills[0].quantity = "0.5";
+        data.orders.at(-1).legs[0].fills.push(orderFill({ "fill-id": "other-fill", "ext-exec-id": "external-3", quantity: "0.5" }));
+      }
+      const report = await auditReplay(data);
+      expect(report.transactions[2]).toMatchObject({ exec_id: "fill-3", ext_exec_id: "external-3" });
+      if (mode === "matching") {
+        expect(report.coverage.gaps).toEqual([]);
+        expect(report.episodes[0].final_package_debit).toBe("8.15");
+      } else {
+        const gap = {
+          conflicting: "ORDER_FILL_IDENTITY_UNRECONCILED", duplicate: "ORDER_FILL_IDENTITY_AMBIGUOUS",
+          "time conflict": "ORDER_FILL_TIME_CONFLICT", "price conflict": "ORDER_FILL_PRICE_CONFLICT",
+          "quantity conflict": "ORDER_FILL_QUANTITY_CONFLICT",
+        }[mode];
+        expect(report.coverage.gaps).toContain(gap);
+        expect(report.tags).toContain("UNRESOLVED");
+        expect(report.tags).not.toContain("CLOSED_CONFIRMED");
+        expect(report.episodes[0].final_package_debit).toBeNull();
+      }
+    },
+  );
+  test("valid split executions reconcile exact price/time buckets without weighted-average assumptions", async () => {
+    const data = replay();
+    const original = data.transactions[2];
+    data.transactions[2] = { ...original, quantity: "0.5", value: "418.5", "net-value": "418.5" };
+    data.transactions.push({ ...original, id: "9", "exec-id": "split-9", quantity: "0.5", value: "418.5", "net-value": "418.5" });
+    data.orders.at(-1).legs[0].fills = [orderFill()];
+    let report = await auditReplay(data);
+    expect(report.coverage.gaps).toEqual([]);
+    expect(report.episodes[0]).toMatchObject({ final_package_debit: "8.15", stop_to_final_fill_ms: 53000 });
+    data.transactions[2].price = "8.36";
+    data.transactions[2].value = "418"; data.transactions[2]["net-value"] = "418";
+    data.transactions.at(-1).price = "8.38";
+    data.transactions.at(-1).value = "419"; data.transactions.at(-1)["net-value"] = "419";
+    report = await auditReplay(data);
+    expect(report.coverage.gaps).toContain("ORDER_FILL_PRICE_TIME_DISTRIBUTION_CONFLICT");
+    expect(report.episodes[0].final_package_debit).toBeNull();
+    data.orders.at(-1).legs[0].fills = [
+      orderFill({ quantity: "0.5", "fill-price": "8.36", "ext-exec-id": "external-a" }),
+      orderFill({ "fill-id": "other", quantity: "0.5", "fill-price": "8.38", "filled-at": "2026-10-13T14:06:54-04:00" }),
+    ];
+    data.transactions.at(-1)["executed-at"] = "2026-10-13T14:06:54-04:00";
+    report = await auditReplay(data);
+    expect(report.coverage.gaps).toEqual([]);
+    expect(report.episodes[0]).toMatchObject({ final_package_debit: "8.15", stop_to_final_fill_ms: 54000 });
+    expect(report.attempts.at(-1).oo_fill_reports[0].oo_minus_broker_ms).toBe(3000);
+  });
+  test("valid partial observations have reconciled observed timing but not final closure", async () => {
+    const data = replay();
+    data.orders.at(-1).status = "Partially Filled";
+    for (const t of data.transactions.slice(2)) {
+      t.quantity = "0.5";
+      t.value = t.price === "8.37" ? "418.5" : "11"; t["net-value"] = t.value;
+    }
+    data.orders.at(-1).legs[0].fills = [orderFill({ quantity: "0.5" })];
+    const report = await auditReplay(data);
+    expect(report.coverage.gaps).not.toContain("ORDER_FILL_QUANTITY_CONFLICT");
+    expect(report.attempts.at(-1).execution_evidence.timing_basis).toBe("RECONCILED_TRANSACTIONS");
+    expect(report.attempts.at(-1).oo_fill_reports[0].oo_minus_broker_ms).toBe(4000);
+    expect(report.episodes[0]).toMatchObject({ final_package_debit: null, stop_to_final_fill_ms: null });
+    expect(report.tags).not.toContain("CLOSED_CONFIRMED");
+  });
+  test("supplied fills without matching transactions cannot establish timing or cost", async () => {
+    const data = replay();
+    data.orders.at(-1).legs[0].fills = [orderFill()];
+    data.transactions = data.transactions.slice(0, 2);
+    const report = await auditReplay(data);
+    expect(report.coverage.gaps).toContain("ORDER_FILL_TRANSACTION_EVIDENCE_INCOMPLETE");
+    expect(report.attempts.at(-1).broker_last_fill).toBeNull();
+    expect(report.episodes[0]).toMatchObject({ final_package_debit: null, stop_to_final_fill_ms: null });
+    expect(report.tags).not.toContain("CLOSED_CONFIRMED");
+  });
+  test("duplicate transaction execution identities cannot be hidden by matching quantity buckets", async () => {
+    const data = replay();
+    const original = data.transactions[2];
+    data.transactions[2] = { ...original, quantity: "0.5", value: "418.5", "net-value": "418.5" };
+    data.transactions.push({ ...data.transactions[2], id: "9" });
+    data.orders.at(-1).legs[0].fills = [orderFill()];
+    const report = await auditReplay(data);
+    expect(report.coverage.gaps).toContain("ORDER_FILL_IDENTITY_AMBIGUOUS");
+    expect(report.episodes[0].final_package_debit).toBeNull();
+  });
+  test("shared identities override coincidentally equal price/time distributions", async () => {
+    const data = replay();
+    const original = data.transactions[2];
+    data.transactions[2] = { ...original, quantity: "0.5", value: "418", "net-value": "418", price: "8.36", "ext-exec-id": "a" };
+    data.transactions.push({ ...original, id: "9", "exec-id": "other", "ext-exec-id": "b", quantity: "0.5", price: "8.38", value: "419", "net-value": "419" });
+    data.orders.at(-1).legs[0].fills = [
+      orderFill({ quantity: "0.5", "fill-price": "8.38", "ext-exec-id": "a" }),
+      orderFill({ "fill-id": "other", quantity: "0.5", "fill-price": "8.36", "ext-exec-id": "b" }),
+    ];
+    const report = await auditReplay(data);
+    expect(report.coverage.gaps).toContain("ORDER_FILL_PRICE_CONFLICT");
+    expect(report.coverage.gaps).not.toContain("ORDER_FILL_PRICE_TIME_DISTRIBUTION_CONFLICT");
+    expect(report.episodes[0].final_package_debit).toBeNull();
+    expect(report.tags).not.toContain("CLOSED_CONFIRMED");
+  });
+  test.each(["order fills", "order identity", "transaction identity"])("unsupported %s remain explicit provider coverage gaps", async mode => {
+    const data = replay();
+    if (mode === "order fills") data.orders.at(-1).legs[0].fills = { quantity: "1" };
+    if (mode === "order identity") data.orders.at(-1).legs[0].fills = [orderFill({ "ext-exec-id": { unknown: "shape" } })];
+    if (mode === "transaction identity") data.transactions[2]["ext-exec-id"] = { unknown: "shape" };
+    const report = await auditReplay(data);
+    expect(report.coverage.gaps).toContain("INVALID_OR_UNSUPPORTED_RECORD");
+    expect(report.episodes[0].final_package_debit).toBeNull();
+    expect(report.tags).not.toContain("CLOSED_CONFIRMED");
+  });
+  test("IC source conflicts are scoped to the affected leg/side, not the unrelated CALL round trip", async () => {
+    const data = replay();
+    const entry = data.orders[0];
+    const putSymbols = ["SPXW  261013P07700000", "SPXW  261013P07660000"];
+    entry.legs.push(leg(putSymbols[0], "Sell to Open"), leg(putSymbols[1], "Buy to Open"));
+    entry.legs[2].fills = [orderFill({ "fill-price": "99.99", "filled-at": "2026-10-13T14:00:01-04:00" })];
+    const put = { ...order("920000000", "Filled", "2.10", "58"), legs: [
+      leg(putSymbols[0], "Buy to Close"), leg(putSymbols[1], "Sell to Close"),
+    ] };
+    data.orders.push(put);
+    data.transactions.push(
+      transaction("5", entry.id, putSymbols[0], "Sell to Open", "2.22", "2026-10-13T14:00:01-04:00"),
+      transaction("6", entry.id, putSymbols[1], "Buy to Open", "0.12", "2026-10-13T14:00:01-04:00"),
+      transaction("7", put.id, putSymbols[0], "Buy to Close", "2.22", fixture.broker_fill_time),
+      transaction("8", put.id, putSymbols[1], "Sell to Close", "0.12", fixture.broker_fill_time),
+    );
+    data.events[1].symbols = entry.legs.map(l => l.symbol);
+    const report = await auditReplay(data);
+    expect(report.side_cash_flows.find(s => s.side.endsWith("CALL"))).toMatchObject({ realized_gross: "-605", realized_net: "-605" });
+    expect(report.side_cash_flows.find(s => s.side.endsWith("PUT")).realized_gross).toBeNull();
+    expect(report.campaigns[0].realized_gross).toBeNull();
+    expect(report.episodes[0]).toMatchObject({ final_package_debit: "8.15", stop_to_final_fill_ms: 53000 });
+  });
+  test("opening-order fill contradictions block affected realized amounts without discarding valid close evidence", async () => {
+    const data = replay();
+    data.orders[0].legs[0].fills = [orderFill({ "fill-price": "99.99", "filled-at": "2026-10-13T14:00:01-04:00" })];
+    const report = await auditReplay(data);
+    expect(report.coverage.gaps).toContain("ORDER_FILL_PRICE_TIME_DISTRIBUTION_CONFLICT");
+    expect(report.side_cash_flows[0].realized_gross).toBeNull();
+    expect(report.campaigns[0].realized_gross).toBeNull();
+    expect(report.episodes[0].final_package_debit).toBe("8.15");
+    expect(report.tags).toEqual(expect.arrayContaining(["CLOSED_CONFIRMED", "UNRESOLVED"]));
+  });
+  test("another side's fill conflict preserves valid CALL timing, costs, fees and closure", async () => {
+    const data = replay();
+    const put = { ...order("920000000", "Filled", "2.10", "58"), legs: [
+      leg("SPXW  261013P07700000", "Buy to Close"), leg("SPXW  261013P07660000", "Sell to Close"),
+    ] };
+    put.legs[0].fills = [orderFill({ "fill-price": "99.99" })];
+    data.orders.push(put);
+    data.transactions.push(
+      transaction("5", put.id, put.legs[0].symbol, "Buy to Close", "2.22", fixture.broker_fill_time),
+      transaction("6", put.id, put.legs[1].symbol, "Sell to Close", "0.12", fixture.broker_fill_time),
+    );
+    const report = await auditReplay(data);
+    expect(report.tags).toEqual(expect.arrayContaining(["CLOSED_CONFIRMED", "UNRESOLVED"]));
+    expect(report.episodes[0]).toMatchObject({ final_package_debit: "8.15", stop_to_final_fill_ms: 53000 });
+    expect(report.side_cash_flows.find(s => s.side.endsWith("CALL"))).toMatchObject({ realized_gross: "-605", realized_net: "-605" });
+    expect(report.campaigns[0].realized_gross).toBe("-605");
+    expect(report.attempts.find(a => a.order_id === put.id).broker_last_fill).toBeNull();
+  });
+  test("uncertain later close cannot promote an earlier close to episode final-fill evidence", async () => {
+    const data = replay();
+    const later = { ...order("920000000", "Filled", "8.15", "58") };
+    later.legs[0].fills = [orderFill({ "filled-at": "2026-10-13T14:08:00-04:00" })];
+    data.orders.push(later);
+    data.transactions.push(
+      transaction("5", later.id, fixture.symbols[0], "Buy to Close", "8.37", "2026-10-13T14:06:59-04:00"),
+      transaction("6", later.id, fixture.symbols[1], "Sell to Close", "0.22", "2026-10-13T14:06:59-04:00"),
+    );
+    data.events.push({ ...data.events.at(-1), order_id: later.id });
+    const report = await auditReplay(data);
+    expect(report.episodes[0]).toMatchObject({ final_package_debit: null, stop_to_final_fill_ms: null });
+    expect(report.tags).toEqual(expect.arrayContaining(["CLOSED_CONFIRMED", "UNRESOLVED"]));
+  });
   test.each([
     ["value-price mismatch", { value: "99999" }, "PER_LEG_VALUE_MISMATCH"],
     ["missing price", { price: undefined }, "EXECUTION_PRICE_MISSING"],

@@ -133,10 +133,66 @@ function reconcileExecution(t: BrokerTransaction) {
   if (amount && calculated && amount.compare(calculated) !== 0) gaps.add("PER_LEG_VALUE_MISMATCH");
   return { supported, effective: amount ?? calculated, gaps: [...gaps] };
 }
-function reconcileClose(order: BrokerOrder, transactions: BrokerTransaction[]) {
+function executionTimeKey(time: BrokerTime) {
+  const fraction = time.original.match(/\.(\d+)(?:Z|[+-]\d{2}:\d{2})$/)?.[1] ?? "";
+  return `${Math.floor(Date.parse(time.utc) / 1000)}:${fraction.padEnd(9, "0")}`;
+}
+function reconcileOrderFills(order: BrokerOrder, transactions: BrokerTransaction[]) {
+  return order.legs.map(leg => {
+    const gaps = new Set<string>();
+    const tx = transactions.filter(t => t.order_id === order.id &&
+      t.symbol?.replace(/ /g, "") === leg.symbol.replace(/ /g, "") && t.action === leg.action);
+    if (!leg.fills.length) return { symbol: leg.symbol, gaps: [] };
+    const validFill = (f: { quantity: string | null; price: string | null; time: BrokerTime | null }) =>
+      f.quantity !== null && decimal(f.quantity).compare(zero()) > 0 &&
+      f.price !== null && decimal(f.price).compare(zero()) >= 0 && f.time !== null;
+    if (leg.fills.some(f => !validFill(f))) gaps.add("ORDER_FILL_EVIDENCE_INCOMPLETE");
+    if (tx.some(t => reconcileExecution(t).gaps.length) || !tx.length) gaps.add("ORDER_FILL_TRANSACTION_EVIDENCE_INCOMPLETE");
+    // Fill IDs are not transaction execution IDs. Only like-named execution
+    // namespaces can prove identity; otherwise compare exact economic buckets.
+    for (const field of ["id", "exec_id", "ext_exec_id"] as const) {
+      const ids = leg.fills.map(f => f[field]).filter((id): id is string => !!id);
+      if (new Set(ids).size !== ids.length) gaps.add("ORDER_FILL_IDENTITY_AMBIGUOUS");
+    }
+    for (const field of ["exec_id", "ext_exec_id"] as const) {
+      const ids = tx.map(t => t[field]).filter((id): id is string => !!id);
+      if (new Set(ids).size !== ids.length) gaps.add("ORDER_FILL_IDENTITY_AMBIGUOUS");
+      for (const f of leg.fills) {
+        if (!f[field] || !tx.some(t => t[field])) continue;
+        const matched = tx.filter(t => t[field] === f[field]);
+        if (matched.length !== 1) { gaps.add("ORDER_FILL_IDENTITY_UNRECONCILED"); continue; }
+        const t = matched[0];
+        if (!validFill(f) || !validFill(t)) continue;
+        if (decimal(f.quantity!).compare(decimal(t.quantity!)) !== 0) gaps.add("ORDER_FILL_QUANTITY_CONFLICT");
+        if (decimal(f.price!).compare(decimal(t.price!)) !== 0) gaps.add("ORDER_FILL_PRICE_CONFLICT");
+        if (executionTimeKey(f.time!) !== executionTimeKey(t.time!)) gaps.add("ORDER_FILL_TIME_CONFLICT");
+      }
+    }
+    if (leg.fills.every(validFill) && tx.every(validFill)) {
+      const total = (rows: typeof leg.fills | typeof tx) =>
+        rows.reduce((sum, row) => sum.add(decimal(row.quantity!)), zero());
+      if (total(leg.fills).compare(total(tx)) !== 0) gaps.add("ORDER_FILL_QUANTITY_CONFLICT");
+      const buckets = (rows: typeof leg.fills | typeof tx) => {
+        const result = new Map<string, ExactDecimal>();
+        for (const row of rows) {
+          const key = `${decimal(row.price!).toString()}@${executionTimeKey(row.time!)}`;
+          result.set(key, (result.get(key) ?? zero()).add(decimal(row.quantity!)));
+        }
+        return result;
+      };
+      const orderBuckets = buckets(leg.fills), transactionBuckets = buckets(tx);
+      if (orderBuckets.size !== transactionBuckets.size || [...orderBuckets].some(([key, quantity]) =>
+        !transactionBuckets.has(key) || quantity.compare(transactionBuckets.get(key)!) !== 0)) {
+        gaps.add("ORDER_FILL_PRICE_TIME_DISTRIBUTION_CONFLICT");
+      }
+    }
+    return { symbol: leg.symbol, gaps: [...gaps] };
+  });
+}
+function reconcileClose(order: BrokerOrder, transactions: BrokerTransaction[], sourceGaps: string[]) {
   const executions = transactions.filter(t => t.order_id === order.id);
   const reconciled = executions.map(reconcileExecution);
-  const gaps = new Set(reconciled.flatMap(r => r.gaps));
+  const gaps = new Set([...sourceGaps, ...reconciled.flatMap(r => r.gaps)]);
   if (!order.legs.length || order.legs.some(l => !l.action.endsWith("Close")) ||
       new Set(order.legs.map(l => l.symbol.replace(/ /g, ""))).size !== order.legs.length ||
       executions.some(t => !order.legs.some(l => l.symbol.replace(/ /g, "") === t.symbol?.replace(/ /g, "") && l.action === t.action))) {
@@ -154,14 +210,15 @@ function reconcileClose(order: BrokerOrder, transactions: BrokerTransaction[]) {
     gaps: [...gaps],
   };
 }
-function cashFlow(transactions: BrokerTransaction[]) {
+function cashFlow(transactions: BrokerTransaction[], sourceGaps: string[] = []) {
   let gross = zero(), fees = zero(), reportedNet = zero();
   const inventory = new Map<string, ExactDecimal>();
   const openInventory = new Map<string, ExactDecimal>();
-  const gaps = new Set<string>();
+  const gaps = new Set<string>(sourceGaps);
   let opened = false, closed = false;
   const feeComponents: Record<string, string> = {};
-  for (const t of [...transactions].sort((a, b) => (a.time?.utc ?? "").localeCompare(b.time?.utc ?? ""))) {
+  for (const t of [...transactions].sort((a, b) =>
+    (a.time ? executionTimeKey(a.time) : "").localeCompare(b.time ? executionTimeKey(b.time) : ""))) {
     const execution = reconcileExecution(t);
     execution.gaps.forEach(g => gaps.add(g));
     if (!execution.supported) continue;
@@ -263,15 +320,25 @@ export async function buildOOBrokerAudit(service: BrokerHistoryService, input: O
     }
   }
   const providerComplete = orders.coverage.pagination_complete && transactions.coverage.pagination_complete;
+  const orderFillEvidence = new Map(orders.items.map(o => [o.id, reconcileOrderFills(o, transactions.items)]));
+  const sourceGaps = (tx: BrokerTransaction[]) => tx.flatMap(t => t.order_id
+    ? (orderFillEvidence.get(t.order_id) ?? []).filter(l => l.symbol.replace(/ /g, "") === t.symbol?.replace(/ /g, "")).flatMap(l => l.gaps) : []);
+  for (const evidence of orderFillEvidence.values()) gaps.push(...evidence.flatMap(l => l.gaps));
   const closes = new Map(orders.items.filter(o => o.legs.some(l => l.action.endsWith("Close")))
-    .map(o => [o.id, reconcileClose(o, transactions.items)]));
+    .map(o => [o.id, reconcileClose(o, transactions.items, orderFillEvidence.get(o.id)!.flatMap(l => l.gaps))]));
   for (const o of orders.items.filter(o => o.status === "Filled" || transactions.items.some(t => t.order_id === o.id))) {
     gaps.push(...(closes.get(o.id)?.gaps ?? []));
   }
   const attempts = orders.items.filter(o => o.legs.some(l => l.action.endsWith("Close"))).map(o => {
     const executions = accountConsistent ? transactions.items.filter(t => t.order_id === o.id) : [];
-    const times = [...o.legs.flatMap(l => l.fills.map(f => f.time)), ...executions.map(t => t.time)]
-      .filter((t): t is BrokerTime => t !== null).sort((a, b) => a.utc.localeCompare(b.utc));
+    const executionGaps = [...new Set([
+      ...orderFillEvidence.get(o.id)!.flatMap(l => l.gaps), ...executions.flatMap(t => reconcileExecution(t).gaps),
+      ...(inconsistentOrders.has(o.id) ? ["ORDER_EXECUTION_LEG_CONFLICT"] : []),
+    ])];
+    const timingReconciled = accountConsistent && providerComplete && !executionGaps.length && executions.length > 0;
+    const times = timingReconciled ? executions.map(t => t.time).filter((t): t is BrokerTime => t !== null)
+      .sort((a, b) => executionTimeKey(a).localeCompare(executionTimeKey(b))) : [];
+    const fillObserved = o.legs.some(l => l.fills.length) || executions.length > 0;
     const firstRoute = o.timestamps["rule-routed-at"] ?? o.timestamps["live-at"] ?? o.timestamps["in-flight-at"];
     const received = o.timestamps["received-at"];
     const terminal = o.timestamps["terminal-at"] ?? o.timestamps["cancelled-at"];
@@ -280,6 +347,11 @@ export async function buildOOBrokerAudit(service: BrokerHistoryService, input: O
       order_id: o.id, status: o.status, limit: o.price, price_effect: o.price_effect,
       order_type: o.order_type, time_in_force: o.tif,
       source: o.source, legs: o.legs, timestamps: o.timestamps,
+      execution_evidence: {
+        timing_basis: timingReconciled ? "RECONCILED_TRANSACTIONS" : "UNCONFIRMED",
+        order_fill_scope: o.legs.some(l => l.fills.length) ? "SUPPLIED_LEGS_ONLY" : "NOT_SUPPLIED",
+        reconciliation_gaps: executionGaps,
+      },
       rejection_reason: o.rejection_reason,
       relationship_evidence: {
         replaces: o.replaces_order_id, replaced_by: o.replacing_order_id,
@@ -292,7 +364,7 @@ export async function buildOOBrokerAudit(service: BrokerHistoryService, input: O
       received_to_cancel_ms: milliseconds(received, o.timestamps["cancelled-at"]),
       broker_working_interval: {
         start: firstRoute ?? received ?? null, end: terminal ?? times.at(-1) ?? null,
-        fill_observed: times.length > 0,
+        fill_observed: fillObserved,
         no_fill_proof: "ABSENCE_IN_RETURNED_HISTORY_NOT_CONTINUOUS_EXECUTION_TELEMETRY",
       },
       replacement_latency_ms: o.replacing_order_id
@@ -314,11 +386,13 @@ export async function buildOOBrokerAudit(service: BrokerHistoryService, input: O
     const confirmed = ordered.filter(a => explicitCampaign.includes(a.order_id) || stop.correlation === "EXPLICIT_ORDER_ID");
     const fills = confirmed.filter(a => a.broker_last_fill);
     const first = confirmed.find(a => a.broker_first_route);
-    const last = fills.sort((a, b) => a.broker_last_fill!.utc.localeCompare(b.broker_last_fill!.utc)).at(-1);
+    const last = fills.sort((a, b) => executionTimeKey(a.broker_last_fill!).localeCompare(executionTimeKey(b.broker_last_fill!))).at(-1);
     const close = last ? closes.get(last.order_id) : undefined;
     const fillQuantity = last?.legs[0]?.quantity;
     const balancedFill = fillQuantity && last?.legs.every(l => l.quantity !== null && decimal(l.quantity).compare(decimal(fillQuantity)) === 0);
-    const completeClose = accountConsistent && providerComplete && close?.complete && last && !inconsistentOrders.has(last.order_id);
+    const uncertainFill = confirmed.some(a => a.execution_evidence.reconciliation_gaps.length ||
+      (a.status === "Filled" && a.execution_evidence.timing_basis === "UNCONFIRMED"));
+    const completeClose = !uncertainFill && accountConsistent && providerComplete && close?.complete && last && !inconsistentOrders.has(last.order_id);
     const finalDebit = completeClose && balancedFill
       ? close.gross.negate().divide(decimal(fillQuantity!).multiplyInteger(100)).toString() : null;
     return {
@@ -346,7 +420,7 @@ export async function buildOOBrokerAudit(service: BrokerHistoryService, input: O
   const reconciliationComplete = providerComplete && accountConsistent && !inconsistentOrders.size &&
     !gaps.includes("TRANSACTION_ORDER_HISTORY_GAP");
   const sideCashFlows = [...sideGroups].map(([side, tx]) => {
-    const flow = cashFlow(tx);
+    const flow = cashFlow(tx, sourceGaps(tx));
     return {
       side, ...flow,
       completeness: reconciliationComplete ? flow.completeness : "INCOMPLETE_PROVIDER_OR_ORDER_COVERAGE",
@@ -360,7 +434,9 @@ export async function buildOOBrokerAudit(service: BrokerHistoryService, input: O
     const relatedEvents = events.filter(e => e.campaign_reference === reference);
     const ids = [...new Set(relatedEvents.filter(e => e.correlation === "EXPLICIT_ORDER_ID").map(e => e.order_id!))];
     const tx = transactions.items.filter(t => t.order_id && ids.includes(t.order_id));
-    const flow = cashFlow(tx);
+    const flow = cashFlow(tx, [
+      ...sourceGaps(tx), ...ids.flatMap(id => (orderFillEvidence.get(id) ?? []).flatMap(l => l.gaps)),
+    ]);
     const conflicting = ids.some(id => events.some(e => e.order_id === id && e.campaign_reference && e.campaign_reference !== reference));
     return {
       campaign_reference: reference, order_ids: ids, ...flow,

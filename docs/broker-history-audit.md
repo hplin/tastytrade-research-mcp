@@ -128,6 +128,38 @@ Cross-source latency is uncalibrated OO-to-broker timing, not a measured clock
 offset. `oo_minus_broker_ms` preserves both original clocks; e.g. 14:06:57 versus
 14:06:53 is +4000 ms without adjusting either clock.
 
+Order-leg fills and transactions remain separate observations. `legs[].fills`
+retains order `id` (the fill-ID namespace), `exec_id` and `ext_exec_id`; transactions
+retain `exec_id` and `ext_exec_id` separately. The legacy transaction `fill_id` is
+an execution-ID alias, **not** proof that it matches an order fill ID. Equal text
+across different namespaces never establishes identity. Like-named execution IDs,
+including `ext-exec-id` when both sources supply it, must uniquely match within
+the same order, OCC leg and action; duplicate or contradictory identities are gaps.
+No undocumented mapping from order `ext-exec-id` to transaction `exec-id` is assumed.
+
+For supplied order-fill legs, exact positive quantities, nonnegative prices and
+offset-normalized timestamps must agree with transaction executions. Without
+shared identity, reconciliation compares summed quantities in identical
+price/timestamp buckets, not individual execution identity. This supports split
+rows at the same price/time without treating a weighted average or last timestamp
+as equivalent to distinct executions. Distinct prices/times, unsupported fields,
+missing transaction evidence or ambiguous identities block definitive results.
+Timestamp matching retains fractional seconds through nine digits; reported
+latencies remain milliseconds. Original strings and UTC/ET representations are
+preserved. Absent optional order fills create no fabricated gap: transactions
+can establish evidence, with `order_fill_scope: NOT_SUPPLIED`. If only some legs
+supply fills, `SUPPLIED_LEGS_ONLY` explicitly limits cross-source reconciliation.
+
+Attempt `broker_first_fill`, `broker_last_fill`, working-interval fill endpoints
+and OO clock differences derive only from reconciled transactions, never a union
+of order and transaction clocks. `execution_evidence` exposes the timing basis
+and reconciliation gaps; raw observations remain in order legs and transactions.
+Conflicting sources produce `coverage.gaps` and `UNRESOLVED`, suppress affected
+timing, closure, package cost, side/campaign realized P/L and definitive summary
+claims. An episode containing uncertain executed/filled attempts cannot substitute
+an earlier valid fill as its definitive final close. Observed fill presence and
+independent lifecycle route/cancel timestamps remain available.
+
 ## Exact cash flows, independent sides and root cause
 
 Financial inputs remain decimal strings and use `ExactDecimal`, never JS

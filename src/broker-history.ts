@@ -16,6 +16,7 @@ export type BrokerHistoryInput = {
 export type BrokerTime = { original: string; utc: string; et: string; clock: "BROKER" | "OO" };
 export type BrokerFill = {
   id: string | null; quantity: string | null; price: string | null;
+  exec_id: string | null; ext_exec_id: string | null;
   time: BrokerTime | null; venue: string | null;
 };
 export type BrokerLeg = {
@@ -31,6 +32,7 @@ export type BrokerOrder = {
 };
 export type BrokerTransaction = {
   id: string; order_id: string | null; fill_id: string | null;
+  exec_id: string | null; ext_exec_id: string | null;
   symbol: string | null; action: string | null; type: string | null;
   quantity: string | null; price: string | null; time: BrokerTime | null;
   venue: string | null; currency: string | null;
@@ -155,8 +157,12 @@ function contract(symbol: string | null): BrokerTransaction["contract"] {
 }
 function fill(raw: unknown): BrokerFill {
   const f = record(raw);
+  if (["fill-id", "id", "exec-id", "ext-exec-id"].some(key => f[key] !== undefined && f[key] !== null && !identifier(f[key]))) {
+    throw new Error("INVALID_PROVIDER_FILL_IDENTITY");
+  }
   return {
-    id: identifier(f["fill-id"] ?? f["id"] ?? f["exec-id"]),
+    id: identifier(f["fill-id"] ?? f["id"]),
+    exec_id: identifier(f["exec-id"]), ext_exec_id: identifier(f["ext-exec-id"]),
     quantity: decimalString(f.quantity), price: decimalString(f["fill-price"] ?? f.price),
     time: brokerTime(f["filled-at"] ?? f["executed-at"]),
     venue: f["destination-venue"] ? `venue:${privateReference(String(f["destination-venue"]))}` : null,
@@ -179,6 +185,7 @@ function order(raw: unknown): BrokerOrder {
     const l = record(rawLeg), symbol = occSymbol(l.symbol);
     // Non-SPX legs are not exposed, but invalidate a mixed package rather than misrepresent it.
     if (!symbol) throw new Error("NON_SPXW_PACKAGE");
+    if (l.fills !== undefined && !Array.isArray(l.fills)) throw new Error("INVALID_PROVIDER_FILLS");
     return {
       symbol, action: enumValue(l.action, ACTIONS) ?? "UNKNOWN",
       quantity: decimalString(l.quantity), remaining_quantity: decimalString(l["remaining-quantity"]),
@@ -201,6 +208,9 @@ function order(raw: unknown): BrokerOrder {
 function transaction(raw: unknown): BrokerTransaction {
   const t = record(raw), id = identifier(t.id);
   if (!id) throw new Error("INVALID_PROVIDER_TRANSACTION");
+  if (["exec-id", "ext-exec-id"].some(key => t[key] !== undefined && t[key] !== null && !identifier(t[key]))) {
+    throw new Error("INVALID_PROVIDER_EXECUTION_IDENTITY");
+  }
   const fees: BrokerTransaction["fees"] = {};
   for (const k of FEE_FIELDS) {
     const amount = decimalString(t[k]);
@@ -209,6 +219,7 @@ function transaction(raw: unknown): BrokerTransaction {
   const date = t["transaction-date"];
   return {
     id, order_id: identifier(t["order-id"]), fill_id: identifier(t["exec-id"] ?? t["ext-exec-id"]),
+    exec_id: identifier(t["exec-id"]), ext_exec_id: identifier(t["ext-exec-id"]),
     symbol: occSymbol(t.symbol), action: enumValue(t.action, ACTIONS),
     type: enumValue(t["transaction-type"], ["Trade", "Receive Deliver", "Money Movement"]),
     quantity: decimalString(t.quantity), price: decimalString(t.price), time: brokerTime(t["executed-at"]),
