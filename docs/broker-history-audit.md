@@ -77,6 +77,25 @@ orders usually expose their final record and selected lifecycle timestamps, not
 every intermediate state transition. Created/received/in-flight/live/updated/
 cancelled/terminal and available order-rule route/cancel timestamps are retained.
 Absent fields remain absent; they are never manufactured from nearby events.
+Historical orders currently return `updated-at` as integer Unix epoch
+**milliseconds**, despite the official orders OpenAPI describing a string.
+This field alone accepts a nonnegative safe integer through the last millisecond
+of year 9999. Its exact integer text is retained in `original`, with
+`source_format: "UNIX_EPOCH_MILLISECONDS"`, alongside normalized UTC/ET and the
+`BROKER` clock. RFC3339 string updates retain their original representation.
+There is no seconds/milliseconds heuristic; receipt, terminal and execution
+timestamps still require RFC3339. An update is not a substitute for a fill time.
+
+Order-leg `quantity`, `remaining-quantity` and order-fill `quantity` currently
+arrive as JSON integer contract counts. Only nonnegative safe integers are
+converted exactly to decimal strings; fractional numeric counts, negative zero,
+nonfinite numbers and unsafe integers are explicit malformed-record gaps.
+Existing exact decimal-string quantities remain supported. Money (including
+limits, fill prices, transaction values and fees) and transaction quantities
+remain decimal strings; this compatibility path never coerces floating money.
+The separate synthetic provider-shape fixture uses invented data, not copied
+broker records, and does not replace the original incident fixture provenance.
+
 Canceled and Cancelled remain cancellations, not rejection. Replace relations
 come only from `replaces-order-id` / `replacing-order-id`; distinct cancellations
 are not proof of retries, broker failure, outage, or strategy malfunction.

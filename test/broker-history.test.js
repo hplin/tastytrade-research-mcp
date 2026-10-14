@@ -7,6 +7,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 
 const fixture = JSON.parse(readFileSync(new URL("./fixtures/oo-broker-2026-10-13-synthetic.json", import.meta.url)));
+const providerShape = JSON.parse(readFileSync(new URL("./fixtures/broker-orders-provider-shape-synthetic.json", import.meta.url)));
 const input = { account: { type: "Traditional IRA" }, start: "2026-10-12", end: "2026-10-14" };
 const account = { "account-number": "PRIVATE12345678", "account-type-name": "Traditional IRA", "is-closed": false };
 const leg = (symbol, action, quantity = "1") => ({ symbol, action, quantity, fills: [] });
@@ -72,6 +73,89 @@ function replay() {
 }
 
 describe("historical read-only broker client", () => {
+  test("normalizes synthetic current-provider integer quantities and epoch-millisecond update clock", async () => {
+    const result = await clientWith([providerShape.order]).client.getOrders(input);
+    expect(result.coverage).toMatchObject({ status: "COMPLETE", pagination_complete: true, unique_items: 1, gaps: [] });
+    const normalized = result.items[0];
+    expect(normalized).toMatchObject({ id: "880000001", status: "Filled", source: "OptionOmega", price: "1.250000000000000001" });
+    expect(normalized.timestamps["updated-at"]).toEqual({
+      original: "1791824400123", utc: "2026-10-12T17:00:00.123Z",
+      et: "2026-10-12T13:00:00 GMT-4", clock: "BROKER", source_format: "UNIX_EPOCH_MILLISECONDS",
+    });
+    expect(normalized.timestamps["terminal-at"].original).toBe("2026-10-12T17:00:00.123Z");
+    expect(normalized.legs[0]).toMatchObject({ quantity: "1", remaining_quantity: "0" });
+    expect(normalized.legs[0].fills[0]).toMatchObject({
+      id: "invented-buy-fill", quantity: "1", price: "2.000000000000000001",
+      time: { original: "2026-10-12T17:00:00.123Z", clock: "BROKER" },
+    });
+  });
+  test.each(["quantity", "remaining-quantity", "fill-quantity"])("rejects unsafe numeric %s without rounding or defaulting", async field => {
+    for (const value of [0.5, -1, -0, Number.MAX_SAFE_INTEGER + 1, Infinity, NaN]) {
+      const raw = structuredClone(providerShape.order);
+      if (field === "fill-quantity") raw.legs[0].fills[0].quantity = value;
+      else raw.legs[0][field] = value;
+      const result = await clientWith([raw]).client.getOrders(input);
+      expect(result.items).toEqual([]);
+      expect(result.coverage).toMatchObject({ status: "INCOMPLETE", pagination_complete: false, gaps: ["INVALID_OR_UNSUPPORTED_RECORD"] });
+    }
+  });
+  test("safe integer count boundary and exact fractional string counts retain precision", async () => {
+    const raw = structuredClone(providerShape.order);
+    raw.legs[0].quantity = Number.MAX_SAFE_INTEGER;
+    raw.legs[0]["remaining-quantity"] = "0.500000000000000001";
+    raw.legs[0].fills[0].quantity = "0.500000000000000001";
+    const result = await clientWith([raw]).client.getOrders(input);
+    expect(result.items[0].legs[0]).toMatchObject({ quantity: "9007199254740991", remaining_quantity: "0.500000000000000001" });
+    expect(result.items[0].legs[0].fills[0].quantity).toBe("0.500000000000000001");
+  });
+  test.each([-1, 0.5, NaN, Infinity, Number.MAX_SAFE_INTEGER + 1, 253402300800000])("invalid numeric updated-at %s remains an explicit record gap", async value => {
+    const result = await clientWith([{ ...providerShape.order, "updated-at": value }]).client.getOrders(input);
+    expect(result.items).toEqual([]);
+    expect(result.coverage.gaps).toEqual(["INVALID_OR_UNSUPPORTED_RECORD"]);
+  });
+  test("epoch support is specific to updated-at; receipt and execution clocks remain RFC3339", async () => {
+    for (const key of ["received-at", "terminal-at"]) {
+      const result = await clientWith([{ ...providerShape.order, [key]: 1791824400123 }]).client.getOrders(input);
+      expect(result.coverage.gaps).toEqual(["INVALID_OR_UNSUPPORTED_RECORD"]);
+    }
+    const raw = structuredClone(providerShape.order);
+    raw.legs[0].fills[0]["filled-at"] = 1791824400123;
+    expect((await clientWith([raw]).client.getOrders(input)).coverage.gaps).toEqual(["INVALID_OR_UNSUPPORTED_RECORD"]);
+    const stringUpdated = { ...providerShape.order, "updated-at": "2026-10-12T13:00:00.123-04:00" };
+    const normalized = (await clientWith([stringUpdated]).client.getOrders(input)).items[0].timestamps["updated-at"];
+    expect(normalized.original).toBe(stringUpdated["updated-at"]);
+    expect(normalized.source_format).toBeUndefined();
+  });
+  test("numeric money and transaction quantities are not admitted by order integer-count support", async () => {
+    for (const field of ["price", "fill-price"]) {
+      const raw = structuredClone(providerShape.order);
+      if (field === "price") raw.price = 1.25;
+      else raw.legs[0].fills[0]["fill-price"] = 2;
+      expect((await clientWith([raw]).client.getOrders(input)).coverage.gaps).toEqual(["INVALID_OR_UNSUPPORTED_RECORD"]);
+    }
+    for (const field of ["price", "quantity", "value", "net-value", "commission"]) {
+      const raw = transaction("invented-tx", "880000001", providerShape.order.legs[0].symbol, "Buy to Close", "1.00", "2026-10-12T17:00:00.123Z");
+      raw[field] = 1;
+      expect((await clientWith([], [raw]).client.getTransactions(input)).coverage.gaps).toEqual(["INVALID_OR_UNSUPPORTED_RECORD"]);
+    }
+  });
+  test("provider-shaped integer order/fill counts preserve incident replay and exact cross-source reconciliation", async () => {
+    const data = replay();
+    for (const raw of data.orders) {
+      raw["updated-at"] = Date.parse(raw["terminal-at"] ?? raw["cancelled-at"] ?? raw["received-at"]);
+      for (const l of raw.legs) {
+        l.quantity = 1;
+        l["remaining-quantity"] = raw.status === "Filled" ? 0 : 1;
+        l.fills = data.transactions.filter(t => t["order-id"] === raw.id && t.symbol === l.symbol).map(t => ({
+          "fill-id": `synthetic-order-${t.id}`, quantity: 1, "fill-price": t.price, "filled-at": t["executed-at"],
+        }));
+      }
+    }
+    const report = await buildOOBrokerAudit(clientWith(data.orders, data.transactions).client, { ...input, activity_log: { events: data.events } });
+    expect(report.coverage.gaps).not.toContain("INVALID_OR_UNSUPPORTED_RECORD");
+    expect(report.tags).toContain("CLOSED_CONFIRMED");
+    expect(report.episodes[0]).toMatchObject({ final_package_debit: "8.15", stop_to_final_fill_ms: 53000, stop_to_fill_difference_per_contract_usd: "450" });
+  });
   test("uses historical endpoint, selects IRA dynamically, all statuses and precise window", async () => {
     const { client, get } = clientWith([order("123")]);
     const result = await client.getOrders(input);

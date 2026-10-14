@@ -13,7 +13,10 @@ export type BrokerHistoryInput = {
   page_size?: number;
   max_pages?: number;
 };
-export type BrokerTime = { original: string; utc: string; et: string; clock: "BROKER" | "OO" };
+export type BrokerTime = {
+  original: string; utc: string; et: string; clock: "BROKER" | "OO";
+  source_format?: "UNIX_EPOCH_MILLISECONDS";
+};
 export type BrokerFill = {
   id: string | null; quantity: string | null; price: string | null;
   exec_id: string | null; ext_exec_id: string | null;
@@ -103,6 +106,19 @@ export function decimalString(value: unknown): string | null {
   ExactDecimal.parse(value);
   return value;
 }
+function orderQuantity(value: unknown): string | null {
+  if (typeof value !== "number") return decimalString(value);
+  // Historical orders also return JSON integer contract counts, never numeric money.
+  if (!Number.isSafeInteger(value) || value < 0 || Object.is(value, -0)) throw new Error("INVALID_PROVIDER_QUANTITY");
+  return String(value);
+}
+function updatedTime(value: unknown): BrokerTime | null {
+  if (typeof value !== "number") return brokerTime(value);
+  // The historical updated-at field is epoch milliseconds, not a fill clock.
+  if (!Number.isSafeInteger(value) || value < 0 || value > 253402300799999) throw new Error("INVALID_TIMESTAMP");
+  const time = brokerTime(new Date(value).toISOString())!;
+  return { ...time, original: String(value), source_format: "UNIX_EPOCH_MILLISECONDS" };
+}
 export function privateReference(value: string): string {
   return createHash("sha256").update(value).digest("hex").slice(0, 16);
 }
@@ -155,7 +171,7 @@ function contract(symbol: string | null): BrokerTransaction["contract"] {
     strike: ExactDecimal.parse(match[5]).divide(ExactDecimal.parse("1000")).toString(),
   };
 }
-function fill(raw: unknown): BrokerFill {
+function fill(raw: unknown, integerQuantity = false): BrokerFill {
   const f = record(raw);
   if (["fill-id", "id", "exec-id", "ext-exec-id"].some(key => f[key] !== undefined && f[key] !== null && !identifier(f[key]))) {
     throw new Error("INVALID_PROVIDER_FILL_IDENTITY");
@@ -163,7 +179,8 @@ function fill(raw: unknown): BrokerFill {
   return {
     id: identifier(f["fill-id"] ?? f["id"]),
     exec_id: identifier(f["exec-id"]), ext_exec_id: identifier(f["ext-exec-id"]),
-    quantity: decimalString(f.quantity), price: decimalString(f["fill-price"] ?? f.price),
+    quantity: integerQuantity ? orderQuantity(f.quantity) : decimalString(f.quantity),
+    price: decimalString(f["fill-price"] ?? f.price),
     time: brokerTime(f["filled-at"] ?? f["executed-at"]),
     venue: f["destination-venue"] ? `venue:${privateReference(String(f["destination-venue"]))}` : null,
   };
@@ -173,7 +190,8 @@ function order(raw: unknown): BrokerOrder {
   if (!id || !Array.isArray(o.legs)) throw new Error("INVALID_PROVIDER_ORDER");
   const timestamps: Record<string, BrokerTime> = {};
   for (const key of ["created-at", "received-at", "in-flight-at", "live-at", "updated-at", "cancelled-at", "terminal-at"]) {
-    const t = brokerTime(o[key]); if (t) timestamps[key] = t;
+    const t = key === "updated-at" ? updatedTime(o[key]) : brokerTime(o[key]);
+    if (t) timestamps[key] = t;
   }
   if (o["order-rule"]) {
     const rule = record(o["order-rule"]);
@@ -188,8 +206,8 @@ function order(raw: unknown): BrokerOrder {
     if (l.fills !== undefined && !Array.isArray(l.fills)) throw new Error("INVALID_PROVIDER_FILLS");
     return {
       symbol, action: enumValue(l.action, ACTIONS) ?? "UNKNOWN",
-      quantity: decimalString(l.quantity), remaining_quantity: decimalString(l["remaining-quantity"]),
-      fills: Array.isArray(l.fills) ? l.fills.map(fill) : [],
+      quantity: orderQuantity(l.quantity), remaining_quantity: orderQuantity(l["remaining-quantity"]),
+      fills: Array.isArray(l.fills) ? l.fills.map(f => fill(f, true)) : [],
     };
   });
   return {
@@ -232,7 +250,7 @@ function transaction(raw: unknown): BrokerTransaction {
     transaction_sub_type: enumValue(t["transaction-sub-type"], ["Buy to Open", "Sell to Open", "Buy to Close", "Sell to Close", "Expiration", "Exercise", "Assignment", "Cash Settlement"]),
     contract: contract(occSymbol(t.symbol)),
     settlement: enumValue(t["settlement-type"], ["Cash", "Physical", "AM", "PM"]),
-    lots: Array.isArray(t.lots) ? t.lots.map(fill) : t.lots ? [fill(t.lots)] : [],
+    lots: Array.isArray(t.lots) ? t.lots.map(f => fill(f)) : t.lots ? [fill(t.lots)] : [],
   };
 }
 
