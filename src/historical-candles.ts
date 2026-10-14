@@ -10,10 +10,13 @@ import {
   DXLINK_OPEN,
   TastytradeDxlinkTokenClient,
   decodeDxlinkMessageData,
+  DxlinkAuthenticationError,
+  DxlinkAuthFailedError,
   dxlinkAuthenticationError,
   dxlinkMessageDataByteLength,
   withDxlinkAuthRecovery,
   type DxlinkAuthDiagnostics,
+  type DxlinkAuthRecoveryResult,
   type DxlinkProviderError,
   type DxlinkQuoteToken,
   type DxlinkQuoteTokenProvider,
@@ -173,7 +176,8 @@ export type HistoricalCandlesFailureReason =
   | "CALENDAR_EXPECTED_SESSION_MISSING"
   | "PROVIDER_COMPLETE_BUT_COVERAGE_PARTIAL"
   | "CALENDAR_UNSUPPORTED"
-  | "SOURCE_RTH_DAILY_TIME_UNVERIFIED";
+  | "SOURCE_RTH_DAILY_TIME_UNVERIFIED"
+  | "AUTH_FAILED";
 
 export type HistoricalCandlesResourceCounters = {
   received_events: number;
@@ -386,6 +390,18 @@ type SnapshotReadResult = {
   unmatchedSymbols: string[];
   timeoutStage: HistoricalCandlesTimeoutStage | null;
 };
+
+class SnapshotAuthenticationError extends DxlinkAuthenticationError {
+  constructor(readonly snapshot: SnapshotReadResult) {
+    super({ code: "UNAUTHORIZED", message: "Authentication failed" });
+  }
+}
+
+class SnapshotReadError extends Error {
+  constructor(readonly snapshot: SnapshotReadResult) {
+    super("DXLink snapshot failed before completion.");
+  }
+}
 
 type HistoricalCandleBudgets = {
   deadlineMs: number;
@@ -1254,6 +1270,10 @@ export class TastytradeHistoricalCandlesClient {
       snapshotDeadlineAt! - this.clock(),
       budgets.deadlineMs - (performance.now() - snapshotStartedAt!),
     ));
+    let retainedSnapshot: SnapshotReadResult | null = null;
+    let attempts = 0;
+    let resumeIndex = 0;
+    let interruptedWindow: RthCalendarPlan["sessions"] | null = null;
     const recovery = await withDxlinkAuthRecovery(
       this.quoteTokens,
       async (quoteToken) => {
@@ -1261,7 +1281,7 @@ export class TastytradeHistoricalCandlesClient {
         const now = this.clock();
         snapshotDeadlineAt ??= now + budgets.deadlineMs;
         snapshotStartedAt ??= performance.now();
-        const snapshot = await this.readSnapshot({
+        const snapshot = retainedSnapshot ?? await this.readSnapshot({
           quoteToken,
           candleSymbols,
           startMs,
@@ -1275,16 +1295,19 @@ export class TastytradeHistoricalCandlesClient {
           signal: input.signal,
           rthDaily: calendarDailyRequest,
         });
-        let attempts = 0;
+        retainedSnapshot = snapshot;
         for (const [index, plan] of calendarPlans.entries()) {
+          if (index < resumeIndex) continue;
           if (!plan?.supported) continue;
+          const resuming = index === resumeIndex && interruptedWindow !== null;
           const state = snapshot.symbolStates.get(candleSymbols[index])!;
           const diagnostic = recoveryDiagnostics[index];
           const observed = new Set([...state.candlesByIndex.values()]
             .map(({ candle }) => candle.timestamp));
           const missing = plan.sessions.filter((candidate) => !observed.has(candidate.open));
-          if (missing.length === 0) continue;
-          if (!snapshot.authConfirmed || state.localFailureReason || state.providerSnipped ||
+          if (missing.length === 0 && !resuming) continue;
+          if ((!snapshot.authConfirmed && !resuming) || state.localFailureReason || state.providerSnipped ||
+              (snapshot.requestFailureReason === "SNAPSHOT_TIMEOUT" && !reserveRecoveryTime) ||
               (snapshot.requestFailureReason && !["SNAPSHOT_TIMEOUT", "PROVIDER_TEMPORARY_FAILURE"]
                 .includes(snapshot.requestFailureReason))) {
             diagnostic.stopped_reason = "INITIAL_RESOURCE_OR_TRANSPORT_FAILURE";
@@ -1295,21 +1318,26 @@ export class TastytradeHistoricalCandlesClient {
           const remainingBytes = budgets.maxBufferBytes - snapshot.requestCounters.retained_bytes;
           const remainingRows = budgets.maxOutputCandles - state.candlesByIndex.size;
           if (attempts >= 4 || remainingTime < 1 || remainingEvents <= 0 ||
-              remainingBytes <= 0 || remainingRows <= 0) {
+              remainingBytes <= 0 || (remainingRows <= 0 && !resuming)) {
             diagnostic.stopped_reason = attempts >= 4 ? "RECOVERY_ATTEMPT_LIMIT" : "SHARED_RESOURCE_BUDGET_EXHAUSTED";
+            if (resuming) diagnostic.failures.push("AUTH_FAILED");
             continue;
           }
-          // One native, same-cohort retry per symbol; at most five missing sessions.
+          // Refresh resumes this window, never the initial batch or its budgets.
           const firstMissing = plan.sessions.indexOf(missing[0]);
-          const window = [];
-          for (const candidate of plan.sessions.slice(firstMissing, firstMissing + 5)) {
-            if (observed.has(candidate.open)) break;
-            window.push(candidate);
+          const window = resuming ? interruptedWindow! : [];
+          if (!resuming) {
+            for (const candidate of plan.sessions.slice(firstMissing, firstMissing + 5)) {
+              if (observed.has(candidate.open)) break;
+              window.push(candidate);
+            }
           }
           attempts += 1;
           diagnostic.attempts += 1;
+          let retry: SnapshotReadResult;
+          let authenticationError: SnapshotAuthenticationError | null = null;
           try {
-            const retry = await this.readSnapshot({
+            retry = await this.readSnapshot({
               quoteToken,
               candleSymbols: [state.candleSymbol],
               startMs: window[0].open,
@@ -1320,71 +1348,104 @@ export class TastytradeHistoricalCandlesClient {
                 maxOutputCandles: remainingRows },
               signal: input.signal,
               rthDaily: calendarDailyRequest,
+              preserveFailureSnapshot: true,
+              ...(resuming ? { excludedTimestamps: observed } : {}),
             });
-            const retryState = retry.symbolStates.get(state.candleSymbol)!;
-            state.oldestReceivedTimestamp = [state.oldestReceivedTimestamp, retryState.oldestReceivedTimestamp]
-              .filter((value): value is number => value !== null)
-              .reduce<number | null>((oldest, value) => oldest === null ? value : Math.min(oldest, value), null);
-            state.newestReceivedTimestamp = [state.newestReceivedTimestamp, retryState.newestReceivedTimestamp]
-              .filter((value): value is number => value !== null)
-              .reduce<number | null>((newest, value) => newest === null ? value : Math.max(newest, value), null);
-            const allowedTimes = new Set(window.map((candidate) => candidate.open));
-            for (const [key, retained] of retryState.candlesByIndex) {
-              if (!allowedTimes.has(retained.candle.timestamp)) continue;
-              if (state.candlesByIndex.has(key)) {
-                diagnostic.failures.push("PROVIDER_SCHEMA_MISMATCH");
-              } else {
-                state.candlesByIndex.set(key, retained);
-                diagnostic.recovered_session_dates.push(rthDate(retained.candle.timestamp));
-              }
-            }
-            for (const date of retryState.receivedSessionDates) state.receivedSessionDates.add(date);
-            for (const symbol of retryState.receivedSymbols) state.receivedSymbols.add(symbol);
-            for (const symbol of retryState.canonicalReceivedSymbols) state.canonicalReceivedSymbols.add(symbol);
-            for (const key of Object.keys(state.pipeline) as (keyof typeof state.pipeline)[]) {
-              state.pipeline[key] += retryState.pipeline[key];
-            }
-            const originalRetainedBytes = snapshot.requestCounters.retained_bytes;
-            for (const key of Object.keys(emptyResourceCounters()) as (keyof HistoricalCandlesResourceCounters)[]) {
-              snapshot.requestCounters[key] += retry.requestCounters[key];
-              state.counters[key] += retryState.counters[key];
-            }
-            snapshot.requestCounters.peak_buffer_bytes = Math.max(
-              snapshot.requestCounters.peak_buffer_bytes,
-              originalRetainedBytes + retry.requestCounters.peak_buffer_bytes,
-            );
-            snapshot.requestCounters.unmatched_received_events += retry.requestCounters.unmatched_received_events;
-            snapshot.unmatchedSymbols = [...new Set([...snapshot.unmatchedSymbols, ...retry.unmatchedSymbols])];
-            snapshot.requestCounters.unmatched_symbol_count = snapshot.unmatchedSymbols.length;
-            const failure = retryState.localFailureReason ?? retry.requestFailureReason ??
-              (retryState.providerSnipped ? "PROVIDER_SNAPSHOT_SNIPPED" : null);
-            diagnostic.windows.push({
-              start: new Date(window[0].open).toISOString(),
-              end: new Date(window.at(-1)!.close).toISOString(),
-              provider_snapshot_complete: retryState.providerComplete,
-              failure_reason: failure,
-              timeout_stage: retry.timeoutStage,
-              received_events: retry.requestCounters.received_events,
-            });
-            if (failure) {
-              diagnostic.failures.push(failure);
-              if (failure === "SNAPSHOT_TIMEOUT") diagnostic.failures.push("PROVIDER_TIMEOUT");
-            }
-            diagnostic.stopped_reason = missing.length > window.length
-              ? "RECOVERY_WINDOW_LIMIT" : "ONE_RETRY_PER_SYMBOL";
           } catch (error) {
             assertNotAborted(input.signal);
-            diagnostic.failures.push("PROVIDER_TEMPORARY_FAILURE");
-            diagnostic.stopped_reason = "RECOVERY_FAILED_PRESERVED_INITIAL_BARS";
-            break;
+            if (error instanceof SnapshotAuthenticationError) {
+              retry = error.snapshot;
+              authenticationError = error;
+            } else if (error instanceof SnapshotReadError) {
+              retry = error.snapshot;
+            } else {
+              throw error;
+            }
           }
+          const retryState = retry.symbolStates.get(state.candleSymbol)!;
+          state.oldestReceivedTimestamp = [state.oldestReceivedTimestamp, retryState.oldestReceivedTimestamp]
+            .filter((value): value is number => value !== null)
+            .reduce<number | null>((oldest, value) => oldest === null ? value : Math.min(oldest, value), null);
+          state.newestReceivedTimestamp = [state.newestReceivedTimestamp, retryState.newestReceivedTimestamp]
+            .filter((value): value is number => value !== null)
+            .reduce<number | null>((newest, value) => newest === null ? value : Math.max(newest, value), null);
+          const allowedTimes = new Set(window.map((candidate) => candidate.open));
+          for (const [key, retained] of retryState.candlesByIndex) {
+            if (!allowedTimes.has(retained.candle.timestamp)) continue;
+            if (state.candlesByIndex.has(key)) {
+              diagnostic.failures.push("PROVIDER_SCHEMA_MISMATCH");
+            } else {
+              state.candlesByIndex.set(key, retained);
+              diagnostic.recovered_session_dates.push(rthDate(retained.candle.timestamp));
+            }
+          }
+          for (const date of retryState.receivedSessionDates) state.receivedSessionDates.add(date);
+          for (const symbol of retryState.receivedSymbols) state.receivedSymbols.add(symbol);
+          for (const symbol of retryState.canonicalReceivedSymbols) state.canonicalReceivedSymbols.add(symbol);
+          state.snapshotBeginSeen ||= retryState.snapshotBeginSeen;
+          state.snapshotEndSeen ||= retryState.snapshotEndSeen;
+          state.snapshotSnipSeen ||= retryState.snapshotSnipSeen;
+          for (const key of Object.keys(state.pipeline) as (keyof typeof state.pipeline)[]) {
+            state.pipeline[key] += retryState.pipeline[key];
+          }
+          const originalRetainedBytes = snapshot.requestCounters.retained_bytes;
+          for (const key of Object.keys(emptyResourceCounters()) as (keyof HistoricalCandlesResourceCounters)[]) {
+            snapshot.requestCounters[key] += retry.requestCounters[key];
+            state.counters[key] += retryState.counters[key];
+          }
+          snapshot.requestCounters.peak_buffer_bytes = Math.max(
+            snapshot.requestCounters.peak_buffer_bytes,
+            originalRetainedBytes + retry.requestCounters.peak_buffer_bytes,
+          );
+          snapshot.requestCounters.unmatched_received_events += retry.requestCounters.unmatched_received_events;
+          snapshot.unmatchedSymbols = [...new Set([...snapshot.unmatchedSymbols, ...retry.unmatchedSymbols])];
+          snapshot.requestCounters.unmatched_symbol_count = snapshot.unmatchedSymbols.length;
+          const failure = retryState.localFailureReason ?? retry.requestFailureReason ??
+            (retryState.providerSnipped ? "PROVIDER_SNAPSHOT_SNIPPED" : null);
+          diagnostic.windows.push({
+            start: new Date(window[0].open).toISOString(),
+            end: new Date(window.at(-1)!.close).toISOString(),
+            provider_snapshot_complete: retryState.providerComplete,
+            failure_reason: failure,
+            timeout_stage: retry.timeoutStage,
+            received_events: retry.requestCounters.received_events,
+          });
+          if (authenticationError) {
+            snapshot.authConfirmed = false;
+            resumeIndex = index;
+            interruptedWindow = window;
+            diagnostic.stopped_reason = "AUTHENTICATION_REFRESH_REQUIRED";
+            throw authenticationError;
+          }
+          if (resuming) snapshot.authConfirmed = retry.authConfirmed;
+          interruptedWindow = null;
+          resumeIndex = index + 1;
+          if (failure) {
+            diagnostic.failures.push(failure);
+            if (failure === "SNAPSHOT_TIMEOUT") diagnostic.failures.push("PROVIDER_TIMEOUT");
+          }
+          diagnostic.stopped_reason = missing.length > window.length
+            ? "RECOVERY_WINDOW_LIMIT" : "ONE_RETRY_PER_SYMBOL";
         }
         return snapshot;
       },
       input.signal,
-    );
+    ).catch((error: unknown): DxlinkAuthRecoveryResult<SnapshotReadResult> => {
+      assertNotAborted(input.signal);
+      if (!(error instanceof DxlinkAuthFailedError) || !retainedSnapshot || !interruptedWindow) {
+        throw error;
+      }
+      const diagnostic = recoveryDiagnostics[resumeIndex];
+      diagnostic.failures.push("AUTH_FAILED");
+      diagnostic.stopped_reason = "AUTH_FAILED_PRESERVED_COMMITTED_BARS";
+      return {
+        value: retainedSnapshot,
+        dxlinkAuth: error.dxlinkAuth,
+        providerError: error.providerError,
+      };
+    });
     const snapshot = recovery.value;
-    const dxlinkAuth: DxlinkAuthDiagnostics = snapshot.authConfirmed
+    const dxlinkAuth: DxlinkAuthDiagnostics = snapshot.authConfirmed || recovery.dxlinkAuth.status === "FAILED"
       ? recovery.dxlinkAuth
       : {
           ...recovery.dxlinkAuth,
@@ -1695,10 +1756,11 @@ export class TastytradeHistoricalCandlesClient {
     budgets: HistoricalCandleBudgets;
     signal?: AbortSignal;
     rthDaily?: boolean;
+    excludedTimestamps?: Set<number>;
+    preserveFailureSnapshot?: boolean;
   }): Promise<SnapshotReadResult> {
     assertNotAborted(input.signal);
     return new Promise((resolve, reject) => {
-      const socket = this.socketFactory(input.quoteToken.url);
       const symbolStates = new Map<string, SnapshotSymbolState>(
         input.candleSymbols.map((candleSymbol) => [
           candleSymbol,
@@ -1755,6 +1817,17 @@ export class TastytradeHistoricalCandlesClient {
       let stage: HistoricalCandlesTimeoutStage = "CONNECTING";
       let authSent = false;
       let authConfirmed = false;
+      let socket: DxlinkSocket;
+      try {
+        socket = this.socketFactory(input.quoteToken.url);
+      } catch (error) {
+        reject(input.preserveFailureSnapshot ? new SnapshotReadError({
+          symbolStates, authConfirmed, requestCounters,
+          requestFailureReason: "PROVIDER_TEMPORARY_FAILURE",
+          unmatchedSymbols: [], timeoutStage: null,
+        }) : error);
+        return;
+      }
 
       const send = (message: Record<string, unknown>) => {
         socket.send(JSON.stringify(message));
@@ -1786,21 +1859,24 @@ export class TastytradeHistoricalCandlesClient {
           socket.close(1000, "historical snapshot stopped");
         }
       };
+      const snapshotResult = (
+        requestFailureReason: HistoricalCandlesFailureReason | null,
+      ): SnapshotReadResult => ({
+        symbolStates,
+        authConfirmed,
+        requestFailureReason,
+        requestCounters,
+        unmatchedSymbols: [...unmatchedSymbols.keys()].sort(),
+        timeoutStage:
+          requestFailureReason === "SNAPSHOT_TIMEOUT" ? stage : null,
+      });
       const finish = (
         requestFailureReason: HistoricalCandlesFailureReason | null,
       ) => {
         if (settled) return;
         settled = true;
         cleanup();
-        resolve({
-          symbolStates,
-          authConfirmed,
-          requestFailureReason,
-          requestCounters,
-          unmatchedSymbols: [...unmatchedSymbols.keys()].sort(),
-          timeoutStage:
-            requestFailureReason === "SNAPSHOT_TIMEOUT" ? stage : null,
-        });
+        resolve(snapshotResult(requestFailureReason));
       };
       const fail = (error: Error, preservePartial = true) => {
         if (settled) return;
@@ -1810,7 +1886,14 @@ export class TastytradeHistoricalCandlesClient {
         }
         settled = true;
         cleanup();
-        reject(error);
+        if (error instanceof HistoricalCandlesAbortedError || !input.preserveFailureSnapshot) {
+          reject(error);
+        } else if (error instanceof DxlinkAuthenticationError) {
+          authConfirmed = false;
+          reject(new SnapshotAuthenticationError(snapshotResult("AUTH_FAILED")));
+        } else {
+          reject(new SnapshotReadError(snapshotResult("PROVIDER_TEMPORARY_FAILURE")));
+        }
       };
       abortListener = () => fail(new HistoricalCandlesAbortedError(), false);
       input.signal?.addEventListener("abort", abortListener, {
@@ -1910,6 +1993,7 @@ export class TastytradeHistoricalCandlesClient {
           state.pipeline.outside_request_or_session += 1;
           return;
         }
+        if (input.excludedTimestamps?.has(candle.timestamp)) return;
         const existing = state.candlesByIndex.get(candle.index);
         if (existing) state.pipeline.replaced_indices += 1;
         if (

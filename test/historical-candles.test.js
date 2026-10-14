@@ -20,14 +20,29 @@ function dailyRows(symbol, dates, complete = true) {
   return rows;
 }
 
-function dailyClient(attempts, clock = () => Date.parse("2026-12-31T23:00:00Z")) {
+function dailyClient(attempts, clock = () => Date.parse("2026-12-31T23:00:00Z"), onToken = () => {}) {
   const sockets = [];
+  const quoteTokens = {
+    getQuoteToken: jest.fn(async (signal, request) => {
+      await onToken(signal, request);
+      return {
+        token: request?.forceRefresh ? "synthetic-fresh-token" : "synthetic-stale-token",
+        url: "wss://tasty-openapi-dxlink-md-ws.dxfeed.com/realtime",
+      };
+    }),
+    invalidateQuoteToken: jest.fn(),
+  };
   const client = new TastytradeHistoricalCandlesClient(
     { getAccessToken: async () => "synthetic-token" }, undefined,
     () => {
       const attempt = attempts[Math.min(sockets.length, attempts.length - 1)];
+      if (attempt?.constructionError) throw new Error("Synthetic socket construction failure");
       const rows = attempt?.rows ?? attempt;
-      const socket = new FakeSocket(rows === null ? [] : [rows]);
+      const socket = new FakeSocket(rows === null ? [] : [rows], {
+        unauthorizedTokens: attempt?.unauthorizedTokens,
+        afterFeedError: attempt?.unauthorized,
+        feedConfig: attempt?.feedConfig,
+      });
       if (attempt?.error) {
         const emit = socket.emit.bind(socket);
         socket.emit = (message) => {
@@ -38,11 +53,9 @@ function dailyClient(attempts, clock = () => Date.parse("2026-12-31T23:00:00Z"))
       sockets.push(socket);
       return socket;
     }, clock,
-    { getQuoteToken: async () => ({
-      token: "synthetic-token", url: "wss://tasty-openapi-dxlink-md-ws.dxfeed.com/realtime",
-    }), invalidateQuoteToken: () => {} },
+    quoteTokens,
   );
-  return { client, sockets };
+  return { client, sockets, quoteTokens };
 }
 
 function dailyRequest(symbol = "SPY", overrides = {}) {
@@ -135,6 +148,7 @@ class FakeSocket {
       channel: 3,
     };
     this.useBlob = options.useBlob ?? false;
+    this.afterFeedError = options.afterFeedError ?? false;
     this.unauthorizedTokens = new Set(
       options.unauthorizedTokens ?? [],
     );
@@ -172,6 +186,12 @@ class FakeSocket {
             type: "FEED_DATA",
             channel: 3,
             data: ["Candle", rows.flat()],
+          });
+        }
+        if (this.afterFeedError) {
+          this.emit({
+            type: "ERROR", channel: 0, error: "UNAUTHORIZED",
+            message: "Rejected synthetic-stale-token synthetic-fresh-token",
           });
         }
       }
@@ -568,6 +588,342 @@ describe("calendar-verified RTH daily coverage (synthetic, not live)", () => {
     expect(result.missing_session_dates).toEqual(missing.slice(1));
     expect(result.recovery_diagnostics.failures).toContain("PROVIDER_TEMPORARY_FAILURE");
     expect(result.resource_usage.request.received_events).toBe(32);
+  });
+
+  test.each([false, true])("recovery rejection with committed row=%s refreshes only its window with cumulative evidence", async (committed) => {
+    const dates = dailyFixture.expected_session_dates.filter((date) => date !== "2026-10-08");
+    const refreshedRows = dailyRows("SPY", ["2026-10-08"]);
+    for (let index = 7; index <= 10; index += 1) refreshedRows[0][index] = "101";
+    const { client, sockets, quoteTokens } = dailyClient([
+      dailyRows("SPY", dates),
+      { rows: committed ? dailyRows("SPY", ["2026-10-08"], false) : [], unauthorized: true },
+      refreshedRows,
+    ]);
+    const result = await client.getHistoricalCandles(dailyRequest("SPY", {
+      max_output_candles: 33, max_received_events: committed ? 36 : 35,
+    }));
+    expect(result.status).toBe("AVAILABLE");
+    expect(result.candles.map((candle) => candle.session_timing.session_date))
+      .toEqual(dailyFixture.expected_session_dates);
+    expect(result.resource_usage.request).toMatchObject({
+      received_events: committed ? 36 : 35, retained_rows: 33, returned_rows: 33,
+      valid_candle_events: committed ? 34 : 33,
+    });
+    expect(result.resource_usage.symbol.received_events).toBe(committed ? 36 : 35);
+    expect(result.candles.find((candle) => candle.session_timing.session_date === "2026-10-08"))
+      .toMatchObject({
+        close: committed ? "100" : "101", source_time: "2026-10-08T13:30:00.000Z",
+        bar_end: "2026-10-08T20:00:00.000Z", available_at: "2026-10-08T20:00:00.000Z",
+      });
+    expect(result.dxlink_auth).toMatchObject({
+      status: "REFRESHED", refresh_attempted: true, retry_count: 1,
+    });
+    expect(result.provider_error).toEqual({ code: "UNAUTHORIZED", message: "Authentication failed" });
+    expect(result.recovery_diagnostics).toMatchObject({
+      attempts: 2, failures: [], recovered_session_dates: ["2026-10-08"],
+      windows: [
+        { failure_reason: "AUTH_FAILED", received_events: committed ? 1 : 0, provider_snapshot_complete: false },
+        { failure_reason: null, received_events: 2, provider_snapshot_complete: true },
+      ],
+    });
+    expect(quoteTokens.getQuoteToken).toHaveBeenCalledTimes(2);
+    expect(quoteTokens.getQuoteToken.mock.calls[1][1]).toEqual({ forceRefresh: true });
+    expect(quoteTokens.invalidateQuoteToken).toHaveBeenCalledTimes(1);
+    expect(sockets).toHaveLength(3);
+    for (const socket of sockets.slice(1)) {
+      expect(socket.sent.find((message) => message.add).add).toEqual([{
+        type: "Candle", symbol: "SPY{=d,a=s,tho=true}", fromTime: rthSession("2026-10-08").open,
+      }]);
+    }
+    expect(JSON.stringify(result)).not.toContain("synthetic-stale-token");
+    expect(JSON.stringify(result)).not.toContain("synthetic-fresh-token");
+  });
+
+  test.each([false, true])("repeated recovery rejection with committed row=%s fails closed without erasing a completed peer", async (committed) => {
+    const missing = dailyFixture.omissions.SPX;
+    const initial = [
+      ...dailyRows("SPX", dailyFixture.expected_session_dates.filter((date) => !missing.includes(date))),
+      ...dailyRows("QQQ", dailyFixture.expected_session_dates),
+    ];
+    const { client, sockets, quoteTokens } = dailyClient([
+      initial,
+      { rows: committed ? dailyRows("SPX", [missing[0]], false) : [], unauthorized: true },
+      { rows: committed ? dailyRows("SPX", [missing[1]], false) : [], unauthorized: true },
+    ]);
+    const [spx, qqq] = await client.getHistoricalCandlesBatch({
+      ...dailyRequest("SPX"),
+      instruments: [{ symbol: "SPX", instrument_type: "INDEX" }, { symbol: "QQQ", instrument_type: "EQUITY" }],
+    });
+    expect(spx.status).toBe("PARTIAL");
+    expect(spx.candles).toHaveLength(committed ? 32 : 30);
+    expect(spx.missing_session_dates).toEqual(committed ? missing.slice(2) : missing);
+    expect(spx.failure_reasons).toContain("AUTH_FAILED");
+    expect(spx.session_coverage.ma20_eligible).toBe(false);
+    expect(spx.resource_usage.request).toMatchObject({
+      received_events: committed ? 67 : 65, retained_rows: committed ? 65 : 63,
+      returned_rows: committed ? 65 : 63,
+    });
+    expect(spx.resource_usage.symbol.received_events).toBe(committed ? 33 : 31);
+    expect(spx.recovery_diagnostics).toMatchObject({
+      attempts: 2, failures: ["AUTH_FAILED"],
+      recovered_session_dates: committed ? missing.slice(0, 2) : [],
+      stopped_reason: "AUTH_FAILED_PRESERVED_COMMITTED_BARS",
+      windows: [
+        { start: "2026-09-28T13:30:00.000Z", end: "2026-09-30T20:00:00.000Z",
+          failure_reason: "AUTH_FAILED", received_events: committed ? 1 : 0 },
+        { start: "2026-09-28T13:30:00.000Z", end: "2026-09-30T20:00:00.000Z",
+          failure_reason: "AUTH_FAILED", received_events: committed ? 1 : 0 },
+      ],
+    });
+    expect(qqq).toMatchObject({
+      status: "AVAILABLE", snapshot_complete: true, provider_snapshot_complete: true,
+      session_coverage_complete: true, failure_reasons: [],
+      transport_diagnostics: { snapshot_end_seen: true, received_session_dates: dailyFixture.expected_session_dates },
+    });
+    expect(qqq.candles).toHaveLength(33);
+    expect(qqq.resource_usage.symbol.received_events).toBe(34);
+    for (const result of [spx, qqq]) {
+      expect(result.dxlink_auth).toMatchObject({ status: "FAILED", retry_count: 1, refresh_attempted: true });
+      expect(result.provider_error).toEqual({ code: "UNAUTHORIZED", message: "Authentication failed" });
+    }
+    expect(sockets).toHaveLength(3);
+    expect(quoteTokens.getQuoteToken).toHaveBeenCalledTimes(2);
+    expect(quoteTokens.invalidateQuoteToken).toHaveBeenCalledTimes(1);
+  });
+
+  test("initial auth refresh and recovery rejection share exactly one refresh allowance", async () => {
+    const dates = dailyFixture.expected_session_dates.filter((date) => date !== "2026-10-08");
+    const { client, sockets, quoteTokens } = dailyClient([
+      { rows: [], unauthorizedTokens: ["synthetic-stale-token"] },
+      dailyRows("SPY", dates),
+      { rows: dailyRows("SPY", ["2026-10-08"], false), unauthorized: true },
+    ]);
+    const result = await client.getHistoricalCandles(dailyRequest());
+    expect(result.status).toBe("PARTIAL");
+    expect(result.failure_reasons).toContain("AUTH_FAILED");
+    expect(result.dxlink_auth.status).toBe("FAILED");
+    expect(result.candles).toHaveLength(33);
+    expect(result.resource_usage.request.received_events).toBe(34);
+    expect(result.recovery_diagnostics.windows).toHaveLength(1);
+    expect(quoteTokens.getQuoteToken).toHaveBeenCalledTimes(2);
+    expect(quoteTokens.invalidateQuoteToken).toHaveBeenCalledTimes(1);
+    expect(sockets).toHaveLength(3);
+  });
+
+  test.each([false, true])("recovery handshake rejection, repeated=%s, records every attempted window", async (repeated) => {
+    const dates = dailyFixture.expected_session_dates.filter((date) => date !== "2026-10-08");
+    const { client, sockets, quoteTokens } = dailyClient([
+      dailyRows("SPY", dates),
+      { rows: [], unauthorizedTokens: ["synthetic-stale-token"] },
+      { rows: dailyRows("SPY", ["2026-10-08"]),
+        unauthorizedTokens: repeated ? ["synthetic-fresh-token"] : [] },
+    ]);
+    const result = await client.getHistoricalCandles(dailyRequest());
+    expect(result.candles).toHaveLength(repeated ? 32 : 33);
+    expect(result.resource_usage.request.received_events).toBe(repeated ? 33 : 35);
+    expect(result.dxlink_auth).toMatchObject({
+      status: repeated ? "FAILED" : "REFRESHED", refresh_attempted: true, retry_count: 1,
+    });
+    expect(result.provider_error).toEqual({ code: "UNAUTHORIZED", message: "Authentication failed" });
+    expect(result.recovery_diagnostics.windows).toMatchObject([
+      { failure_reason: "AUTH_FAILED", received_events: 0, provider_snapshot_complete: false },
+      { failure_reason: repeated ? "AUTH_FAILED" : null,
+        received_events: repeated ? 0 : 2, provider_snapshot_complete: !repeated },
+    ]);
+    expect(result.recovery_diagnostics.failures).toEqual(repeated ? ["AUTH_FAILED"] : []);
+    expect(sockets).toHaveLength(3);
+    expect(quoteTokens.getQuoteToken).toHaveBeenCalledTimes(2);
+    expect(quoteTokens.invalidateQuoteToken).toHaveBeenCalledTimes(1);
+  });
+
+  test("a recovery auth reconnect consumes the four-attempt batch allowance, not an extra window", async () => {
+    const symbols = ["SPX", "SPY", "QQQ", "IWM"];
+    const initial = symbols.flatMap((symbol) => dailyRows(symbol,
+      dailyFixture.expected_session_dates.filter((date) => !dailyFixture.omissions[symbol].includes(date))));
+    const { client, sockets, quoteTokens } = dailyClient([
+      initial, dailyRows("SPX", dailyFixture.omissions.SPX), dailyRows("SPY", dailyFixture.omissions.SPY),
+      { rows: dailyRows("QQQ", dailyFixture.omissions.QQQ, false), unauthorized: true },
+      dailyRows("QQQ", dailyFixture.omissions.QQQ),
+    ]);
+    const results = await client.getHistoricalCandlesBatch({
+      ...dailyRequest(), instruments: symbols.map((symbol) => ({
+        symbol, instrument_type: symbol === "SPX" ? "INDEX" : "EQUITY",
+      })),
+    });
+    expect(results.map((result) => result.recovery_diagnostics.attempts)).toEqual([1, 1, 2, 0]);
+    expect(results.map((result) => result.candles.length)).toEqual([33, 33, 33, 32]);
+    expect(results.map((result) => result.status)).toEqual(["AVAILABLE", "AVAILABLE", "AVAILABLE", "PARTIAL"]);
+    expect(results[3].recovery_diagnostics.stopped_reason).toBe("RECOVERY_ATTEMPT_LIMIT");
+    expect(results[0].resource_usage.request).toMatchObject({ received_events: 139, returned_rows: 131 });
+    expect(sockets).toHaveLength(5);
+    expect(quoteTokens.getQuoteToken).toHaveBeenCalledTimes(2);
+    expect(quoteTokens.invalidateQuoteToken).toHaveBeenCalledTimes(1);
+  });
+
+  test.each([34, 35])("auth refresh retains an exact %i-event request cap", async (limit) => {
+    const dates = dailyFixture.expected_session_dates.filter((date) => date !== "2026-10-08");
+    const { client, sockets, quoteTokens } = dailyClient([
+      dailyRows("SPY", dates),
+      { rows: dailyRows("SPY", ["2026-10-08"], false), unauthorized: true },
+      dailyRows("SPY", ["2026-10-08"]),
+    ]);
+    const result = await client.getHistoricalCandles(dailyRequest("SPY", { max_received_events: limit }));
+    expect(result.status).toBe("PARTIAL");
+    expect(result.candles).toHaveLength(33);
+    expect(result.resource_usage.request.received_events).toBe(limit);
+    expect(result.recovery_diagnostics.windows.map((window) => window.received_events))
+      .toEqual(limit === 34 ? [1] : [1, 1]);
+    expect(result.failure_reasons).toContain(limit === 34 ? "AUTH_FAILED" : "LOCAL_RECEIVE_BUDGET_EXCEEDED");
+    expect(result.dxlink_auth.status).toBe(limit === 34 ? "NOT_CONFIRMED" : "REFRESHED");
+    expect(result.provider_error.code).toBe("UNAUTHORIZED");
+    expect(sockets).toHaveLength(limit === 34 ? 2 : 3);
+    expect(quoteTokens.getQuoteToken).toHaveBeenCalledTimes(2);
+    expect(quoteTokens.invalidateQuoteToken).toHaveBeenCalledTimes(1);
+  });
+
+  test("auth refresh cannot replenish output capacity already spent by committed recovery rows", async () => {
+    const missing = dailyFixture.omissions.SPX;
+    const { client } = dailyClient([
+      dailyRows("SPX", dailyFixture.expected_session_dates.filter((date) => !missing.includes(date))),
+      { rows: dailyRows("SPX", [missing[0]], false), unauthorized: true },
+      dailyRows("SPX", missing.slice(1)),
+    ]);
+    const result = await client.getHistoricalCandles(dailyRequest("SPX", { max_output_candles: 32 }));
+    expect(result.candles).toHaveLength(32);
+    expect(result.missing_session_dates).toEqual([missing[2]]);
+    expect(result.resource_usage.request.received_events).toBe(35);
+    expect(result.failure_reasons).toContain("LOCAL_OUTPUT_BUDGET_EXCEEDED");
+    expect(result.recovery_diagnostics.windows.map((window) => window.received_events)).toEqual([1, 3]);
+  });
+
+  test("token refresh latency consumes the original request deadline without opening a fresh socket", async () => {
+    let now = Date.parse("2026-12-31T23:00:00Z");
+    const dates = dailyFixture.expected_session_dates.filter((date) => date !== "2026-10-08");
+    const { client, sockets, quoteTokens } = dailyClient([
+      dailyRows("SPY", dates),
+      { rows: dailyRows("SPY", ["2026-10-08"], false), unauthorized: true },
+      dailyRows("SPY", ["2026-10-08"]),
+    ], () => now, async (signal, request) => {
+      if (request?.forceRefresh) now += 100;
+    });
+    const result = await client.getHistoricalCandles(dailyRequest("SPY", { deadline_ms: 100 }));
+    expect(result.candles).toHaveLength(33);
+    expect(result.status).toBe("PARTIAL");
+    expect(result.dxlink_auth.status).toBe("NOT_CONFIRMED");
+    expect(result.recovery_diagnostics.stopped_reason).toBe("SHARED_RESOURCE_BUDGET_EXHAUSTED");
+    expect(result.resource_usage.request.received_events).toBe(34);
+    expect(result.resource_usage.limits.deadline_ms_per_request).toBe(100);
+    expect(sockets).toHaveLength(2);
+    expect(quoteTokens.getQuoteToken).toHaveBeenCalledTimes(2);
+  });
+
+  test("cancellation during authentication refresh stays explicit", async () => {
+    const controller = new AbortController();
+    const dates = dailyFixture.expected_session_dates.filter((date) => date !== "2026-10-08");
+    const { client, sockets } = dailyClient([
+      dailyRows("SPY", dates), { rows: [], unauthorized: true },
+    ], undefined, async (signal, request) => {
+      if (request?.forceRefresh) controller.abort();
+    });
+    await expect(client.getHistoricalCandles(dailyRequest("SPY", { signal: controller.signal })))
+      .rejects.toMatchObject({ name: "HistoricalCandlesAbortedError" });
+    expect(sockets).toHaveLength(2);
+  });
+
+  test("refresh acquisition failure retains committed evidence and sanitized AUTH_FAILED provenance", async () => {
+    const dates = dailyFixture.expected_session_dates.filter((date) => date !== "2026-10-08");
+    const { client, sockets, quoteTokens } = dailyClient([
+      dailyRows("SPY", dates),
+      { rows: dailyRows("SPY", ["2026-10-08"], false), unauthorized: true },
+    ], undefined, async (signal, request) => {
+      if (request?.forceRefresh) throw new Error("Synthetic acquisition failure");
+    });
+    const result = await client.getHistoricalCandles(dailyRequest());
+    expect(result).toMatchObject({
+      status: "PARTIAL", failure_reasons: ["AUTH_FAILED"],
+      dxlink_auth: { status: "FAILED", refresh_attempted: true, retry_count: 1 },
+      provider_error: { code: "UNAUTHORIZED", message: "Authentication failed" },
+    });
+    expect(result.candles).toHaveLength(33);
+    expect(result.resource_usage.request.received_events).toBe(34);
+    expect(result.recovery_diagnostics.windows).toHaveLength(1);
+    expect(sockets).toHaveLength(2);
+    expect(quoteTokens.getQuoteToken).toHaveBeenCalledTimes(2);
+    expect(quoteTokens.invalidateQuoteToken).toHaveBeenCalledTimes(1);
+  });
+
+  test("a recovery failure before feed rows still records its zero-event attempt window", async () => {
+    const dates = dailyFixture.expected_session_dates.filter((date) => date !== "2026-10-08");
+    const { client, sockets, quoteTokens } = dailyClient([
+      dailyRows("SPY", dates),
+      { rows: [], feedConfig: { type: "ERROR", error: "TEMPORARY_FAILURE" } },
+    ]);
+    const result = await client.getHistoricalCandles(dailyRequest());
+    expect(result.status).toBe("PARTIAL");
+    expect(result.candles).toHaveLength(32);
+    expect(result.resource_usage.request.received_events).toBe(33);
+    expect(result.recovery_diagnostics).toMatchObject({
+      attempts: 1, failures: ["PROVIDER_TEMPORARY_FAILURE"],
+      windows: [{
+        start: "2026-10-08T13:30:00.000Z", end: "2026-10-08T20:00:00.000Z",
+        failure_reason: "PROVIDER_TEMPORARY_FAILURE", provider_snapshot_complete: false,
+        received_events: 0,
+      }],
+    });
+    expect(sockets).toHaveLength(2);
+    expect(quoteTokens.getQuoteToken).toHaveBeenCalledTimes(1);
+    expect(quoteTokens.invalidateQuoteToken).not.toHaveBeenCalled();
+  });
+
+  test("a recovery socket construction failure does not erase the initial snapshot or attempted window", async () => {
+    const dates = dailyFixture.expected_session_dates.filter((date) => date !== "2026-10-08");
+    const { client, sockets } = dailyClient([
+      dailyRows("SPY", dates), { constructionError: true },
+    ]);
+    const result = await client.getHistoricalCandles(dailyRequest());
+    expect(result.status).toBe("PARTIAL");
+    expect(result.candles).toHaveLength(32);
+    expect(result.resource_usage.request.received_events).toBe(33);
+    expect(result.recovery_diagnostics).toMatchObject({
+      attempts: 1, failures: ["PROVIDER_TEMPORARY_FAILURE"],
+      windows: [{ failure_reason: "PROVIDER_TEMPORARY_FAILURE", received_events: 0 }],
+    });
+    expect(sockets).toHaveLength(1);
+  });
+
+  test("a refreshed recovery uses only buffer allowance left by initial and rejected-attempt evidence", async () => {
+    const dates = dailyFixture.expected_session_dates.filter((date) => date !== "2026-10-08");
+    const initial = dailyRows("SPY", dates);
+    const rejected = { rows: dailyRows("SPY", ["2026-10-08"], false), unauthorized: true };
+    const baseline = dailyClient([initial, rejected], undefined, async (signal, request) => {
+      if (request?.forceRefresh) throw new Error("Synthetic acquisition failure");
+    });
+    const measured = await baseline.client.getHistoricalCandles(dailyRequest());
+    const originalRetained = measured.resource_usage.request.retained_bytes;
+    const limit = Math.max(measured.resource_usage.request.peak_buffer_bytes, originalRetained) + 100;
+    const remainingBytes = limit - originalRetained;
+    const native = "SPY{=d,a=s,tho=true}";
+    const expensive = [row(rthSession("2026-10-08").open, 4,
+      "1".repeat(Math.ceil(remainingBytes / 4)), native), marker(0, native)];
+    const wireBytes = Buffer.byteLength(JSON.stringify({
+      type: "FEED_DATA", channel: 3, data: ["Candle", expensive.flat()],
+    }));
+    expect(wireBytes).toBeGreaterThan(remainingBytes);
+    expect(wireBytes).toBeLessThan(limit);
+    const { client, sockets, quoteTokens } = dailyClient([initial, rejected, expensive]);
+    const result = await client.getHistoricalCandles(dailyRequest("SPY", { max_buffer_bytes: limit }));
+    expect(result.candles).toHaveLength(33);
+    expect(result.status).toBe("PARTIAL");
+    expect(result.failure_reasons).toContain("LOCAL_BUFFER_BUDGET_EXCEEDED");
+    expect(result.resource_usage.request.received_events).toBe(34);
+    expect(result.resource_usage.request.retained_bytes).toBe(originalRetained);
+    const pendingConfigBytes = Buffer.byteLength(JSON.stringify({ type: "FEED_CONFIG", channel: 3 }));
+    expect(result.resource_usage.request.peak_buffer_bytes).toBe(originalRetained + wireBytes + pendingConfigBytes);
+    expect(result.resource_usage.request.peak_buffer_bytes).toBeGreaterThan(limit);
+    expect(result.recovery_diagnostics.windows.map((window) => window.received_events)).toEqual([1, 0]);
+    expect(sockets).toHaveLength(3);
+    expect(quoteTokens.getQuoteToken).toHaveBeenCalledTimes(2);
+    expect(quoteTokens.invalidateQuoteToken).toHaveBeenCalledTimes(1);
   });
 
   test("partial initial timeout preserves IWM daily rows without spending a fresh retry deadline", async () => {

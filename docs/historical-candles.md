@@ -278,6 +278,8 @@ Each symbol gets at most one short-window retry of the first contiguous
 missing run, capped at five expected sessions; a batch has at most four
 recovery attempts, sequentially. Missing dates after that bounded attempt
 remain partial; this is not a promise of exhaustive recovery.
+An authentication reconnect of an interrupted recovery window also counts
+against the four-attempt cap; it does not grant a second missing-date window.
 
 Retries use the **same symbol, price type, native daily period, and REGULAR
 attributes**, and the original deadline's remaining wall-clock time. Event
@@ -287,6 +289,22 @@ budgets. A completed peer is not invalidated by another symbol's timeout.
 Completed-date rows from an interrupted retry are retained alongside good
 initial bars, with explicit partial diagnostics. Initial transport failure
 remains visible even if the retry recovers dates.
+
+An `UNAUTHORIZED` recovery response retains committed rows, consumed event
+and buffer counters, and the failed attempt's window, including zero-event
+attempts. The existing authentication policy permits one token invalidation
+and one forced refresh **across the entire request**, including initial
+authentication. Refresh resumes only the interrupted native recovery window,
+with the original deadline and residual event/output/buffer allowances.
+Already committed timestamps are not replaced by refreshed revisions.
+Successful reauthentication reports `REFRESHED` and retains a sanitized
+`provider_error`; the failed window records `AUTH_FAILED` even when recovery
+subsequently succeeds. Repeated rejection or refresh acquisition failure
+reports authentication `FAILED` and an `AUTH_FAILED` partial result without
+erasing initial/recovered rows or completed peers. If the remaining budgets
+prevent reauthentication, authentication remains `NOT_CONFIRMED` with explicit
+failure/stop diagnostics, never falsely `CONFIRMED`. Cancellation still rejects
+explicitly rather than becoming a temporary provider failure.
 
 `recovery_diagnostics` records attempts, recovered dates, stop reason,
 failures, and bounded request windows with END/timeout/event evidence.

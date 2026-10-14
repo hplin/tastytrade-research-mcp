@@ -103,6 +103,10 @@ The suite builds the TypeScript project before running Jest and covers:
   close timing, unfinished/future daily exclusion, 33/60-session bounded
   recovery and shared deadlines/events/buffers/output limits, expected-date
   MA20 eligibility, and immutable legacy-daily cache-policy isolation;
+- recovery authentication rejection before/after committed daily rows,
+  one request-wide credential refresh, sanitized failure provenance, failed
+  attempt counters/windows, retained completed peers, and exact residual
+  deadline/event/output/buffer allowances across authentication reconnects;
 - regular and custom overnight session windows;
 - untrusted DXLink-host rejection;
 - MCP tool discovery and dispatch;
