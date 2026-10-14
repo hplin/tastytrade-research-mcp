@@ -46,8 +46,11 @@ Engineering fixtures remain explicitly synthetic, not live acceptance evidence.
 Authorized October 12–13 ET broker queries enumerated 59 orders and 76 transactions
 with complete provider-result pagination, not exhaustive lifecycle-event history.
 Issue #102 remains open; full acceptance is outstanding on original OO precise
-clocks and October 12 episode identification, plus complete final fee, settlement
-and campaign evidence.
+clocks and, for October 12, identifying evidence or an attributable coverage
+disposition. Fees and cash flows are reconciled when available; final fee,
+settlement and campaign incompleteness remains an explicit evidence limitation,
+with definitive claims suppressed, not a new requirement to acquire unavailable
+final data.
 
 ### Research and regression tools
 

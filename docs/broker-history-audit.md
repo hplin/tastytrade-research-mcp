@@ -257,14 +257,20 @@ queries, not exhaustive retained history or intermediate lifecycle events.
 Observed execution and available fee arithmetic are not proof of final fees,
 complete settlement or strategy/campaign lifetime evidence.
 
-**Outstanding original-source acceptance:** original OO precise event clocks,
-October 12 individual failure-episode identification, and complete final fee,
-settlement and campaign evidence remain unestablished. The original authenticated
+**Outstanding original-source acceptance:** original OO precise event clocks
+and October 12 individual failure-episode identifying evidence or an attributable
+coverage disposition remain outstanding. The original authenticated
 October 13 Activity Log panel displayed no events with debug both off and on;
 captured OO summaries provide minute-level times, not event logs or verified
 precise source clocks. An empty displayed panel does not prove backend logs are
 absent. The October 12 historical strategy label differs from the current linked
 labels; no rename or configuration continuity is inferred.
+
+Fees and cash flows are reconciled **when available**, as required by the original
+conditional acceptance contract. Incomplete final fee, settlement and campaign
+evidence remains explicitly reported, with unsupported definitive claims
+suppressed; it is not a new acceptance gate requiring acquisition of unavailable
+final data.
 
 Full issue acceptance remains false and issue #102 stays open. Fixtures and the
 example payload remain explicitly synthetic; neither fixture success nor
