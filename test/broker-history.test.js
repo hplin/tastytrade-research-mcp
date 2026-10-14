@@ -380,6 +380,131 @@ describe("OO broker synthetic replay", () => {
     expect(report.coverage.gaps).toContain("ORDER_FILL_IDENTITY_AMBIGUOUS");
     expect(report.episodes[0].final_package_debit).toBeNull();
   });
+  test.each(["exec-id", "ext-exec-id"])(
+    "absent optional fills do not bypass duplicate closing transaction %s validation", async field => {
+      const data = replay();
+      data.transactions[2] = {
+        ...data.transactions[2], quantity: "0.5", value: "418.5", "net-value": "418.5", [field]: "duplicate",
+      };
+      data.transactions.push({ ...data.transactions[2], id: "9", "exec-id": "distinct-9", [field]: "duplicate" });
+      const report = await auditReplay(data);
+      expect(report.coverage.gaps).toEqual(["ORDER_FILL_IDENTITY_AMBIGUOUS"]);
+      expect(report.tags).toContain("UNRESOLVED");
+      expect(report.tags).not.toContain("CLOSED_CONFIRMED");
+      const attempt = report.attempts.at(-1);
+      expect(attempt).toMatchObject({
+        broker_first_fill: null, broker_last_fill: null,
+        execution_evidence: {
+          timing_basis: "UNCONFIRMED", order_fill_scope: "NOT_SUPPLIED",
+          reconciliation_gaps: ["ORDER_FILL_IDENTITY_AMBIGUOUS"],
+        },
+        broker_working_interval: { fill_observed: true },
+        execution_transaction_ids: ["3", "4", "9"],
+      });
+      expect(attempt.oo_fill_reports[0]).toMatchObject({ broker_time: null, oo_minus_broker_ms: null });
+      expect(report.episodes[0]).toMatchObject({
+        final_package_debit: null, stop_to_final_fill_ms: null,
+        stop_to_fill_difference_per_contract_usd: null, stop_to_first_route_ms: 1000,
+      });
+      expect(report.side_cash_flows[0]).toMatchObject({ realized_gross: null, realized_net: null });
+      expect(report.campaigns[0]).toMatchObject({ realized_gross: null, realized_net: null });
+      expect(report.transactions.map(t => t.id)).toEqual(["1", "2", "3", "4", "9"]);
+      expect(report.summary_zh_tw).toContain("最終組合成交成本 未確認");
+    },
+  );
+  test.each(["exec-id", "ext-exec-id"])(
+    "absent optional fills do not bypass duplicate opening transaction %s validation", async field => {
+      const data = replay();
+      data.transactions[0] = {
+        ...data.transactions[0], quantity: "0.5", value: "111", "net-value": "111", [field]: "duplicate",
+      };
+      data.transactions.push({ ...data.transactions[0], id: "9", "exec-id": "distinct-9", [field]: "duplicate" });
+      const report = await auditReplay(data);
+      expect(report.coverage.gaps).toEqual(["ORDER_FILL_IDENTITY_AMBIGUOUS"]);
+      expect(report.side_cash_flows[0]).toMatchObject({ realized_gross: null, realized_net: null });
+      expect(report.campaigns[0]).toMatchObject({ realized_gross: null, realized_net: null });
+      expect(report.tags).toEqual(expect.arrayContaining(["CLOSED_CONFIRMED", "UNRESOLVED"]));
+      expect(report.episodes[0]).toMatchObject({ final_package_debit: "8.15", stop_to_final_fill_ms: 53000 });
+    },
+  );
+  test.each(["Filled", "Partially Filled"])(
+    "absent optional fills preserve legitimate distinct split identities for %s", async status => {
+      const data = replay();
+      data.orders.at(-1).status = status;
+      data.transactions[2] = {
+        ...data.transactions[2], quantity: "0.5", value: "418.5", "net-value": "418.5", "ext-exec-id": "external-3",
+      };
+      if (status === "Filled") {
+        data.transactions.push({ ...data.transactions[2], id: "9", "exec-id": "distinct-9", "ext-exec-id": "external-9" });
+      } else {
+        data.transactions[3] = { ...data.transactions[3], quantity: "0.5", value: "11", "net-value": "11" };
+      }
+      const report = await auditReplay(data);
+      expect(report.coverage.gaps).not.toContain("ORDER_FILL_IDENTITY_AMBIGUOUS");
+      expect(report.attempts.at(-1).execution_evidence).toMatchObject({
+        timing_basis: "RECONCILED_TRANSACTIONS", order_fill_scope: "NOT_SUPPLIED", reconciliation_gaps: [],
+      });
+      expect(report.attempts.at(-1).oo_fill_reports[0].oo_minus_broker_ms).toBe(4000);
+      if (status === "Filled") {
+        expect(report.coverage.gaps).toEqual([]);
+        expect(report.episodes[0]).toMatchObject({ final_package_debit: "8.15", stop_to_final_fill_ms: 53000 });
+        expect(report.side_cash_flows[0]).toMatchObject({ realized_gross: "-605", realized_net: "-605" });
+        expect(report.campaigns[0].realized_gross).toBe("-605");
+      } else {
+        expect(report.episodes[0]).toMatchObject({ final_package_debit: null, stop_to_final_fill_ms: null });
+        expect(report.tags).not.toContain("CLOSED_CONFIRMED");
+      }
+    },
+  );
+  test("transaction identities remain scoped to order, OCC leg, action and namespace without optional fills", async () => {
+    const data = replay();
+    for (const t of data.transactions) {
+      t["exec-id"] = "shared-across-scopes";
+      t["ext-exec-id"] = "shared-across-scopes";
+    }
+    const report = await auditReplay(data);
+    expect(report.coverage.gaps).toEqual([]);
+    expect(report.episodes[0]).toMatchObject({ final_package_debit: "8.15", stop_to_final_fill_ms: 53000 });
+    expect(report.side_cash_flows[0].realized_gross).toBe("-605");
+  });
+  test.each(["exec-id", "ext-exec-id"])(
+    "absent-fill PUT transaction %s ambiguity preserves unrelated CALL evidence", async field => {
+      const data = replay();
+      const putSymbols = ["SPXW  261013P07700000", "SPXW  261013P07660000"];
+      const entry = { ...data.orders[0], id: "920000000", legs: [
+        leg(putSymbols[0], "Sell to Open"), leg(putSymbols[1], "Buy to Open"),
+      ] };
+      const close = { ...order("920000001", "Filled", "2.10", "58"), legs: [
+        leg(putSymbols[0], "Buy to Close"), leg(putSymbols[1], "Sell to Close"),
+      ] };
+      data.orders.push(entry, close);
+      data.transactions.push(
+        transaction("5", entry.id, putSymbols[0], "Sell to Open", "2.22", "2026-10-13T14:00:01-04:00"),
+        transaction("6", entry.id, putSymbols[1], "Buy to Open", "0.12", "2026-10-13T14:00:01-04:00"),
+        { ...transaction("7", close.id, putSymbols[0], "Buy to Close", "2.22", fixture.broker_fill_time),
+          quantity: "0.5", value: "111", "net-value": "111", [field]: "duplicate" },
+        transaction("8", close.id, putSymbols[1], "Sell to Close", "0.12", fixture.broker_fill_time),
+      );
+      data.transactions.push({ ...data.transactions[6], id: "9", "exec-id": "distinct-9", [field]: "duplicate" });
+      data.events.push(
+        { kind: "LIMIT_ATTEMPT", timestamp: entry["received-at"], order_id: entry.id, campaign_id: "synthetic-put-side" },
+        { kind: "STOP_TRIGGERED", timestamp: fixture.stop_time, symbols: putSymbols, price: "2.10", campaign_id: "synthetic-put-side" },
+        { kind: "FILL_REPORTED", timestamp: fixture.oo_fill_time, order_id: close.id, campaign_id: "synthetic-put-side" },
+      );
+      const report = await auditReplay(data);
+      expect(report.coverage.gaps).toEqual(["ORDER_FILL_IDENTITY_AMBIGUOUS"]);
+      expect(report.tags).toEqual(expect.arrayContaining(["CLOSED_CONFIRMED", "UNRESOLVED"]));
+      expect(report.side_cash_flows.find(s => s.side.endsWith("CALL"))).toMatchObject({ realized_gross: "-605", realized_net: "-605" });
+      expect(report.side_cash_flows.find(s => s.side.endsWith("PUT"))).toMatchObject({ realized_gross: null, realized_net: null });
+      expect(report.campaigns[0]).toMatchObject({ realized_gross: "-605", realized_net: "-605" });
+      expect(report.campaigns[1]).toMatchObject({ realized_gross: null, realized_net: null });
+      expect(report.episodes[0]).toMatchObject({ final_package_debit: "8.15", stop_to_final_fill_ms: 53000 });
+      expect(report.episodes[1]).toMatchObject({ final_package_debit: null, stop_to_final_fill_ms: null });
+      expect(report.attempts.find(a => a.order_id === close.id).execution_evidence).toMatchObject({
+        timing_basis: "UNCONFIRMED", order_fill_scope: "NOT_SUPPLIED",
+      });
+    },
+  );
   test("shared identities override coincidentally equal price/time distributions", async () => {
     const data = replay();
     const original = data.transactions[2];

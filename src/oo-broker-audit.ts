@@ -142,7 +142,11 @@ function reconcileOrderFills(order: BrokerOrder, transactions: BrokerTransaction
     const gaps = new Set<string>();
     const tx = transactions.filter(t => t.order_id === order.id &&
       t.symbol?.replace(/ /g, "") === leg.symbol.replace(/ /g, "") && t.action === leg.action);
-    if (!leg.fills.length) return { symbol: leg.symbol, gaps: [] };
+    for (const field of ["exec_id", "ext_exec_id"] as const) {
+      const ids = tx.map(t => t[field]).filter((id): id is string => !!id);
+      if (new Set(ids).size !== ids.length) gaps.add("ORDER_FILL_IDENTITY_AMBIGUOUS");
+    }
+    if (!leg.fills.length) return { symbol: leg.symbol, gaps: [...gaps] };
     const validFill = (f: { quantity: string | null; price: string | null; time: BrokerTime | null }) =>
       f.quantity !== null && decimal(f.quantity).compare(zero()) > 0 &&
       f.price !== null && decimal(f.price).compare(zero()) >= 0 && f.time !== null;
@@ -155,8 +159,6 @@ function reconcileOrderFills(order: BrokerOrder, transactions: BrokerTransaction
       if (new Set(ids).size !== ids.length) gaps.add("ORDER_FILL_IDENTITY_AMBIGUOUS");
     }
     for (const field of ["exec_id", "ext_exec_id"] as const) {
-      const ids = tx.map(t => t[field]).filter((id): id is string => !!id);
-      if (new Set(ids).size !== ids.length) gaps.add("ORDER_FILL_IDENTITY_AMBIGUOUS");
       for (const f of leg.fills) {
         if (!f[field] || !tx.some(t => t[field])) continue;
         const matched = tx.filter(t => t[field] === f[field]);

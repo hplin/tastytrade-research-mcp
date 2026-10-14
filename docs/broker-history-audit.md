@@ -136,6 +136,12 @@ across different namespaces never establishes identity. Like-named execution IDs
 including `ext-exec-id` when both sources supply it, must uniquely match within
 the same order, OCC leg and action; duplicate or contradictory identities are gaps.
 No undocumented mapping from order `ext-exec-id` to transaction `exec-id` is assumed.
+Transaction `exec_id` and `ext_exec_id` uniqueness is checked independently in
+that scope even when optional order fills are absent. Actual duplicates produce
+`ORDER_FILL_IDENTITY_AMBIGUOUS` while preserving `order_fill_scope: NOT_SUPPLIED`;
+distinct transaction ledger rows remain observations, not blindly deduplicated
+executions. Distinct split execution IDs remain valid, and identical text in
+different scopes or namespaces is not a duplicate.
 
 For supplied order-fill legs, exact positive quantities, nonnegative prices and
 offset-normalized timestamps must agree with transaction executions. Without
