@@ -29,6 +29,22 @@ The project is intentionally separate from the official
 | `tastytrade_cancel_backtest` | `POST /backtests/{id}/cancel` | Cancel only a Backtester job |
 | `tastytrade_simulate_trade` | `POST /simulate-trade` | Simulate one exact historical trade |
 
+### Read-only broker history and OO audit
+
+| Tool | Purpose |
+| --- | --- |
+| `tastytrade_get_historical_orders` | Paginated historical SPX/SPXW orders, all statuses, available lifecycle timestamps and explicit coverage |
+| `tastytrade_get_historical_transactions` | Exact-decimal per-leg historical executions, transaction cash flows, fees and UTC/ET timestamps |
+| `tastytrade_audit_oo_broker_orders` | OO-to-broker ID/leg correlation, attempts, independent call/put cash flows, evidence matrix and Traditional Chinese summary |
+
+These tools dynamically resolve an explicitly selected Traditional IRA, mask
+account identifiers, and expose only broker GET requests. They do not use the
+recent/live order snapshot. See [broker history and OO audit](docs/broker-history-audit.md)
+for window semantics, privacy, completeness, quote limitations, and a
+[synthetic FinPilot input](docs/examples/oo-broker-audit-synthetic.json).
+Engineering fixtures are not live acceptance evidence: issue #102 remains open
+pending authorized acquisition of the actual October 12–13 broker history.
+
 ### Research and regression tools
 
 | Tool | Purpose |
@@ -85,7 +101,7 @@ runner guidance are documented in
 ## Private historical evidence cache
 
 The historical candle, SPX candidate/universe, and exact-package tools accept
-an opt-in `evidence_cache` policy. The server exposes 24 tools, including the
+an opt-in `evidence_cache` policy. The server exposes 27 tools, including the
 local-only historical quote normalizer, deterministic execution-model
 adapter, and historical replay report builder.
 `READ_WRITE` stores sanitized source observations and normalized results as

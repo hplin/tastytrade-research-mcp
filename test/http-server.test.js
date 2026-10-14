@@ -122,7 +122,7 @@ describe("MCP HTTP server", () => {
     await client.connect(transport);
     try {
       const tools = await client.listTools();
-      expect(tools.tools).toHaveLength(24);
+      expect(tools.tools).toHaveLength(27);
 
       const result = await client.callTool({
         name: "tastytrade_price_option_package",
@@ -249,7 +249,7 @@ describe("MCP HTTP server", () => {
     await client.connect(transport);
     try {
       const tools = await client.listTools();
-      expect(tools.tools).toHaveLength(24);
+      expect(tools.tools).toHaveLength(27);
       expect(verifier.verifyAccessToken).toHaveBeenCalled();
     } finally {
       await client.close();
