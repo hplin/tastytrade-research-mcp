@@ -8,12 +8,13 @@ import {
 } from "node:fs/promises";
 import { readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { describe, expect, jest, test } from "@jest/globals";
 import { Ajv2020 } from "ajv/dist/2020.js";
 import {
   CachedHistoricalCandlesService,
   FileEvidenceCache,
+  stableEvidenceContentId,
 } from "../dist/evidence-cache.js";
 import {
   getHistoricalOptionPackageAtCheckpoint,
@@ -354,6 +355,74 @@ function checkpointPackageRequest(
 }
 
 describe("private immutable research evidence cache", () => {
+  test("RTH daily manifests preserve coverage and deny legacy policy identity without provider calls", async () => {
+    await withCache(async (cache) => {
+      const request = {
+        instruments: [{ symbol: "SPY", instrument_type: "EQUITY" }],
+        interval: "1d", start_time: "2026-10-07T00:00:00.000Z",
+        end_time: "2026-10-09T23:00:00.000Z",
+        session: { kind: "REGULAR", timezone: "America/New_York" },
+        evidence_cache: { ...CACHE_POLICY, mode: "READ_WRITE" },
+      };
+      const coverage = {
+        session_coverage_complete: false,
+        expected_session_dates: ["2026-10-07", "2026-10-08", "2026-10-09"],
+        observed_session_dates: ["2026-10-07", "2026-10-09"],
+        missing_session_dates: ["2026-10-08"], coverage_ratio: 2 / 3,
+        session_coverage: {
+          calendar_id: "us-cash-rth-2026/1", status: "VERIFIED", reason: null,
+          evaluated_through: request.end_time, ma20_eligible: false,
+          ma20_expected_session_dates: ["2026-10-07", "2026-10-08", "2026-10-09"],
+        },
+      };
+      const dailyResult = {
+        ...syntheticResult(request, request.instruments[0], 0),
+        ...coverage, status: "PARTIAL", snapshot_complete: true,
+        session: "REGULAR", timezone: "America/New_York", candles: [],
+        failure_reasons: ["CALENDAR_EXPECTED_SESSION_MISSING"],
+        resolution_profile: withEffectiveAggregation(normalizeResolutionProfile(undefined, {
+          default_requested_aggregation: "1d", default_max_observation_age_minutes: 0,
+          default_max_temporal_skew_minutes: 0, default_fallback_aggregations: [],
+          default_profile_id: "DIRECT_CANDLE_REQUEST",
+          direct_alignment: "SESSION",
+          direct_session: { ...request.session, start_time: "09:30", end_time: "16:00" },
+        }), "1d"),
+      };
+      const source = { getHistoricalCandlesBatch: jest.fn(async () => [dailyResult]) };
+      const service = new CachedHistoricalCandlesService(source, cache);
+      const [stored] = await service.getHistoricalCandlesBatch(request);
+      const manifest = await cache.readManifest(stored.evidence_cache.manifest_id);
+      expect(manifest.source_identity.rth_daily_coverage_version).toBe("us-cash-rth-2026/1");
+      expect(manifest.status.results[0].session_coverage_complete).toBe(false);
+      expect(manifest.status.results[0].missing_session_dates).toEqual(["2026-10-08"]);
+      expect(validateManifest(manifest)).toBe(true);
+      const offlineRequest = { ...request, evidence_cache: {
+        ...request.evidence_cache, mode: "CACHE_ONLY", manifest_ids: [manifest.manifest_id],
+      } };
+      const [replayed] = await service.getHistoricalCandlesBatch(offlineRequest);
+      expect(replayed).toMatchObject(coverage);
+      expect(source.getHistoricalCandlesBatch).toHaveBeenCalledTimes(1);
+
+      const { manifest_id, ...legacyBody } = structuredClone(manifest);
+      delete legacyBody.source_identity.rth_daily_coverage_version;
+      legacyBody.request_fingerprint = stableEvidenceContentId(legacyBody.source_identity);
+      const legacy = { ...legacyBody, manifest_id: stableEvidenceContentId(legacyBody) };
+      await mkdir(dirname(cache.manifestPath(legacy.manifest_id)), { recursive: true });
+      await writeFile(cache.manifestPath(legacy.manifest_id), JSON.stringify(legacy));
+      const before = await readFile(cache.manifestPath(legacy.manifest_id), "utf8");
+      await expect(service.getHistoricalCandlesBatch({
+        ...offlineRequest, evidence_cache: { ...offlineRequest.evidence_cache,
+          manifest_ids: [legacy.manifest_id] },
+      })).rejects.toMatchObject({ code: "EVIDENCE_CACHE_POLICY_MISMATCH" });
+      expect(await readFile(cache.manifestPath(legacy.manifest_id), "utf8")).toBe(before);
+      expect(source.getHistoricalCandlesBatch).toHaveBeenCalledTimes(1);
+      source.getHistoricalCandlesBatch.mockResolvedValue([{ ...dailyResult,
+        session_coverage: undefined, session_coverage_complete: undefined }]);
+      await expect(service.getHistoricalCandlesBatch({
+        ...request, evidence_cache: { ...request.evidence_cache, mode: "REFRESH" },
+      })).rejects.toThrow("legacy data cannot be promoted");
+    });
+  });
   test("accepts legacy LAST results without a price_type field", async () => {
     await withCache(async (cache) => {
       const source = provider();

@@ -34,6 +34,13 @@ import {
   type ResolutionProfileSession,
 } from "./resolution-profile.js";
 import { normalizeRfc3339 } from "./time.js";
+import {
+  RTH_CALENDAR_VERSION,
+  planRthSessions,
+  rthDate,
+  rthSession,
+  type RthCalendarPlan,
+} from "./rth-calendar.js";
 
 export type InstrumentType =
   | "EQUITY"
@@ -146,6 +153,7 @@ export type HistoricalCandle = {
     delta: string | null;
     warnings: string[];
   };
+  session_timing?: { calendar_id: string; session_date: string };
 };
 
 export type HistoricalCandlesFailureReason =
@@ -160,7 +168,12 @@ export type HistoricalCandlesFailureReason =
   | "PROVIDER_RATE_LIMIT"
   | "PROVIDER_TEMPORARY_FAILURE"
   | "PROVIDER_PARTIAL_RESPONSE"
-  | "PROVIDER_SCHEMA_MISMATCH";
+  | "PROVIDER_SCHEMA_MISMATCH"
+  | "SOURCE_RTH_DAILY_MISSING"
+  | "CALENDAR_EXPECTED_SESSION_MISSING"
+  | "PROVIDER_COMPLETE_BUT_COVERAGE_PARTIAL"
+  | "CALENDAR_UNSUPPORTED"
+  | "SOURCE_RTH_DAILY_TIME_UNVERIFIED";
 
 export type HistoricalCandlesResourceCounters = {
   received_events: number;
@@ -207,6 +220,39 @@ export type HistoricalCandlesResult = {
   snapshot_complete: boolean;
   snapshot_truncated: boolean;
   provider_snapshot_complete: boolean;
+  session_coverage_complete?: boolean | null;
+  expected_session_dates?: string[];
+  observed_session_dates?: string[];
+  missing_session_dates?: string[];
+  missing_session_diagnostics?: {
+    session_date: string;
+    attribution: "NO_VALID_CANONICAL_PROVIDER_ROW_OBSERVED" | "VALID_PROVIDER_ROW_NOT_RETURNED_LOCALLY";
+    provider_cause_confirmed: false;
+  }[];
+  coverage_ratio?: number | null;
+  session_coverage?: {
+    calendar_id: string;
+    status: "VERIFIED" | "UNSUPPORTED";
+    reason: string | null;
+    evaluated_through: string;
+    ma20_eligible: boolean;
+    ma20_expected_session_dates: string[];
+  };
+  recovery_diagnostics?: {
+    attempts: number;
+    maximum_attempts: number;
+    recovered_session_dates: string[];
+    failures: HistoricalCandlesFailureReason[];
+    stopped_reason: string | null;
+    windows: {
+      start: string;
+      end: string;
+      provider_snapshot_complete: boolean;
+      failure_reason: HistoricalCandlesFailureReason | null;
+      timeout_stage: HistoricalCandlesTimeoutStage | null;
+      received_events: number;
+    }[];
+  };
   failure_reasons: HistoricalCandlesFailureReason[];
   resource_usage: {
     limits: {
@@ -236,6 +282,16 @@ export type HistoricalCandlesResult = {
     snapshot_end_seen: boolean;
     snapshot_snip_seen: boolean;
     timeout_stage: HistoricalCandlesTimeoutStage | null;
+    received_session_dates?: string[];
+    local_pipeline?: {
+      invalid_candle_events: number;
+      outside_request_or_session: number;
+      replaced_indices: number;
+      removed_indices: number;
+      snapshot_resets: number;
+      unverified_daily_times: number;
+      unfinished_daily_rows: number;
+    };
   };
   advisory: {
     requested_window_candle_slots_per_symbol: number;
@@ -314,6 +370,8 @@ type SnapshotSymbolState = {
   providerSnipped: boolean;
   localFailureReason: HistoricalCandlesFailureReason | null;
   counters: HistoricalCandlesResourceCounters;
+  receivedSessionDates: Set<string>;
+  pipeline: NonNullable<HistoricalCandlesResult["transport_diagnostics"]["local_pipeline"]>;
 };
 
 type SnapshotReadResult = {
@@ -1155,6 +1213,15 @@ export class TastytradeHistoricalCandlesClient {
       interval.toLowerCase(),
     );
     const session = sessionConfiguration(candleSession(effectiveProfile));
+    const rthDaily = providerPeriod === "d" && session.kind === "REGULAR";
+    const coverageNow = this.clock();
+    const calendarPlans: (RthCalendarPlan | null)[] = instruments.map((instrument) =>
+      rthDaily && ["EQUITY", "INDEX"].includes(instrument.instrumentType)
+        ? planRthSessions(instrument.symbol, instrument.streamerSymbol,
+            instrument.instrumentType, session.timezone, startMs, endMs, coverageNow)
+        : null,
+    );
+    const calendarDailyRequest = calendarPlans.some((plan) => plan !== null);
     const priceAttribute =
       priceType === "LAST" ? "" : `,price=${priceType.toLowerCase()}`;
     const candleSymbols = instruments.map((instrument) =>
@@ -1171,14 +1238,30 @@ export class TastytradeHistoricalCandlesClient {
     ) {
       throw new Error("instruments must have unique streamer_symbol values.");
     }
+    const recoveryDiagnostics = instruments.map(() => ({
+      attempts: 0,
+      maximum_attempts: 4,
+      recovered_session_dates: [] as string[],
+      failures: [] as HistoricalCandlesFailureReason[],
+      stopped_reason: null as string | null,
+      windows: [] as NonNullable<HistoricalCandlesResult["recovery_diagnostics"]>["windows"],
+    }));
+    const reserveRecoveryTime = budgets.deadlineMs >= 20 &&
+      calendarPlans.some((plan) => plan?.supported && plan.sessions.length >= 30);
     let snapshotDeadlineAt: number | null = null;
+    let snapshotStartedAt: number | null = null;
+    const deadlineRemaining = () => Math.max(0, Math.min(
+      snapshotDeadlineAt! - this.clock(),
+      budgets.deadlineMs - (performance.now() - snapshotStartedAt!),
+    ));
     const recovery = await withDxlinkAuthRecovery(
       this.quoteTokens,
       async (quoteToken) => {
         assertNotAborted(input.signal);
         const now = this.clock();
         snapshotDeadlineAt ??= now + budgets.deadlineMs;
-        return this.readSnapshot({
+        snapshotStartedAt ??= performance.now();
+        const snapshot = await this.readSnapshot({
           quoteToken,
           candleSymbols,
           startMs,
@@ -1186,10 +1269,117 @@ export class TastytradeHistoricalCandlesClient {
           session,
           budgets: {
             ...budgets,
-            deadlineMs: Math.max(1, snapshotDeadlineAt - now),
+            deadlineMs: Math.max(1, Math.min(deadlineRemaining(),
+              reserveRecoveryTime ? Math.floor(budgets.deadlineMs * 0.75) : budgets.deadlineMs)),
           },
           signal: input.signal,
+          rthDaily: calendarDailyRequest,
         });
+        let attempts = 0;
+        for (const [index, plan] of calendarPlans.entries()) {
+          if (!plan?.supported) continue;
+          const state = snapshot.symbolStates.get(candleSymbols[index])!;
+          const diagnostic = recoveryDiagnostics[index];
+          const observed = new Set([...state.candlesByIndex.values()]
+            .map(({ candle }) => candle.timestamp));
+          const missing = plan.sessions.filter((candidate) => !observed.has(candidate.open));
+          if (missing.length === 0) continue;
+          if (!snapshot.authConfirmed || state.localFailureReason || state.providerSnipped ||
+              (snapshot.requestFailureReason && !["SNAPSHOT_TIMEOUT", "PROVIDER_TEMPORARY_FAILURE"]
+                .includes(snapshot.requestFailureReason))) {
+            diagnostic.stopped_reason = "INITIAL_RESOURCE_OR_TRANSPORT_FAILURE";
+            continue;
+          }
+          const remainingTime = deadlineRemaining();
+          const remainingEvents = budgets.maxReceivedEvents - snapshot.requestCounters.received_events;
+          const remainingBytes = budgets.maxBufferBytes - snapshot.requestCounters.retained_bytes;
+          const remainingRows = budgets.maxOutputCandles - state.candlesByIndex.size;
+          if (attempts >= 4 || remainingTime < 1 || remainingEvents <= 0 ||
+              remainingBytes <= 0 || remainingRows <= 0) {
+            diagnostic.stopped_reason = attempts >= 4 ? "RECOVERY_ATTEMPT_LIMIT" : "SHARED_RESOURCE_BUDGET_EXHAUSTED";
+            continue;
+          }
+          // One native, same-cohort retry per symbol; at most five missing sessions.
+          const firstMissing = plan.sessions.indexOf(missing[0]);
+          const window = [];
+          for (const candidate of plan.sessions.slice(firstMissing, firstMissing + 5)) {
+            if (observed.has(candidate.open)) break;
+            window.push(candidate);
+          }
+          attempts += 1;
+          diagnostic.attempts += 1;
+          try {
+            const retry = await this.readSnapshot({
+              quoteToken,
+              candleSymbols: [state.candleSymbol],
+              startMs: window[0].open,
+              endMs: window.at(-1)!.close,
+              session,
+              budgets: { ...budgets, deadlineMs: Math.max(1, Math.floor(remainingTime)),
+                maxReceivedEvents: remainingEvents, maxBufferBytes: remainingBytes,
+                maxOutputCandles: remainingRows },
+              signal: input.signal,
+              rthDaily: calendarDailyRequest,
+            });
+            const retryState = retry.symbolStates.get(state.candleSymbol)!;
+            state.oldestReceivedTimestamp = [state.oldestReceivedTimestamp, retryState.oldestReceivedTimestamp]
+              .filter((value): value is number => value !== null)
+              .reduce<number | null>((oldest, value) => oldest === null ? value : Math.min(oldest, value), null);
+            state.newestReceivedTimestamp = [state.newestReceivedTimestamp, retryState.newestReceivedTimestamp]
+              .filter((value): value is number => value !== null)
+              .reduce<number | null>((newest, value) => newest === null ? value : Math.max(newest, value), null);
+            const allowedTimes = new Set(window.map((candidate) => candidate.open));
+            for (const [key, retained] of retryState.candlesByIndex) {
+              if (!allowedTimes.has(retained.candle.timestamp)) continue;
+              if (state.candlesByIndex.has(key)) {
+                diagnostic.failures.push("PROVIDER_SCHEMA_MISMATCH");
+              } else {
+                state.candlesByIndex.set(key, retained);
+                diagnostic.recovered_session_dates.push(rthDate(retained.candle.timestamp));
+              }
+            }
+            for (const date of retryState.receivedSessionDates) state.receivedSessionDates.add(date);
+            for (const symbol of retryState.receivedSymbols) state.receivedSymbols.add(symbol);
+            for (const symbol of retryState.canonicalReceivedSymbols) state.canonicalReceivedSymbols.add(symbol);
+            for (const key of Object.keys(state.pipeline) as (keyof typeof state.pipeline)[]) {
+              state.pipeline[key] += retryState.pipeline[key];
+            }
+            const originalRetainedBytes = snapshot.requestCounters.retained_bytes;
+            for (const key of Object.keys(emptyResourceCounters()) as (keyof HistoricalCandlesResourceCounters)[]) {
+              snapshot.requestCounters[key] += retry.requestCounters[key];
+              state.counters[key] += retryState.counters[key];
+            }
+            snapshot.requestCounters.peak_buffer_bytes = Math.max(
+              snapshot.requestCounters.peak_buffer_bytes,
+              originalRetainedBytes + retry.requestCounters.peak_buffer_bytes,
+            );
+            snapshot.requestCounters.unmatched_received_events += retry.requestCounters.unmatched_received_events;
+            snapshot.unmatchedSymbols = [...new Set([...snapshot.unmatchedSymbols, ...retry.unmatchedSymbols])];
+            snapshot.requestCounters.unmatched_symbol_count = snapshot.unmatchedSymbols.length;
+            const failure = retryState.localFailureReason ?? retry.requestFailureReason ??
+              (retryState.providerSnipped ? "PROVIDER_SNAPSHOT_SNIPPED" : null);
+            diagnostic.windows.push({
+              start: new Date(window[0].open).toISOString(),
+              end: new Date(window.at(-1)!.close).toISOString(),
+              provider_snapshot_complete: retryState.providerComplete,
+              failure_reason: failure,
+              timeout_stage: retry.timeoutStage,
+              received_events: retry.requestCounters.received_events,
+            });
+            if (failure) {
+              diagnostic.failures.push(failure);
+              if (failure === "SNAPSHOT_TIMEOUT") diagnostic.failures.push("PROVIDER_TIMEOUT");
+            }
+            diagnostic.stopped_reason = missing.length > window.length
+              ? "RECOVERY_WINDOW_LIMIT" : "ONE_RETRY_PER_SYMBOL";
+          } catch (error) {
+            assertNotAborted(input.signal);
+            diagnostic.failures.push("PROVIDER_TEMPORARY_FAILURE");
+            diagnostic.stopped_reason = "RECOVERY_FAILED_PRESERVED_INITIAL_BARS";
+            break;
+          }
+        }
+        return snapshot;
       },
       input.signal,
     );
@@ -1208,6 +1398,8 @@ export class TastytradeHistoricalCandlesClient {
       start,
       end,
       resolution_profile: normalizedProfile,
+      ...(calendarDailyRequest
+        ? { rth_daily_coverage_version: RTH_CALENDAR_VERSION } : {}),
       budgets: {
         max_output_candles: budgets.maxOutputCandles,
         max_received_events: budgets.maxReceivedEvents,
@@ -1219,12 +1411,36 @@ export class TastytradeHistoricalCandlesClient {
     const prepared = instruments.map((instrument, instrumentIndex) => {
       const candleSymbol = candleSymbols[instrumentIndex];
       const state = snapshot.symbolStates.get(candleSymbol)!;
+      const calendarPlan = calendarPlans[instrumentIndex];
       const filtered = [...state.candlesByIndex.values()]
         .map((retained) => retained.candle)
         .sort((left, right) => left.timestamp - right.timestamp);
-      const candles: HistoricalCandle[] = filtered.map((candle) => {
+      const timestampCounts = new Map<number, number>();
+      if (calendarPlan) {
+        for (const candle of filtered) timestampCounts.set(
+          candle.timestamp, (timestampCounts.get(candle.timestamp) ?? 0) + 1,
+        );
+      }
+      const eligible = calendarPlan ? filtered.filter((candle) => {
+        const bounds = calendarPlan.supported ? rthSession(rthDate(candle.timestamp)) : null;
+        if (!bounds || candle.timestamp !== bounds.open) {
+          state.pipeline.unverified_daily_times += 1;
+          return false;
+        }
+        if (timestampCounts.get(candle.timestamp)! > 1) {
+          state.pipeline.unverified_daily_times += 1;
+          return false;
+        }
+        if (bounds.close > Math.min(endMs, coverageNow)) {
+          state.pipeline.unfinished_daily_rows += 1;
+          return false;
+        }
+        return true;
+      }) : filtered;
+      const candles: HistoricalCandle[] = eligible.map((candle) => {
         const barStart = new Date(candle.timestamp).toISOString();
-        const barEnd = new Date(candle.timestamp + intervalMs).toISOString();
+        const sessionBounds = calendarPlan?.supported ? rthSession(rthDate(candle.timestamp)) : null;
+        const barEnd = new Date(sessionBounds?.close ?? candle.timestamp + intervalMs).toISOString();
         return {
           source_time: barStart,
           bar_start: barStart,
@@ -1241,17 +1457,26 @@ export class TastytradeHistoricalCandlesClient {
           ask_volume: candle.askVolume,
           implied_volatility: candle.impliedVolatility,
           open_interest: candle.openInterest,
+          ...(sessionBounds ? { session_timing: {
+            calendar_id: RTH_CALENDAR_VERSION, session_date: sessionBounds.date,
+          } } : {}),
         };
       });
-      const coverageWarnings = edgeCoverageWarnings(
+      const expectedDates = calendarPlan?.sessions.map((candidate) => candidate.date) ?? [];
+      const observedDates = [...new Set(candles.map((candle) => rthDate(Date.parse(candle.source_time))))];
+      const missingDates = expectedDates.filter((date) => !observedDates.includes(date));
+      const coverageWarnings = calendarPlan ? [] : edgeCoverageWarnings(
         candles,
         startMs,
         endMs,
         intervalMs,
       );
       const warnings = [
-        ...gapWarnings(candles, intervalMs, session),
+        ...(calendarPlan ? missingDates.map((date) => `CALENDAR_EXPECTED_SESSION_MISSING:${date}`)
+          : gapWarnings(candles, intervalMs, session)),
         ...coverageWarnings,
+        ...(calendarPlan?.reason ? [calendarPlan.reason] : []),
+        ...(state.pipeline.unfinished_daily_rows ? ["UNFINISHED_RTH_DAILY_BAR_EXCLUDED"] : []),
         ...(priceType === "LAST"
           ? []
           : [
@@ -1275,7 +1500,16 @@ export class TastytradeHistoricalCandlesClient {
       );
       if (requestFailureApplied) {
         addFailureReason(snapshot.requestFailureReason!);
+        if (snapshot.requestFailureReason === "SNAPSHOT_TIMEOUT") addFailureReason("PROVIDER_TIMEOUT");
       }
+      if (calendarPlan && !calendarPlan.supported) addFailureReason("CALENDAR_UNSUPPORTED");
+      if (calendarPlan && state.pipeline.unverified_daily_times > 0) addFailureReason("SOURCE_RTH_DAILY_TIME_UNVERIFIED");
+      if (missingDates.length > 0) {
+        addFailureReason("SOURCE_RTH_DAILY_MISSING");
+        addFailureReason("CALENDAR_EXPECTED_SESSION_MISSING");
+        if (state.providerComplete) addFailureReason("PROVIDER_COMPLETE_BUT_COVERAGE_PARTIAL");
+      }
+      for (const failure of recoveryDiagnostics[instrumentIndex].failures) addFailureReason(failure);
       if (state.providerSnipped) {
         addFailureReason("PROVIDER_SNAPSHOT_SNIPPED");
       }
@@ -1349,6 +1583,37 @@ export class TastytradeHistoricalCandlesClient {
         snapshot_complete: snapshotComplete,
         snapshot_truncated: state.providerSnipped,
         provider_snapshot_complete: state.providerComplete,
+        session_coverage_complete: calendarPlan
+          ? calendarPlan.supported && missingDates.length === 0 &&
+            state.pipeline.unverified_daily_times === 0
+          : null,
+        ...(calendarPlan ? {
+          expected_session_dates: expectedDates,
+          observed_session_dates: observedDates,
+          missing_session_dates: missingDates,
+          missing_session_diagnostics: missingDates.map((date) => ({
+            session_date: date,
+            attribution: state.receivedSessionDates.has(date)
+              ? "VALID_PROVIDER_ROW_NOT_RETURNED_LOCALLY" as const
+              : "NO_VALID_CANONICAL_PROVIDER_ROW_OBSERVED" as const,
+            provider_cause_confirmed: false as const,
+          })),
+          coverage_ratio: calendarPlan.supported
+            ? expectedDates.length === 0 ? 1 : (expectedDates.length - missingDates.length) / expectedDates.length
+            : null,
+          session_coverage: {
+            calendar_id: RTH_CALENDAR_VERSION,
+            status: calendarPlan.supported ? "VERIFIED" as const : "UNSUPPORTED" as const,
+            reason: calendarPlan.reason,
+            evaluated_through: new Date(Math.min(endMs, coverageNow)).toISOString(),
+            ma20_eligible: snapshotComplete && failureReasons.length === 0 &&
+              calendarPlan.supported && expectedDates.length >= 20 &&
+              expectedDates.slice(-20).every((date) => observedDates.includes(date)) &&
+              state.pipeline.unverified_daily_times === 0,
+            ma20_expected_session_dates: expectedDates.slice(-20),
+          },
+          recovery_diagnostics: recoveryDiagnostics[instrumentIndex],
+        } : {}),
         failure_reasons: failureReasons,
         symbol_resource_usage: { ...state.counters },
         transport_diagnostics: {
@@ -1377,6 +1642,10 @@ export class TastytradeHistoricalCandlesClient {
           timeout_stage: requestFailureApplied
             ? snapshot.timeoutStage
             : null,
+          ...(calendarPlan ? {
+            received_session_dates: [...state.receivedSessionDates].sort(),
+            local_pipeline: state.pipeline,
+          } : {}),
         },
         resampled: false as const,
         candles,
@@ -1425,6 +1694,7 @@ export class TastytradeHistoricalCandlesClient {
     session: ReturnType<typeof sessionConfiguration>;
     budgets: HistoricalCandleBudgets;
     signal?: AbortSignal;
+    rthDaily?: boolean;
   }): Promise<SnapshotReadResult> {
     assertNotAborted(input.signal);
     return new Promise((resolve, reject) => {
@@ -1451,6 +1721,12 @@ export class TastytradeHistoricalCandlesClient {
             providerSnipped: false,
             localFailureReason: null,
             counters: emptyResourceCounters(),
+            receivedSessionDates: new Set<string>(),
+            pipeline: {
+              invalid_candle_events: 0, outside_request_or_session: 0,
+              replaced_indices: 0, removed_indices: 0, snapshot_resets: 0,
+              unverified_daily_times: 0, unfinished_daily_rows: 0,
+            },
           },
         ]),
       );
@@ -1526,13 +1802,17 @@ export class TastytradeHistoricalCandlesClient {
             requestFailureReason === "SNAPSHOT_TIMEOUT" ? stage : null,
         });
       };
-      const fail = (error: Error) => {
+      const fail = (error: Error, preservePartial = true) => {
         if (settled) return;
+        if (preservePartial && subscribed && authConfirmed) {
+          finish("PROVIDER_TEMPORARY_FAILURE");
+          return;
+        }
         settled = true;
         cleanup();
         reject(error);
       };
-      abortListener = () => fail(new HistoricalCandlesAbortedError());
+      abortListener = () => fail(new HistoricalCandlesAbortedError(), false);
       input.signal?.addEventListener("abort", abortListener, {
         once: true,
       });
@@ -1592,6 +1872,7 @@ export class TastytradeHistoricalCandlesClient {
       ) => {
         const retained = state.candlesByIndex.get(index);
         if (!retained) return;
+        state.pipeline.removed_indices += 1;
         state.candlesByIndex.delete(index);
         state.counters.retained_rows -= 1;
         state.counters.retained_bytes -= retained.bytes;
@@ -1601,6 +1882,7 @@ export class TastytradeHistoricalCandlesClient {
         state.snapshotDataBytes -= retained.bytes;
       };
       const resetSnapshotData = (state: SnapshotSymbolState) => {
+        state.pipeline.snapshot_resets += 1;
         requestCounters.unique_observations -=
           state.counters.unique_observations;
         requestCounters.retained_rows -= state.counters.retained_rows;
@@ -1625,9 +1907,11 @@ export class TastytradeHistoricalCandlesClient {
           candle.timestamp > input.endMs ||
           !isWithinSession(candle.timestamp, input.session)
         ) {
+          state.pipeline.outside_request_or_session += 1;
           return;
         }
         const existing = state.candlesByIndex.get(candle.index);
+        if (existing) state.pipeline.replaced_indices += 1;
         if (
           !existing &&
           state.candlesByIndex.size >=
@@ -1741,6 +2025,10 @@ export class TastytradeHistoricalCandlesClient {
         return pending.map((item) => item.event);
       };
       const processCandleEvent = (event: ParsedCandleEvent) => {
+        if (input.rthDaily && requestCounters.received_events >= input.budgets.maxReceivedEvents) {
+          finish("LOCAL_RECEIVE_BUDGET_EXCEEDED");
+          return;
+        }
         requestCounters.received_events += 1;
         if (
           requestCounters.received_events >
@@ -1796,6 +2084,10 @@ export class TastytradeHistoricalCandlesClient {
             }
           }
           if (event.candle) {
+            if (input.rthDaily) {
+              const date = rthDate(event.candle.timestamp);
+              if (!retainReceivedSymbol(state, state.receivedSessionDates, date)) return;
+            }
             state.counters.valid_candle_events += 1;
             state.oldestReceivedTimestamp =
               state.oldestReceivedTimestamp === null
@@ -1811,6 +2103,8 @@ export class TastytradeHistoricalCandlesClient {
                     state.newestReceivedTimestamp,
                     event.candle.timestamp,
                   );
+          } else if (event.flags !== null && (event.flags & REMOVE_EVENT) === 0) {
+            state.pipeline.invalid_candle_events += 1;
           }
         }
         if (!state) return;
@@ -1850,7 +2144,7 @@ export class TastytradeHistoricalCandlesClient {
         const authError = dxlinkAuthenticationError(message, authSent);
         if (authError) {
           stage = "AUTHENTICATING";
-          fail(authError);
+          fail(authError, false);
           return;
         }
         if (

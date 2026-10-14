@@ -125,6 +125,17 @@ present. Decision-time paths require `available_at <= checkpoint`.
 `retrieved_at` records collection provenance but is never used to move market
 evidence backward in time.
 
+Calendar-verified native `REGULAR 1d` cash-market rows are a narrow exception
+to fixed-duration timing. Their explicit `session_timing` marker uses
+`us-cash-rth-2026/1`, a supported session date, the unchanged native 09:30 NY
+bar start, and that session's actual 16:00/13:00 close. Shared timing
+validation checks this marker and the exact bounds; it rejects unsupported
+dates/versions or availability before close. A legacy daily row without the
+marker still has its original `bar_start + 24h` interpretation and is never
+silently upgraded. This does not alter options or intraday alignment.
+See [`historical-candles.md`](historical-candles.md) for scope, coverage,
+recovery, and publication-time uncertainty.
+
 No reconstruction path interpolates, forward-fills, substitutes a later bar,
 or changes resolution because one cohort has a better result.
 

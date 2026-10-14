@@ -1785,7 +1785,7 @@ export const TOOLS: Tool[] = [
   {
     name: "tastytrade_get_historical_candles",
     description:
-      "Retrieve historical LAST/BID/ASK price OHLC aggregates with explicit bar_start, bar_end, available_at, retrieved_at, and versioned resolution/cohort metadata. BID/ASK candles are valuation-only aggregates, not synchronized NBBO, quote sizes, or executable prices. Supports price-type-isolated immutable cache/offline replay, exact UTC/session windows, canonical provider symbol matching, independent resource budgets, and no resampling.",
+      "Retrieve historical LAST/BID/ASK price OHLC aggregates with explicit bar_start, bar_end, available_at, retrieved_at, and versioned resolution/cohort metadata. REGULAR 1d SPX/SPY/QQQ/IWM cash-market coverage is calendar-verified for 2026 only: expected/observed/missing session dates, coverage_ratio, session_coverage_complete, and ma20 eligibility are independent of transport snapshot_complete. Missing sessions return PARTIAL; unknown daily equity/index calendar semantics fail closed. Recovery uses the original resource budgets without ALL/1h substitution. BID/ASK candles are valuation-only aggregates, not synchronized NBBO, quote sizes, or executable prices. Supports price-type-isolated immutable cache/offline replay, exact UTC/session windows, canonical provider symbol matching, independent resource budgets, and no resampling.",
     inputSchema: HISTORICAL_CANDLES_SCHEMA,
   },
 ];

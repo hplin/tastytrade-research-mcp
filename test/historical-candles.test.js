@@ -5,6 +5,55 @@ import {
   canonicalizeDxlinkCandleSymbol,
   parseDxlinkCandleData,
 } from "../dist/historical-candles.js";
+import { planRthSessions, rthSession, RTH_CALENDAR_VERSION } from "../dist/rth-calendar.js";
+import { resolveHistoricalBarTiming, historicalBarMatchesResolutionProfile } from "../dist/resolution-profile.js";
+
+const dailyFixture = JSON.parse(readFileSync(
+  new URL("./fixtures/dxlink-rth-daily-synthetic.json", import.meta.url), "utf8",
+));
+
+function dailyRows(symbol, dates, complete = true) {
+  const nativeSymbol = `${symbol}${dailyFixture.wire_shape.canonical_equivalent_received}`;
+  const rows = dates.map((date, index) => row(rthSession(date).open, index === 0 ? 4 : 0,
+    "100", nativeSymbol));
+  if (complete) rows.push(marker(Date.parse("2026-01-01T00:00:00Z"), nativeSymbol));
+  return rows;
+}
+
+function dailyClient(attempts, clock = () => Date.parse("2026-12-31T23:00:00Z")) {
+  const sockets = [];
+  const client = new TastytradeHistoricalCandlesClient(
+    { getAccessToken: async () => "synthetic-token" }, undefined,
+    () => {
+      const attempt = attempts[Math.min(sockets.length, attempts.length - 1)];
+      const rows = attempt?.rows ?? attempt;
+      const socket = new FakeSocket(rows === null ? [] : [rows]);
+      if (attempt?.error) {
+        const emit = socket.emit.bind(socket);
+        socket.emit = (message) => {
+          emit(message);
+          if (message.type === "FEED_DATA") setTimeout(() => socket.onerror?.(), 1);
+        };
+      }
+      sockets.push(socket);
+      return socket;
+    }, clock,
+    { getQuoteToken: async () => ({
+      token: "synthetic-token", url: "wss://tasty-openapi-dxlink-md-ws.dxfeed.com/realtime",
+    }), invalidateQuoteToken: () => {} },
+  );
+  return { client, sockets };
+}
+
+function dailyRequest(symbol = "SPY", overrides = {}) {
+  return {
+    symbol, instrument_type: symbol === "SPX" ? "INDEX" : "EQUITY",
+    interval: "1d", start_time: dailyFixture.start_time, end_time: dailyFixture.end_time,
+    session: { kind: "REGULAR", timezone: "America/New_York" },
+    deadline_ms: 100, max_output_candles: 100, max_received_events: 1000,
+    max_buffer_bytes: 1_000_000, ...overrides,
+  };
+}
 
 const FIELDS_PER_ROW = 17;
 const nativeHourFixture = JSON.parse(
@@ -197,6 +246,454 @@ function clientWithAuthTokens(rows, tokens, unauthorizedTokens) {
   );
   return { client, quoteTokens, sockets };
 }
+
+describe("calendar-verified RTH daily coverage (synthetic, not live)", () => {
+  test.each([
+    "2026-01-01", "2026-01-19", "2026-02-16", "2026-04-03",
+    "2026-05-25", "2026-06-19", "2026-07-03", "2026-09-07",
+    "2026-11-26", "2026-12-25",
+  ])("published full closure %s is not a missing session", (date) => {
+    expect(rthSession(date)).toBeNull();
+  });
+
+  test.each(["SPX", "SPY", "QQQ", "IWM"])("%s reported missing dates remain partial despite provider END", async (symbol) => {
+    const missing = dailyFixture.omissions[symbol];
+    const dates = dailyFixture.expected_session_dates.filter((date) => !missing.includes(date));
+    const { client, sockets } = dailyClient([dailyRows(symbol, dates), dailyRows(symbol, [])]);
+    const result = await client.getHistoricalCandles(dailyRequest(symbol));
+    expect(result).toMatchObject({
+      status: "PARTIAL", snapshot_complete: true, provider_snapshot_complete: true,
+      session_coverage_complete: false, expected_session_dates: dailyFixture.expected_session_dates,
+      observed_session_dates: dates, missing_session_dates: missing,
+      coverage_ratio: dates.length / 33,
+      session_coverage: { ma20_eligible: false, calendar_id: RTH_CALENDAR_VERSION },
+    });
+    expect(result.candles).toHaveLength(symbol === "SPX" ? 30 : 32);
+    expect(result.failure_reasons).toEqual(expect.arrayContaining([
+      "SOURCE_RTH_DAILY_MISSING", "CALENDAR_EXPECTED_SESSION_MISSING",
+      "PROVIDER_COMPLETE_BUT_COVERAGE_PARTIAL",
+    ]));
+    expect(result.transport_diagnostics.received_session_dates).toEqual(dates);
+    expect(result.missing_session_diagnostics).toEqual(missing.map((session_date) => ({
+      session_date, attribution: "NO_VALID_CANONICAL_PROVIDER_ROW_OBSERVED",
+      provider_cause_confirmed: false,
+    })));
+    expect(result.transport_diagnostics.local_pipeline.unverified_daily_times).toBe(0);
+    expect(result.warnings.some((warning) => warning.startsWith("MISSING_BAR_GAP"))).toBe(false);
+    expect(sockets).toHaveLength(2);
+    expect(result.recovery_diagnostics.attempts).toBe(1);
+  });
+
+  test.each(["SPX", "SPY", "QQQ", "IWM"])("%s same-native-cohort short retry restores only missing dates", async (symbol) => {
+    const missing = dailyFixture.omissions[symbol];
+    const dates = dailyFixture.expected_session_dates.filter((date) => !missing.includes(date));
+    const { client, sockets } = dailyClient([dailyRows(symbol, dates), dailyRows(symbol, missing)]);
+    const result = await client.getHistoricalCandles(dailyRequest(symbol));
+    expect(result.status).toBe("AVAILABLE");
+    expect(result.session_coverage_complete).toBe(true);
+    expect(result.missing_session_dates).toEqual([]);
+    expect(result.coverage_ratio).toBe(1);
+    expect(result.session_coverage.ma20_eligible).toBe(true);
+    expect(result.candles).toHaveLength(33);
+    expect(result.recovery_diagnostics.recovered_session_dates).toEqual(missing);
+    for (const socket of sockets) {
+      const subscription = socket.sent.find((message) => message.type === "FEED_SUBSCRIPTION" && message.add);
+      expect(subscription.add[0].symbol).toBe(`${symbol}{=d,a=s,tho=true}`);
+    }
+    expect(sockets[1].sent.find((message) => message.add).add[0].fromTime).toBe(rthSession(missing[0]).open);
+    expect(result.resource_usage.request.received_events).toBe(35);
+    expect(result.resource_usage.request.retained_bytes).toBeLessThanOrEqual(1_000_000);
+    expect(result.candles[0]).toMatchObject({
+      source_time: "2026-08-25T13:30:00.000Z", bar_start: "2026-08-25T13:30:00.000Z",
+      bar_end: "2026-08-25T20:00:00.000Z", available_at: "2026-08-25T20:00:00.000Z",
+      session_timing: { calendar_id: RTH_CALENDAR_VERSION, session_date: "2026-08-25" },
+    });
+    const timing = resolveHistoricalBarTiming(result.candles[0], "1d");
+    expect(historicalBarMatchesResolutionProfile(timing, "1d", result.resolution_profile)).toBe(true);
+  });
+
+  test.each([
+    ["2026-09-04", "2026-09-08"],
+    ["2026-04-02", "2026-04-06"],
+    ["2026-07-02", "2026-07-06"],
+    ["2026-10-09", "2026-10-12"],
+  ])("weekend/holiday %s to %s has no false gap", async (first, last) => {
+    const { client, sockets } = dailyClient([dailyRows("SPY", [first, last])]);
+    const result = await client.getHistoricalCandles(dailyRequest("SPY", {
+      start_time: `${first}T00:00:00Z`, end_time: `${last}T23:00:00Z`,
+    }));
+    expect(result.status).toBe("AVAILABLE");
+    expect(result.expected_session_dates).toEqual([first, last]);
+    expect(result.warnings).toEqual([]);
+    expect(sockets).toHaveLength(1);
+  });
+
+  test.each([
+    ["2026-03-06", "2026-03-09", "2026-03-06T21:00:00.000Z", "2026-03-09T20:00:00.000Z"],
+    ["2026-10-30", "2026-11-02", "2026-10-30T20:00:00.000Z", "2026-11-02T21:00:00.000Z"],
+    ["2026-11-25", "2026-11-27", "2026-11-25T21:00:00.000Z", "2026-11-27T18:00:00.000Z"],
+    ["2026-12-23", "2026-12-24", "2026-12-23T21:00:00.000Z", "2026-12-24T18:00:00.000Z"],
+  ])("DST/half-day timing %s to %s", async (first, last, firstClose, lastClose) => {
+    const { client } = dailyClient([dailyRows("SPY", [first, last])]);
+    const result = await client.getHistoricalCandles(dailyRequest("SPY", {
+      start_time: `${first}T00:00:00Z`, end_time: `${last}T23:00:00Z`,
+    }));
+    expect(result.expected_session_dates).toEqual([first, last]);
+    expect(result.candles.map((candle) => candle.available_at)).toEqual([firstClose, lastClose]);
+    expect(resolveHistoricalBarTiming(result.candles[1], "1d").bar_end).toBe(lastClose);
+  });
+
+  test("Monday INITIAL excludes unfinished/future bars but keeps Friday CLOSE", async () => {
+    const { client, sockets } = dailyClient([dailyRows("SPY", ["2026-10-09", "2026-10-12", "2026-10-13"])],
+      () => Date.parse("2026-10-12T14:00:00Z"));
+    const result = await client.getHistoricalCandles(dailyRequest("SPY", {
+      start_time: "2026-10-09T00:00:00Z", end_time: "2026-10-13T23:00:00Z",
+    }));
+    expect(result.expected_session_dates).toEqual(["2026-10-09"]);
+    expect(result.candles).toHaveLength(1);
+    expect(result.candles[0].available_at).toBe("2026-10-09T20:00:00.000Z");
+    expect(result.transport_diagnostics.local_pipeline.unfinished_daily_rows).toBe(2);
+    expect(result.session_coverage.evaluated_through).toBe("2026-10-12T14:00:00.000Z");
+    expect(sockets).toHaveLength(1);
+  });
+
+  test("range checkpoint excludes an unfinished half-day even when retrieved later", async () => {
+    const { client } = dailyClient([dailyRows("SPY", ["2026-11-25", "2026-11-27"])]);
+    const result = await client.getHistoricalCandles(dailyRequest("SPY", {
+      start_time: "2026-11-25T00:00:00Z", end_time: "2026-11-27T17:59:59Z",
+    }));
+    expect(result.expected_session_dates).toEqual(["2026-11-25"]);
+    expect(result.candles).toHaveLength(1);
+  });
+
+  test("twenty rows with an internal expected-date hole do not qualify ma20", async () => {
+    const expected = dailyFixture.expected_session_dates.slice(-21);
+    const missing = "2026-10-08";
+    const { client } = dailyClient([
+      dailyRows("SPY", expected.filter((date) => date !== missing)), dailyRows("SPY", []),
+    ]);
+    const result = await client.getHistoricalCandles(dailyRequest("SPY", {
+      start_time: `${expected[0]}T00:00:00Z`,
+    }));
+    expect(result.candles).toHaveLength(20);
+    expect(result.session_coverage.ma20_expected_session_dates).toHaveLength(20);
+    expect(result.session_coverage.ma20_eligible).toBe(false);
+  });
+
+  test("exactly twenty contiguous completed expected sessions qualify ma20", async () => {
+    const dates = dailyFixture.expected_session_dates.slice(-20);
+    const { client, sockets } = dailyClient([dailyRows("SPY", dates)]);
+    const result = await client.getHistoricalCandles(dailyRequest("SPY", {
+      start_time: `${dates[0]}T00:00:00Z`,
+    }));
+    expect(result.status).toBe("AVAILABLE");
+    expect(result.session_coverage.ma20_eligible).toBe(true);
+    expect(result.session_coverage.ma20_expected_session_dates).toEqual(dates);
+    expect(sockets).toHaveLength(1);
+  });
+
+  test("unknown timestamp alignment is observable local rejection, not claimed provider absence", async () => {
+    const date = "2026-10-08";
+    const native = "SPY{=d,a=s,tho=true}";
+    const misaligned = row(Date.parse(`${date}T00:00:00Z`), 4, "100", native);
+    const { client } = dailyClient([[misaligned, marker(0, native)], dailyRows("SPY", [])]);
+    const result = await client.getHistoricalCandles(dailyRequest("SPY", {
+      start_time: `${date}T00:00:00Z`, end_time: `${date}T23:00:00Z`,
+    }));
+    expect(result.status).toBe("NOT_AVAILABLE");
+    expect(result.failure_reasons).toContain("SOURCE_RTH_DAILY_TIME_UNVERIFIED");
+    expect(result.transport_diagnostics.local_pipeline.unverified_daily_times).toBe(1);
+    expect(result.transport_diagnostics.received_session_dates).toEqual(["2026-10-07"]);
+    expect(result.missing_session_dates).toEqual([date]);
+  });
+
+  test("different-index duplicate daily sessions fail closed rather than count twice", async () => {
+    const native = "SPY{=d,a=s,tho=true}";
+    const time = rthSession("2026-10-08").open;
+    const { client } = dailyClient([[
+      row(time, 4, "100", native, "one"), row(time, 0, "101", native, "two"), marker(0, native),
+    ]]);
+    const result = await client.getHistoricalCandles(dailyRequest("SPY", {
+      start_time: "2026-10-08T00:00:00Z", end_time: "2026-10-08T23:00:00Z",
+    }));
+    expect(result.candles).toEqual([]);
+    expect(result.failure_reasons).toContain("SOURCE_RTH_DAILY_TIME_UNVERIFIED");
+    expect(result.transport_diagnostics.received_session_dates).toEqual(["2026-10-08"]);
+  });
+
+  test.each([
+    { symbol: "UNKNOWN" }, { streamer_symbol: "SPY:UNKNOWN" },
+    { session: { kind: "REGULAR", timezone: "UTC" } },
+    { start_time: "2025-12-31T00:00:00Z" }, { end_time: "2027-01-02T00:00:00Z" },
+  ])("unsupported calendar scope fails closed: %j", async (overrides) => {
+    const { client } = dailyClient([dailyRows(overrides.symbol ?? "SPY", [])]);
+    const result = await client.getHistoricalCandles(dailyRequest("SPY", overrides));
+    expect(result.session_coverage_complete).toBe(false);
+    expect(result.coverage_ratio).toBeNull();
+    expect(result.session_coverage.status).toBe("UNSUPPORTED");
+    expect(result.failure_reasons).toContain("CALENDAR_UNSUPPORTED");
+    expect(result.status).not.toBe("AVAILABLE");
+  });
+
+  test("ALL daily is not allowed to fill the REGULAR cohort", async () => {
+    const time = rthSession("2026-10-08").open;
+    const { client } = dailyClient([[
+      row(time, 4, "751.28", "QQQ{=d}"), marker(0, "QQQ{=d}"),
+    ]]);
+    const result = await client.getHistoricalCandles(dailyRequest("QQQ", {
+      start_time: "2026-10-08T00:00:00Z", end_time: "2026-10-08T23:00:00Z", deadline_ms: 5,
+    }));
+    expect(result.candles).toEqual([]);
+    expect(result.transport_diagnostics.unmatched_received_symbols).toEqual(["QQQ{=d}"]);
+    expect(result.failure_reasons).toContain("PROVIDER_TIMEOUT");
+    expect(result.session_coverage_complete).toBe(false);
+  });
+
+  test("sixty sessions recover within original aggregate event/output/buffer limits", async () => {
+    const request = dailyRequest("SPY", { start_time: "2026-07-17T00:00:00Z",
+      max_output_candles: 60, max_received_events: 62 });
+    const plan = planRthSessions("SPY", "SPY", "EQUITY", "America/New_York",
+      Date.parse(request.start_time), Date.parse(request.end_time), Date.parse("2026-12-31T23:00:00Z"));
+    expect(plan.sessions).toHaveLength(60);
+    const dates = plan.sessions.map((session) => session.date);
+    const { client } = dailyClient([
+      dailyRows("SPY", dates.filter((date) => date !== "2026-10-08")),
+      dailyRows("SPY", ["2026-10-08"]),
+    ]);
+    const result = await client.getHistoricalCandles(request);
+    expect(result.status).toBe("AVAILABLE");
+    expect(result.candles).toHaveLength(60);
+    expect(result.resource_usage.request.received_events).toBe(62);
+    expect(result.resource_usage.request.returned_rows).toBe(60);
+    expect(result.resource_usage.request.retained_bytes).toBeLessThanOrEqual(1_000_000);
+  });
+
+  test("output truncation reports coverage of returned rows without falsely blaming provider", async () => {
+    const { client, sockets } = dailyClient([dailyRows("SPY", dailyFixture.expected_session_dates)]);
+    const result = await client.getHistoricalCandles(dailyRequest("SPY", { max_output_candles: 20 }));
+    expect(result.status).toBe("PARTIAL");
+    expect(result.candles).toHaveLength(20);
+    expect(result.expected_session_dates).toHaveLength(33);
+    expect(result.missing_session_dates).toHaveLength(13);
+    expect(result.coverage_ratio).toBe(20 / 33);
+    expect(result.failure_reasons).toContain("LOCAL_OUTPUT_BUDGET_EXCEEDED");
+    expect(result.transport_diagnostics.received_session_dates.length).toBeGreaterThan(20);
+    expect(sockets).toHaveLength(1);
+  });
+
+  test("receive limit is shared across retry and retains previously good bars", async () => {
+    const dates = dailyFixture.expected_session_dates.filter((date) => date !== "2026-10-08");
+    const { client } = dailyClient([dailyRows("SPY", dates), dailyRows("SPY", ["2026-10-08"])]);
+    const result = await client.getHistoricalCandles(dailyRequest("SPY", { max_received_events: 34 }));
+    expect(result.candles).toHaveLength(33);
+    expect(result.resource_usage.request.received_events).toBe(34);
+    expect(result.status).toBe("PARTIAL");
+    expect(result.failure_reasons).toContain("LOCAL_RECEIVE_BUDGET_EXCEEDED");
+    expect(result.snapshot_complete).toBe(true);
+    expect(result.session_coverage.ma20_eligible).toBe(false);
+  });
+
+  test("retry timeout keeps original bars and exposes provider-timeout diagnostics", async () => {
+    const dates = dailyFixture.expected_session_dates.filter((date) => date !== "2026-10-08");
+    const { client, sockets } = dailyClient([dailyRows("SPY", dates), null]);
+    const before = performance.now();
+    const result = await client.getHistoricalCandles(dailyRequest("SPY", { deadline_ms: 15 }));
+    expect(performance.now() - before).toBeLessThan(100);
+    expect(result.candles).toHaveLength(32);
+    expect(result.status).toBe("PARTIAL");
+    expect(result.recovery_diagnostics.failures).toContain("PROVIDER_TIMEOUT");
+    expect(sockets).toHaveLength(2);
+    expect(sockets.every((socket) => socket.closeCalls.length === 1)).toBe(true);
+  });
+
+  test("batch symbol isolation preserves completed SPY while IWM times out", async () => {
+    const { client, sockets } = dailyClient([dailyRows("SPY", dailyFixture.expected_session_dates)]);
+    const request = dailyRequest();
+    const results = await client.getHistoricalCandlesBatch({
+      ...request, instruments: [{ symbol: "SPY", instrument_type: "EQUITY" },
+        { symbol: "IWM", instrument_type: "EQUITY" }], deadline_ms: 5,
+    });
+    expect(results[0].status).toBe("AVAILABLE");
+    expect(results[0].candles).toHaveLength(33);
+    expect(results[1].status).toBe("NOT_AVAILABLE");
+    expect(results[1].failure_reasons).toContain("PROVIDER_TIMEOUT");
+    expect(sockets).toHaveLength(1);
+  });
+
+  test.each(["SPY", "QQQ", "IWM"])("%s short Oct7-Oct9 window reproduces the same missing Oct8", async (symbol) => {
+    const { client } = dailyClient([
+      dailyRows(symbol, ["2026-10-07", "2026-10-09"]), dailyRows(symbol, []),
+    ]);
+    const result = await client.getHistoricalCandles(dailyRequest(symbol, {
+      start_time: "2026-10-07T00:00:00Z", end_time: "2026-10-09T23:00:00Z",
+    }));
+    expect(result.expected_session_dates).toEqual(["2026-10-07", "2026-10-08", "2026-10-09"]);
+    expect(result.missing_session_dates).toEqual(["2026-10-08"]);
+    expect(result.missing_session_diagnostics[0].attribution).toBe("NO_VALID_CANONICAL_PROVIDER_ROW_OBSERVED");
+    expect(result.coverage_ratio).toBe(2 / 3);
+    expect(result.status).toBe("PARTIAL");
+  });
+
+  test("local index replacement/removal is diagnosed distinctly from absent native events", async () => {
+    const native = "SPY{=d,a=s,tho=true}";
+    const first = rthSession("2026-10-07").open;
+    const removed = rthSession("2026-10-08").open;
+    const { client } = dailyClient([[
+      row(first, 4, "100", native), row(first, 0, "101", native),
+      row(removed, 0, "100", native), row(removed, 2, "100", native),
+      row(rthSession("2026-10-09").open, 0, "100", native), marker(0, native),
+    ], dailyRows("SPY", [])]);
+    const result = await client.getHistoricalCandles(dailyRequest("SPY", {
+      start_time: "2026-10-07T00:00:00Z", end_time: "2026-10-09T23:00:00Z",
+    }));
+    expect(result.candles[0].close).toBe("101");
+    expect(result.transport_diagnostics.received_session_dates)
+      .toEqual(["2026-10-07", "2026-10-08", "2026-10-09"]);
+    expect(result.transport_diagnostics.local_pipeline).toMatchObject({
+      replaced_indices: 1, removed_indices: 1, snapshot_resets: 1,
+    });
+    expect(result.missing_session_dates).toEqual(["2026-10-08"]);
+    expect(result.missing_session_diagnostics[0].attribution).toBe("VALID_PROVIDER_ROW_NOT_RETURNED_LOCALLY");
+  });
+
+  test("failed recovery retains both original rows and a completed session from the interrupted retry", async () => {
+    const missing = dailyFixture.omissions.SPX;
+    const { client } = dailyClient([
+      dailyRows("SPX", dailyFixture.expected_session_dates.filter((date) => !missing.includes(date))),
+      { rows: dailyRows("SPX", [missing[0]], false), error: true },
+    ]);
+    const result = await client.getHistoricalCandles(dailyRequest("SPX"));
+    expect(result.candles).toHaveLength(31);
+    expect(result.status).toBe("PARTIAL");
+    expect(result.missing_session_dates).toEqual(missing.slice(1));
+    expect(result.recovery_diagnostics.failures).toContain("PROVIDER_TEMPORARY_FAILURE");
+    expect(result.resource_usage.request.received_events).toBe(32);
+  });
+
+  test("partial initial timeout preserves IWM daily rows without spending a fresh retry deadline", async () => {
+    const { client, sockets } = dailyClient([dailyRows("IWM", ["2026-10-07"], false)]);
+    const result = await client.getHistoricalCandles(dailyRequest("IWM", {
+      start_time: "2026-10-07T00:00:00Z", end_time: "2026-10-09T23:00:00Z", deadline_ms: 5,
+    }));
+    expect(result.candles).toHaveLength(1);
+    expect(result.status).toBe("PARTIAL");
+    expect(result.failure_reasons).toContain("PROVIDER_TIMEOUT");
+    expect(result.snapshot_complete).toBe(false);
+    expect(result.session_coverage_complete).toBe(false);
+    expect(result.session_coverage.ma20_eligible).toBe(false);
+    expect(sockets).toHaveLength(1);
+  });
+
+  test.each(["BID", "ASK"])("RTH daily %s stays price-specific and reference-only", async (priceType) => {
+    const native = `SPY{=d,a=s,tho=true,price=${priceType.toLowerCase()}}`;
+    const { client, sockets } = dailyClient([[
+      row(rthSession("2026-10-08").open, 4, "100", native), marker(0, native),
+    ]]);
+    const result = await client.getHistoricalCandles(dailyRequest("SPY", {
+      price_type: priceType, start_time: "2026-10-08T00:00:00Z", end_time: "2026-10-08T23:00:00Z",
+    }));
+    expect(result.status).toBe("AVAILABLE");
+    expect(result.price_type).toBe(priceType);
+    expect(result.evidence_class).toBe("VALUATION_ONLY");
+    expect(result.resampled).toBe(false);
+    expect(sockets[0].sent.find((message) => message.add).add[0].symbol)
+      .toBe(`SPY{=d,price=${priceType.toLowerCase()},a=s,tho=true}`);
+    expect(result.warnings).toContain("VALUATION_ONLY_NOT_EXECUTABLE");
+  });
+
+  test("legacy option REGULAR daily timing is not promoted to the cash calendar", async () => {
+    const symbol = ".SPXW261009C7800";
+    const native = `${symbol}{=d,a=s,tho=true}`;
+    const { client } = dailyClient([[
+      row(rthSession("2026-10-08").open, 4, "100", native), marker(0, native),
+    ]]);
+    const result = await client.getHistoricalCandles(dailyRequest("SPXW  261009C07800000", {
+      streamer_symbol: symbol, instrument_type: "OPTION",
+      start_time: "2026-10-08T00:00:00Z", end_time: "2026-10-08T23:00:00Z",
+    }));
+    expect(result.status).toBe("AVAILABLE");
+    expect(result.session_coverage_complete).toBeNull();
+    expect(result.candles[0].session_timing).toBeUndefined();
+    expect(result.candles[0].bar_end).toBe("2026-10-09T13:30:00.000Z");
+  });
+
+  test("recovery cannot spend a fresh buffer budget after the initial retained snapshot", async () => {
+    const dates = dailyFixture.expected_session_dates.filter((date) => date !== "2026-10-08");
+    const initial = dailyRows("SPY", dates);
+    const baseline = dailyClient([initial, dailyRows("SPY", [])]);
+    const measured = await baseline.client.getHistoricalCandles(dailyRequest());
+    const limit = measured.resource_usage.request.peak_buffer_bytes + 100;
+    const expensiveRetry = [row(rthSession("2026-10-08").open, 4, "1".repeat(2000),
+      "SPY{=d,a=s,tho=true}"), marker(0, "SPY{=d,a=s,tho=true}")];
+    const { client, sockets } = dailyClient([initial, expensiveRetry]);
+    const result = await client.getHistoricalCandles(dailyRequest("SPY", { max_buffer_bytes: limit }));
+    expect(result.status).toBe("PARTIAL");
+    expect(result.candles).toHaveLength(32);
+    expect(sockets).toHaveLength(2);
+    expect(result.resource_usage.request.retained_bytes).toBeLessThanOrEqual(limit);
+    expect(result.failure_reasons).toContain("LOCAL_BUFFER_BUDGET_EXCEEDED");
+  });
+
+  test("one batch deadline bounds all retries, even when the injected market clock is fixed", async () => {
+    const dates = dailyFixture.expected_session_dates.filter((date) => date !== "2026-10-08");
+    const first = ["SPY", "QQQ", "IWM"].flatMap((symbol) => dailyRows(symbol, dates));
+    const { client, sockets } = dailyClient([first, null]);
+    const before = performance.now();
+    const results = await client.getHistoricalCandlesBatch({
+      ...dailyRequest(), instruments: ["SPY", "QQQ", "IWM"].map((symbol) => ({
+        symbol, instrument_type: "EQUITY",
+      })), deadline_ms: 15,
+    });
+    expect(performance.now() - before).toBeLessThan(100);
+    expect(sockets).toHaveLength(2);
+    expect(results.map((result) => result.candles.length)).toEqual([32, 32, 32]);
+    expect(results[0].recovery_diagnostics.failures).toContain("PROVIDER_TIMEOUT");
+    expect(results[1].recovery_diagnostics.attempts).toBe(0);
+    expect(results[2].recovery_diagnostics.attempts).toBe(0);
+  });
+
+  test("long-window initial timeout reserves bounded time for a five-session native retry", async () => {
+    const { client, sockets } = dailyClient([
+      null, dailyRows("IWM", dailyFixture.expected_session_dates.slice(0, 5)),
+    ]);
+    const before = performance.now();
+    const result = await client.getHistoricalCandles(dailyRequest("IWM", { deadline_ms: 100 }));
+    expect(performance.now() - before).toBeLessThan(150);
+    expect(sockets).toHaveLength(2);
+    expect(result.status).toBe("PARTIAL");
+    expect(result.snapshot_complete).toBe(false);
+    expect(result.provider_snapshot_complete).toBe(false);
+    expect(result.candles).toHaveLength(5);
+    expect(result.missing_session_dates).toHaveLength(28);
+    expect(result.failure_reasons).toContain("PROVIDER_TIMEOUT");
+    expect(result.recovery_diagnostics.windows[0]).toMatchObject({
+      start: "2026-08-25T13:30:00.000Z", end: "2026-08-31T20:00:00.000Z",
+      received_events: 6, provider_snapshot_complete: true, failure_reason: null,
+    });
+    expect(result.transport_diagnostics.oldest_received_timestamp).toBe("2026-08-25T13:30:00.000Z");
+    expect(result.recovery_diagnostics.stopped_reason).toBe("RECOVERY_WINDOW_LIMIT");
+  });
+
+  test("four-symbol native retries are isolated and capped at four attempts per request", async () => {
+    const symbols = ["SPX", "SPY", "QQQ", "IWM"];
+    const initial = symbols.flatMap((symbol) => dailyRows(symbol,
+      dailyFixture.expected_session_dates.filter((date) => !dailyFixture.omissions[symbol].includes(date))));
+    const { client, sockets } = dailyClient([
+      initial, ...symbols.map((symbol) => dailyRows(symbol, dailyFixture.omissions[symbol])),
+    ]);
+    const results = await client.getHistoricalCandlesBatch({
+      ...dailyRequest(), instruments: symbols.map((symbol) => ({
+        symbol, instrument_type: symbol === "SPX" ? "INDEX" : "EQUITY",
+      })),
+    });
+    expect(sockets).toHaveLength(5);
+    expect(results.every((result) => result.status === "AVAILABLE" &&
+      result.candles.length === 33 && result.recovery_diagnostics.attempts === 1)).toBe(true);
+    expect(results[0].resource_usage.request.received_events).toBe(140);
+    expect(results[0].resource_usage.request.returned_rows).toBe(132);
+    expect(results[0].resource_usage.request.retained_bytes).toBeLessThanOrEqual(1_000_000);
+  });
+});
 
 describe("DXLink candle normalization", () => {
   test.each(["BID", "ASK"])(

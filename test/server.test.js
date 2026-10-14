@@ -245,6 +245,9 @@ describe("MCP research server", () => {
       const candleTool = tools.tools.find(
         (tool) => tool.name === "tastytrade_get_historical_candles",
       );
+      expect(candleTool.description).toContain("session_coverage_complete");
+      expect(candleTool.description).toContain("ma20");
+      expect(candleTool.description).toContain("2026 only");
       expect(
         candleTool.inputSchema.properties.request.properties,
       ).toMatchObject({

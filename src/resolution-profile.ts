@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { RTH_CALENDAR_VERSION, rthSession } from "./rth-calendar.js";
 import {
   normalizeRfc3339,
   resolveCheckpoint,
@@ -79,6 +80,7 @@ export type HistoricalBarTimingInput = {
   bar_end?: string;
   available_at?: string;
   retrieved_at?: string;
+  session_timing?: { calendar_id: string; session_date: string };
 };
 
 export type HistoricalBarTiming = {
@@ -86,6 +88,7 @@ export type HistoricalBarTiming = {
   bar_end: string;
   available_at: string;
   retrieved_at: string | null;
+  session_timing?: { calendar_id: string; session_date: string };
 };
 
 const AGGREGATION_PATTERN = /^[1-9][0-9]*(s|m|h|d|w)$/;
@@ -437,9 +440,17 @@ export function resolveHistoricalBarTiming(
   if (barStart !== sourceTime) {
     throw new Error("bar_start must equal the legacy source_time field.");
   }
-  const expectedBarEnd = new Date(
-    Date.parse(barStart) + resolutionMilliseconds(aggregation),
-  ).toISOString();
+  const dailySession = candle.session_timing
+    ? rthSession(candle.session_timing.session_date) : null;
+  if (candle.session_timing && (
+    aggregation !== "1d" ||
+    candle.session_timing.calendar_id !== RTH_CALENDAR_VERSION ||
+    !dailySession || dailySession.open !== Date.parse(barStart)
+  )) {
+    throw new Error("Invalid verified RTH daily session timing.");
+  }
+  const expectedBarEnd = new Date(dailySession?.close ??
+    Date.parse(barStart) + resolutionMilliseconds(aggregation)).toISOString();
   const barEnd = normalizeRfc3339(
     candle.bar_end ?? expectedBarEnd,
     "bar_end",
@@ -461,6 +472,7 @@ export function resolveHistoricalBarTiming(
     bar_start: barStart,
     bar_end: barEnd,
     available_at: availableAt,
+    ...(candle.session_timing ? { session_timing: candle.session_timing } : {}),
     retrieved_at:
       retrievedAtValue === null
         ? null
@@ -538,6 +550,15 @@ export function historicalBarMatchesResolutionProfile(
   const intervalMs = resolutionMilliseconds(aggregation);
   const barStart = Date.parse(timing.bar_start);
   const barEnd = Date.parse(timing.bar_end);
+  if (timing.session_timing) {
+    const bounds = rthSession(timing.session_timing.session_date);
+    return aggregation === "1d" &&
+      timing.session_timing.calendar_id === RTH_CALENDAR_VERSION &&
+      profile.session.kind === "REGULAR" &&
+      profile.session.timezone === "America/New_York" &&
+      profile.alignment === "SESSION" &&
+      bounds?.open === barStart && bounds.close === barEnd;
+  }
   if (barEnd - barStart !== intervalMs) return false;
   if (profile.alignment === "MIDNIGHT") {
     return barStart % intervalMs === 0;
