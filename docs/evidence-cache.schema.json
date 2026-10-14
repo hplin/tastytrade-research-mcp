@@ -173,7 +173,7 @@
           ]
         },
         "price_type": {
-          "const": "LAST"
+          "enum": ["LAST", "BID", "ASK"]
         },
         "request_range": {
           "type": "object",

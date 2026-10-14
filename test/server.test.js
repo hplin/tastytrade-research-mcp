@@ -256,6 +256,7 @@ describe("MCP research server", () => {
         max_buffer_bytes: { maximum: 134217728 },
         timeout_ms: { maximum: 60000 },
         max_candles: { maximum: 20000 },
+        price_type: { enum: ["LAST", "BID", "ASK"] },
       });
       const candidateTool = tools.tools.find(
         (tool) =>
@@ -574,6 +575,7 @@ describe("MCP research server", () => {
               symbol: "SPY",
               instrument_type: "EQUITY",
               interval: "5m",
+              price_type: "BID",
               start_time: "2026-09-24T14:00:00.000Z",
               end_time: "2026-09-24T15:00:00.000Z",
               deadline_ms: 5000,
@@ -587,12 +589,26 @@ describe("MCP research server", () => {
       expect(candleResult.resampled).toBe(false);
       expect(candles.getHistoricalCandles).toHaveBeenCalledWith(
         expect.objectContaining({
+          price_type: "BID",
           deadline_ms: 5000,
           max_output_candles: 1000,
           max_received_events: 5000,
           max_buffer_bytes: 1048576,
         }),
       );
+      await expect(client.callTool({
+        name: "tastytrade_get_historical_candles",
+        arguments: {
+          request: {
+            symbol: "SPY",
+            instrument_type: "EQUITY",
+            interval: "5m",
+            price_type: "MARK",
+            start_time: "2026-09-24T14:00:00.000Z",
+            end_time: "2026-09-24T15:00:00.000Z",
+          },
+        },
+      })).rejects.toThrow("Invalid arguments");
 
       const liveSnapshot = textResult(
         await client.callTool({

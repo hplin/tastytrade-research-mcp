@@ -11,7 +11,10 @@ import type {
   HistoricalCandlesResult,
   InstrumentType,
 } from "./historical-candles.js";
-import { edgeCoverageWarnings } from "./historical-candles.js";
+import {
+  edgeCoverageWarnings,
+  normalizeHistoricalCandlePriceType,
+} from "./historical-candles.js";
 import {
   candleSessionForResolutionProfile,
   normalizeResolutionProfile,
@@ -2250,6 +2253,7 @@ export class BoundedHistoricalProviderAdapter {
         },
       ],
       interval: input.interval,
+      price_type: input.price_type,
       start_time: input.start_time,
       end_time: input.end_time,
       session: input.session,
@@ -2268,6 +2272,11 @@ export class BoundedHistoricalProviderAdapter {
   async getHistoricalCandlesBatch(
     input: HistoricalCandlesBatchInput,
   ): Promise<HistoricalCandlesResult[]> {
+    if (normalizeHistoricalCandlePriceType(input.price_type) !== "LAST") {
+      throw new Error(
+        "The bounded historical provider candle adapter supports LAST price_type only.",
+      );
+    }
     if (
       input.evidence_cache &&
       input.evidence_cache.mode !== "BYPASS"

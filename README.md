@@ -76,7 +76,7 @@ final data.
 | `tastytrade_simulate_spx_spread` | Run exact-leg SPX historical simulation and normalize its result |
 | `tastytrade_create_spx_spread_backtest` | Submit supported SPX structures through relative Backtester selectors |
 | `tastytrade_verify_historical_fill` | Check a frozen paper limit against a caller-supplied historical package path or a forward Backtester path |
-| `tastytrade_get_historical_candles` | Retrieve normalized DXLink OHLCV candles without resampling |
+| `tastytrade_get_historical_candles` | Retrieve DXLink LAST/BID/ASK OHLC aggregates without resampling; valuation-only, not executable quotes |
 
 Use MCP `tools/list` for the complete JSON input schemas.
 The direct live snapshot, bounded DXLink batch provenance, event/cohort
@@ -406,6 +406,15 @@ All verification is marked `POST_SESSION_REGRESSION` and includes
 `GET /api-quote-tokens`, connects only to a `wss://` host under
 `dxfeed.com`, completes the DXLink handshake, and waits for the indexed-event
 snapshot boundary.
+
+Optional `price_type: LAST | BID | ASK` selects separate provider-native
+price aggregates. LAST remains the default; BID/ASK are not synchronized
+NBBO and have no quote sizes or executable-package guarantee. Each price
+type has a distinct cache identity. Recent SPXW BID/ASK aggregates were
+retrieved, but July 2 minute history remains unavailable; dxFeed documents
+approximately 14 calendar days of BID/ASK candle retention. See
+[`docs/historical-candles.md`](docs/historical-candles.md) for the measured
+coverage, request example, and completed-bar timing requirements.
 
 The normalized output includes:
 

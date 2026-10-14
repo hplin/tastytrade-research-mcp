@@ -131,6 +131,7 @@ function syntheticResult(request, instrument, index, options = {}) {
       instrument.streamer_symbol ?? instrument.symbol,
     instrument_type: instrument.instrument_type,
     interval: request.interval,
+    price_type: request.price_type ?? "LAST",
     requested_range: {
       start: request.start_time,
       end: request.end_time,
@@ -353,6 +354,127 @@ function checkpointPackageRequest(
 }
 
 describe("private immutable research evidence cache", () => {
+  test("accepts legacy LAST results without a price_type field", async () => {
+    await withCache(async (cache) => {
+      const source = provider();
+      const original = source.getHistoricalCandlesBatch.getMockImplementation();
+      source.getHistoricalCandlesBatch.mockImplementation(async (request) =>
+        (await original(request)).map(({ price_type, ...legacy }) => legacy),
+      );
+      const service = new CachedHistoricalCandlesService(source, cache);
+      const request = requestFor(
+        ["SPX"],
+        "2026-08-24T14:30:00.000Z",
+        { mode: "READ_WRITE" },
+      );
+      const [first] = await service.getHistoricalCandlesBatch(request);
+      const [replayed] = await service.getHistoricalCandlesBatch({
+        ...request,
+        price_type: "LAST",
+        evidence_cache: {
+          ...request.evidence_cache,
+          mode: "CACHE_ONLY",
+          manifest_ids: [first.evidence_cache.manifest_id],
+        },
+      });
+      expect(replayed.price_type).toBeUndefined();
+      expect(replayed.evidence_cache.request_fingerprint).toBe(
+        first.evidence_cache.request_fingerprint,
+      );
+      expect(source.getHistoricalCandlesBatch).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  test("isolates LAST, BID, and ASK cache identities and exact-manifest replay", async () => {
+    await withCache(async (cache) => {
+      const source = provider();
+      const service = new CachedHistoricalCandlesService(source, cache);
+      const request = requestFor(
+        ["SPX"],
+        "2026-08-24T14:30:00.000Z",
+        { mode: "READ_WRITE" },
+      );
+      const first = [];
+      for (const priceType of ["LAST", "BID", "ASK"]) {
+        const [result] = await service.getHistoricalCandlesBatch({
+          ...request, price_type: priceType,
+        });
+        first.push(result);
+        const manifest = await cache.readManifest(result.evidence_cache.manifest_id);
+        expect(manifest.source_identity.price_type).toBe(priceType);
+        expect(validateManifest(manifest)).toBe(true);
+        const [replayed] = await service.getHistoricalCandlesBatch({
+          ...request,
+          price_type: priceType,
+          evidence_cache: {
+            ...request.evidence_cache,
+            mode: "CACHE_ONLY",
+            manifest_ids: [result.evidence_cache.manifest_id],
+          },
+        });
+        expect(replayed.price_type).toBe(priceType);
+        expect(replayed.evidence_cache.cache_status).toBe("CACHE_ONLY_HIT");
+      }
+      expect(source.getHistoricalCandlesBatch).toHaveBeenCalledTimes(3);
+      expect(new Set(first.map((result) => result.evidence_cache.request_fingerprint)).size).toBe(3);
+      expect(new Set(first.map((result) => result.evidence_cache.manifest_id)).size).toBe(3);
+      await expect(service.getHistoricalCandlesBatch({
+        ...request,
+        price_type: "BID",
+        evidence_cache: {
+          ...request.evidence_cache,
+          mode: "CACHE_ONLY",
+          manifest_ids: [first[0].evidence_cache.manifest_id],
+        },
+      })).rejects.toMatchObject({ code: "EVIDENCE_CACHE_POLICY_MISMATCH" });
+      expect(source.getHistoricalCandlesBatch).toHaveBeenCalledTimes(3);
+      const [omittedLast] = await service.getHistoricalCandlesBatch(request);
+      expect(omittedLast.evidence_cache.request_fingerprint).toBe(first[0].evidence_cache.request_fingerprint);
+      expect(source.getHistoricalCandlesBatch).toHaveBeenCalledTimes(3);
+    });
+  });
+
+  test("refuses a provider result with the wrong candle price type", async () => {
+    await withCache(async (cache) => {
+      const source = provider();
+      const original = source.getHistoricalCandlesBatch.getMockImplementation();
+      source.getHistoricalCandlesBatch.mockImplementation(async (request) =>
+        (await original(request)).map((result) => ({ ...result, price_type: "LAST" })),
+      );
+      const service = new CachedHistoricalCandlesService(source, cache);
+      await expect(service.getHistoricalCandlesBatch(requestFor(
+        ["SPX"],
+        "2026-08-24T14:30:00.000Z",
+        { mode: "READ_WRITE" },
+        { price_type: "BID" },
+      ))).rejects.toThrow("does not match its exact cache identity");
+    });
+  });
+
+  test("preserves price type when a single-only provider handles a cached request", async () => {
+    await withCache(async (cache) => {
+      const batch = requestFor(
+        ["SPX"],
+        "2026-08-24T14:30:00.000Z",
+        { mode: "READ_WRITE" },
+        { price_type: "ASK" },
+      );
+      const source = {
+        getHistoricalCandles: jest.fn(async (request) =>
+          syntheticResult(request, batch.instruments[0], 0)),
+      };
+      const service = new CachedHistoricalCandlesService(source, cache);
+      const { instruments, ...single } = batch;
+      const result = await service.getHistoricalCandles({
+        ...single, ...instruments[0],
+      });
+      expect(source.getHistoricalCandles).toHaveBeenCalledWith(
+        expect.objectContaining({ price_type: "ASK" }),
+      );
+      expect(result.price_type).toBe("ASK");
+    });
+  });
+
   test("reports cache lookup and provider bootstrap without changing immutable identity", async () => {
     await withCache(async (cache) => {
       const source = provider();
