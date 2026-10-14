@@ -182,6 +182,18 @@ describe("historical read-only broker client", () => {
     await expect(client.getOrders({ ...input, ...invalid })).rejects.toThrow();
     expect(oauth.getAccessToken).not.toHaveBeenCalled();
   });
+  test.each(["orders", "transactions", "audit"])("%s accepts page_size 200 unchanged and rejects 201/250 before broker calls", async kind => {
+    const { client, get, oauth } = clientWith();
+    const query = request => kind === "audit" ? buildOOBrokerAudit(client, request) :
+      kind === "orders" ? client.getOrders(request) : client.getTransactions(request);
+    await query({ ...input, page_size: 200 });
+    expect(get.mock.calls.filter(([path]) => path !== "/customers/me/accounts")
+      .every(([, config]) => config.params["per-page"] === 200)).toBe(true);
+    get.mockClear(); oauth.getAccessToken.mockClear();
+    for (const page_size of [201, 250]) await expect(query({ ...input, page_size })).rejects.toThrow("INVALID_HISTORY_INPUT");
+    expect(get).not.toHaveBeenCalled();
+    expect(oauth.getAccessToken).not.toHaveBeenCalled();
+  });
   test("invalid exact decimals mark unsupported records, never float-coerce", async () => {
     const { client } = clientWith([order("1", "Filled", 8.15)]);
     const result = await client.getOrders(input);
@@ -208,6 +220,107 @@ describe("historical read-only broker client", () => {
 });
 
 describe("OO broker synthetic replay", () => {
+  test.each([
+    ["value-price mismatch", { value: "99999" }, "PER_LEG_VALUE_MISMATCH"],
+    ["missing price", { price: undefined }, "EXECUTION_PRICE_MISSING"],
+    ["unknown value effect", { "value-effect": "INVALID" }, "INVALID_CASH_FLOW_EFFECT"],
+    ["missing value effect", { "value-effect": undefined }, "INVALID_CASH_FLOW_EFFECT"],
+    ["opposite value effect", { "value-effect": "Credit" }, "PER_LEG_VALUE_MISMATCH"],
+    ["nonzero None effect", { "value-effect": "None" }, "INVALID_CASH_FLOW_EFFECT"],
+    ["incompatible execution type", { "transaction-type": "Receive Deliver" }, "UNSUPPORTED_OR_INCOMPLETE_TRANSACTION"],
+    ["missing execution type", { "transaction-type": undefined }, "UNSUPPORTED_OR_INCOMPLETE_TRANSACTION"],
+    ["negative execution price", { price: "-8.37" }, "INVALID_EXECUTION_PRICE"],
+    ["nonpositive execution quantity", { quantity: "-1" }, "INVALID_EXECUTION_QUANTITY"],
+    ["reversal", { "reverses-id": "other-fill" }, "REVERSAL_REQUIRES_RECONCILIATION"],
+    ["wrong closing action", { action: "Sell to Close" }, "ORDER_EXECUTION_LEG_CONFLICT"],
+  ])("%s cannot become definitive episode cost, full closure or realized P/L", async (_name, mutation, gap) => {
+    const data = replay();
+    Object.assign(data.transactions[2], mutation);
+    const report = await buildOOBrokerAudit(clientWith(data.orders, data.transactions).client, {
+      ...input, start: "2026-10-13", activity_log: { events: data.events },
+    });
+    expect(report.coverage.gaps).toContain(gap);
+    expect(report.tags).toContain("UNRESOLVED");
+    expect(report.tags).not.toContain("CLOSED_CONFIRMED");
+    expect(report.episodes[0]).toMatchObject({
+      final_package_debit: null, stop_to_fill_difference_per_contract_usd: null, stop_to_final_fill_ms: null,
+    });
+    expect(report.side_cash_flows[0].realized_gross).toBeNull();
+    expect(report.campaigns[0].realized_gross).toBeNull();
+    expect(report.summary_zh_tw).toContain("最終組合成交成本 未確認");
+    expect(report.summary_zh_tw).not.toContain("最終組合成交成本 999.77");
+    expect(report.summary_zh_tw).not.toContain("停損至成交成本差 99612");
+  });
+  test("missing or estimated fees and missing net values do not suppress reconciled gross or closure", async () => {
+    const data = replay();
+    delete data.transactions[2].commission;
+    delete data.transactions[2]["net-value"];
+    data.transactions[3]["is-estimated-fee"] = true;
+    const report = await buildOOBrokerAudit(clientWith(data.orders, data.transactions).client, {
+      ...input, start: "2026-10-13", activity_log: { events: data.events },
+    });
+    expect(report.episodes[0]).toMatchObject({ final_package_debit: "8.15", stop_to_fill_difference_per_contract_usd: "450" });
+    expect(report.tags).toContain("CLOSED_CONFIRMED");
+    expect(report.tags).not.toContain("UNRESOLVED");
+    expect(report.side_cash_flows[0]).toMatchObject({ realized_gross: "-605", realized_net: null });
+    expect(report.side_cash_flows[0].gaps).toEqual(expect.arrayContaining(["FEE_COMPONENTS_MISSING", "NET_VALUE_MISSING", "ESTIMATED_FEES"]));
+  });
+  test("absent provider values preserve gross established by complete per-leg price/quantity evidence", async () => {
+    const data = replay();
+    for (const tx of data.transactions) {
+      delete tx.value; delete tx["value-effect"];
+    }
+    const report = await buildOOBrokerAudit(clientWith(data.orders, data.transactions).client, {
+      ...input, start: "2026-10-13", activity_log: { events: data.events },
+    });
+    expect(report.episodes[0]).toMatchObject({ final_package_debit: "8.15", stop_to_fill_difference_per_contract_usd: "450" });
+    expect(report.side_cash_flows[0].realized_gross).toBe("-605");
+    expect(report.tags).toContain("CLOSED_CONFIRMED");
+    expect(report.tags).not.toContain("UNRESOLVED");
+  });
+  test("Filled with missing closing execution cannot confirm full closure", async () => {
+    const data = replay();
+    data.transactions.pop();
+    const report = await buildOOBrokerAudit(clientWith(data.orders, data.transactions).client, {
+      ...input, start: "2026-10-13", activity_log: { events: data.events },
+    });
+    expect(report.coverage.gaps).toContain("INCOMPLETE_CLOSE_EXECUTION_QUANTITY");
+    expect(report.tags).toContain("UNRESOLVED");
+    expect(report.tags).not.toContain("CLOSED_CONFIRMED");
+    expect(report.episodes[0].final_package_debit).toBeNull();
+    expect(report.episodes[0].stop_to_fill_difference_per_contract_usd).toBeNull();
+  });
+  test("gross execution gaps in another side leave valid closure and package cost available", async () => {
+    const data = replay();
+    const put = { ...order("920000000", "Filled", "2.10", "58"), legs: [
+      leg("SPXW  261013P07700000", "Buy to Close"), leg("SPXW  261013P07660000", "Sell to Close"),
+    ] };
+    data.orders.push(put);
+    data.transactions.push(
+      { ...transaction("5", put.id, put.legs[0].symbol, "Buy to Close", "2.22", fixture.broker_fill_time), value: "99999" },
+      transaction("6", put.id, put.legs[1].symbol, "Sell to Close", "0.12", fixture.broker_fill_time),
+    );
+    const report = await buildOOBrokerAudit(clientWith(data.orders, data.transactions).client, {
+      ...input, start: "2026-10-13", activity_log: { events: data.events },
+    });
+    expect(report.coverage.gaps).toContain("PER_LEG_VALUE_MISMATCH");
+    expect(report.tags).toEqual(expect.arrayContaining(["CLOSED_CONFIRMED", "UNRESOLVED"]));
+    expect(report.episodes[0].final_package_debit).toBe("8.15");
+    expect(report.side_cash_flows.find(s => s.side.endsWith("CALL")).realized_gross).toBe("-605");
+    expect(report.side_cash_flows.find(s => s.side.endsWith("PUT")).realized_gross).toBeNull();
+  });
+  test("incomplete transaction pagination cannot establish final package cost or full closure", async () => {
+    const data = replay();
+    const { client } = clientWith(data.orders, data.transactions, path => path.endsWith("/transactions") ?
+      { data: envelope(data.transactions, 0, data.transactions.length + 1, 2) } : undefined);
+    const report = await buildOOBrokerAudit(client, {
+      ...input, start: "2026-10-13", max_pages: 1, activity_log: { events: data.events },
+    });
+    expect(report.coverage.transactions.pagination_complete).toBe(false);
+    expect(report.episodes[0].final_package_debit).toBeNull();
+    expect(report.tags).not.toContain("CLOSED_CONFIRMED");
+    expect(report.tags).toContain("UNRESOLVED");
+  });
   test("10/13 cancelled attempts, exact gross -605, difference 450, clocks 4000 ms; 10/12 gap", async () => {
     const data = replay();
     const report = await buildOOBrokerAudit(clientWith(data.orders, data.transactions).client, { ...input, strategy_name: fixture.strategy, activity_log: { events: data.events } });
@@ -383,6 +496,12 @@ test("MCP tools register, route injected history and reject invalid args", async
   try {
     const tools = await client.listTools();
     expect(tools.tools.map(t => t.name)).toEqual(expect.arrayContaining(["tastytrade_get_historical_orders", "tastytrade_get_historical_transactions", "tastytrade_audit_oo_broker_orders"]));
+    for (const name of ["tastytrade_get_historical_orders", "tastytrade_get_historical_transactions", "tastytrade_audit_oo_broker_orders"]) {
+      expect(tools.tools.find(t => t.name === name).inputSchema.properties.request.properties.page_size.maximum).toBe(200);
+      for (const page_size of [201, 250]) {
+        await expect(client.callTool({ name, arguments: { request: { ...input, page_size } } })).rejects.toThrow("Invalid arguments");
+      }
+    }
     const response = await client.callTool({ name: "tastytrade_get_historical_orders", arguments: { request: input } });
     expect(JSON.parse(response.content[0].text).coverage.status).toBe("EMPTY");
     const transactions = await client.callTool({ name: "tastytrade_get_historical_transactions", arguments: { request: input } });

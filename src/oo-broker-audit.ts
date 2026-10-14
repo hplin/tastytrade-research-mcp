@@ -115,6 +115,45 @@ function signed(value: string | null, effect: string | null): ExactDecimal | nul
   if (decimal(value).compare(zero()) < 0 || (effect === "None" && !decimal(value).isZero())) return null;
   return effect === "Debit" ? decimal(value).negate() : decimal(value);
 }
+function reconcileExecution(t: BrokerTransaction) {
+  const gaps = new Set<string>();
+  const supported = !!t.symbol && !!t.quantity && !!t.action && t.type === "Trade" && t.currency === "USD" && !!t.time;
+  if (!supported) gaps.add("UNSUPPORTED_OR_INCOMPLETE_TRANSACTION");
+  if (t.reverses_id) gaps.add("REVERSAL_REQUIRES_RECONCILIATION");
+  if (t.quantity === null || decimal(t.quantity).compare(zero()) <= 0) gaps.add("INVALID_EXECUTION_QUANTITY");
+  if (t.price === null) gaps.add("EXECUTION_PRICE_MISSING");
+  else if (decimal(t.price).compare(zero()) < 0) gaps.add("INVALID_EXECUTION_PRICE");
+  if (!t.action || !["Buy to Open", "Sell to Open", "Buy to Close", "Sell to Close"].includes(t.action)) gaps.add("OPEN_CLOSE_CLASSIFICATION_MISSING");
+  const amount = signed(t.value, t.value_effect);
+  if (t.value !== null && !amount) gaps.add("INVALID_CASH_FLOW_EFFECT");
+  const calculated = supported && t.price !== null
+    ? decimal(t.price).multiply(decimal(t.quantity!)).multiplyInteger(100)
+      .multiplyInteger(t.action!.startsWith("Sell") ? 1 : -1) : null;
+  if (!amount && !calculated) gaps.add("GROSS_CASH_FLOW_MISSING");
+  if (amount && calculated && amount.compare(calculated) !== 0) gaps.add("PER_LEG_VALUE_MISMATCH");
+  return { supported, effective: amount ?? calculated, gaps: [...gaps] };
+}
+function reconcileClose(order: BrokerOrder, transactions: BrokerTransaction[]) {
+  const executions = transactions.filter(t => t.order_id === order.id);
+  const reconciled = executions.map(reconcileExecution);
+  const gaps = new Set(reconciled.flatMap(r => r.gaps));
+  if (!order.legs.length || order.legs.some(l => !l.action.endsWith("Close")) ||
+      new Set(order.legs.map(l => l.symbol.replace(/ /g, ""))).size !== order.legs.length ||
+      executions.some(t => !order.legs.some(l => l.symbol.replace(/ /g, "") === t.symbol?.replace(/ /g, "") && l.action === t.action))) {
+    gaps.add("ORDER_EXECUTION_LEG_CONFLICT");
+  }
+  if (!order.legs.length || order.legs.some(l => l.quantity === null || decimal(l.quantity).compare(zero()) <= 0 ||
+      !executions.some(t => t.symbol?.replace(/ /g, "") === l.symbol.replace(/ /g, "") && t.action === l.action) ||
+      executions.filter(t => t.symbol?.replace(/ /g, "") === l.symbol.replace(/ /g, "") && t.action === l.action)
+        .reduce((sum, t) => sum.add(decimal(t.quantity ?? "0")), zero()).compare(decimal(l.quantity)) !== 0)) {
+    gaps.add("INCOMPLETE_CLOSE_EXECUTION_QUANTITY");
+  }
+  return {
+    complete: order.status === "Filled" && !gaps.size,
+    gross: reconciled.reduce((sum, r) => sum.add(r.effective ?? zero()), zero()),
+    gaps: [...gaps],
+  };
+}
 function cashFlow(transactions: BrokerTransaction[]) {
   let gross = zero(), fees = zero(), reportedNet = zero();
   const inventory = new Map<string, ExactDecimal>();
@@ -123,18 +162,11 @@ function cashFlow(transactions: BrokerTransaction[]) {
   let opened = false, closed = false;
   const feeComponents: Record<string, string> = {};
   for (const t of [...transactions].sort((a, b) => (a.time?.utc ?? "").localeCompare(b.time?.utc ?? ""))) {
-    if (t.reverses_id) gaps.add("REVERSAL_REQUIRES_RECONCILIATION");
-    if (!t.symbol || !t.quantity || !t.action || t.type !== "Trade" || t.currency !== "USD" || !t.time) {
-      gaps.add("UNSUPPORTED_OR_INCOMPLETE_TRANSACTION"); continue;
-    }
-    const amount = signed(t.value, t.value_effect);
-    if (t.value !== null && !amount) gaps.add("INVALID_CASH_FLOW_EFFECT");
-    const calculated = t.price ? decimal(t.price).multiply(decimal(t.quantity)).multiplyInteger(100)
-      .multiplyInteger(t.action.startsWith("Sell") ? 1 : -1) : null;
-    if (!amount && !calculated) gaps.add("GROSS_CASH_FLOW_MISSING");
-    const effective = amount ?? calculated;
+    const execution = reconcileExecution(t);
+    execution.gaps.forEach(g => gaps.add(g));
+    if (!execution.supported) continue;
+    const effective = execution.effective;
     if (effective) gross = gross.add(effective);
-    if (amount && calculated && amount.compare(calculated) !== 0) gaps.add("PER_LEG_VALUE_MISMATCH");
     const net = signed(t.net_value, t.net_value_effect);
     if (net) reportedNet = reportedNet.add(net); else gaps.add("NET_VALUE_MISSING");
     let transactionFees = zero();
@@ -150,15 +182,14 @@ function cashFlow(transactions: BrokerTransaction[]) {
     fees = fees.add(transactionFees);
     if (t.fees_estimated) gaps.add("ESTIMATED_FEES");
     if (net && effective && t.fees && FEE_FIELDS.every(k => t.fees[k]) && net.compare(effective.add(transactionFees)) !== 0) gaps.add("NET_FEE_RECONCILIATION_MISMATCH");
-    const symbol = t.symbol.replace(/ /g, "");
-    const quantity = decimal(t.quantity);
-    if (quantity.compare(zero()) <= 0) gaps.add("INVALID_EXECUTION_QUANTITY");
-    const positionChange = quantity.multiplyInteger(t.action.startsWith("Buy") ? 1 : -1);
+    const symbol = t.symbol!.replace(/ /g, "");
+    const quantity = decimal(t.quantity!);
+    const positionChange = quantity.multiplyInteger(t.action!.startsWith("Buy") ? 1 : -1);
     inventory.set(symbol, (inventory.get(symbol) ?? zero()).add(positionChange));
-    if (t.action.endsWith("Open")) {
+    if (t.action!.endsWith("Open")) {
       opened = true;
       openInventory.set(symbol, (openInventory.get(symbol) ?? zero()).add(positionChange));
-    } else if (t.action.endsWith("Close")) {
+    } else if (t.action!.endsWith("Close")) {
       closed = true;
       const previous = openInventory.get(symbol) ?? zero();
       if (previous.isZero() || previous.compare(zero()) === positionChange.compare(zero()) || previous.abs().compare(quantity) < 0) gaps.add("UNMATCHED_CLOSE_OR_PREWINDOW_ENTRY");
@@ -222,6 +253,7 @@ export async function buildOOBrokerAudit(service: BrokerHistoryService, input: O
   }
   const inconsistentOrders = new Set<string>();
   for (const t of transactions.items) {
+    gaps.push(...reconcileExecution(t).gaps);
     const o = t.order_id ? orderMap.get(t.order_id) : undefined;
     if (!o) {
       gaps.push("TRANSACTION_ORDER_HISTORY_GAP");
@@ -229,6 +261,12 @@ export async function buildOOBrokerAudit(service: BrokerHistoryService, input: O
       inconsistentOrders.add(o.id);
       gaps.push("ORDER_EXECUTION_LEG_CONFLICT");
     }
+  }
+  const providerComplete = orders.coverage.pagination_complete && transactions.coverage.pagination_complete;
+  const closes = new Map(orders.items.filter(o => o.legs.some(l => l.action.endsWith("Close")))
+    .map(o => [o.id, reconcileClose(o, transactions.items)]));
+  for (const o of orders.items.filter(o => o.status === "Filled" || transactions.items.some(t => t.order_id === o.id))) {
+    gaps.push(...(closes.get(o.id)?.gaps ?? []));
   }
   const attempts = orders.items.filter(o => o.legs.some(l => l.action.endsWith("Close"))).map(o => {
     const executions = accountConsistent ? transactions.items.filter(t => t.order_id === o.id) : [];
@@ -277,23 +315,18 @@ export async function buildOOBrokerAudit(service: BrokerHistoryService, input: O
     const fills = confirmed.filter(a => a.broker_last_fill);
     const first = confirmed.find(a => a.broker_first_route);
     const last = fills.sort((a, b) => a.broker_last_fill!.utc.localeCompare(b.broker_last_fill!.utc)).at(-1);
-    const finalTransactions = last ? transactions.items.filter(t => t.order_id === last.order_id && t.action?.endsWith("Close")) : [];
-    const packageIdentities = last?.legs.map(l => l.symbol.replace(/ /g, "")) ?? [];
-    const hasAllLegs = packageIdentities.length > 0 && packageIdentities.every(s => finalTransactions.some(t => t.symbol?.replace(/ /g, "") === s));
+    const close = last ? closes.get(last.order_id) : undefined;
     const fillQuantity = last?.legs[0]?.quantity;
-    const balancedFill = fillQuantity && decimal(fillQuantity).compare(zero()) > 0 && last?.legs.every(l => l.quantity !== null && decimal(l.quantity).compare(decimal(fillQuantity)) === 0 &&
-      finalTransactions.filter(t => t.symbol?.replace(/ /g, "") === l.symbol.replace(/ /g, ""))
-        .reduce((sum, t) => sum.add(decimal(t.quantity ?? "0")), zero()).compare(decimal(fillQuantity)) === 0);
-    const gross = finalTransactions.reduce((sum, t) => sum.add(signed(t.value, t.value_effect) ?? zero()), zero());
-    const finalDebit = accountConsistent && hasAllLegs && balancedFill && last && !inconsistentOrders.has(last.order_id) &&
-      finalTransactions.every(t => signed(t.value, t.value_effect) !== null && t.type === "Trade" && t.currency === "USD" && t.time && !t.reverses_id)
-      ? gross.negate().divide(decimal(fillQuantity!).multiplyInteger(100)).toString() : null;
+    const balancedFill = fillQuantity && last?.legs.every(l => l.quantity !== null && decimal(l.quantity).compare(decimal(fillQuantity)) === 0);
+    const completeClose = accountConsistent && providerComplete && close?.complete && last && !inconsistentOrders.has(last.order_id);
+    const finalDebit = completeClose && balancedFill
+      ? close.gross.negate().divide(decimal(fillQuantity!).multiplyInteger(100)).toString() : null;
     return {
       stop: stop.time, threshold: stop.price ?? null, campaign_reference: stop.campaign_reference,
       candidate_order_ids: ordered.map(a => a.order_id), confirmed_order_ids: confirmed.map(a => a.order_id),
       correlation: confirmed.length ? "EXPLICIT_ORDER_OR_CAMPAIGN_REFERENCES" : "CANDIDATES_ONLY",
       stop_to_first_route_ms: milliseconds(stop.time, first?.broker_first_route),
-      stop_to_final_fill_ms: milliseconds(stop.time, last?.broker_last_fill),
+      stop_to_final_fill_ms: completeClose ? milliseconds(stop.time, last?.broker_last_fill) : null,
       latency_clock_basis: "OO_STOP_TO_BROKER_TIME_UNCALIBRATED",
       first_limit: confirmed[0]?.limit ?? null, final_package_debit: finalDebit,
       limit_drift: confirmed[0]?.limit && confirmed.at(-1)?.limit
@@ -310,7 +343,6 @@ export async function buildOOBrokerAudit(service: BrokerHistoryService, input: O
     const key = `${match[1]}:${match[2] === "C" ? "CALL" : "PUT"}`;
     sideGroups.set(key, [...(sideGroups.get(key) ?? []), t]);
   }
-  const providerComplete = orders.coverage.pagination_complete && transactions.coverage.pagination_complete;
   const reconciliationComplete = providerComplete && accountConsistent && !inconsistentOrders.size &&
     !gaps.includes("TRANSACTION_ORDER_HISTORY_GAP");
   const sideCashFlows = [...sideGroups].map(([side, tx]) => {
@@ -345,11 +377,8 @@ export async function buildOOBrokerAudit(service: BrokerHistoryService, input: O
   if (attempts.some(a => ["Live", "Working", "Received", "Routed", "In Flight", "Partially Filled"].includes(a.status))) tags.add("EXIT_WORKING");
   if (attempts.some(a => ["Cancelled", "Canceled"].includes(a.status))) tags.add("BROKER_CANCELLED");
   if (attempts.some(a => a.status === "Rejected")) tags.add("BROKER_REJECTED");
-  const closureConfirmed = accountConsistent && attempts.some(a => a.status === "Filled" && !inconsistentOrders.has(a.order_id) && a.legs.every(l => {
-    if (!l.quantity || decimal(l.quantity).compare(zero()) <= 0) return false;
-    const tx = transactions.items.filter(t => t.order_id === a.order_id && t.symbol?.replace(/ /g, "") === l.symbol.replace(/ /g, "") && t.action === l.action && t.price !== null && t.time && !t.reverses_id);
-    return tx.length > 0 && tx.reduce((s, t) => s.add(decimal(t.quantity ?? "0")), zero()).compare(decimal(l.quantity)) === 0;
-  }));
+  const closureConfirmed = accountConsistent && providerComplete &&
+    attempts.some(a => !inconsistentOrders.has(a.order_id) && closes.get(a.order_id)?.complete);
   if (closureConfirmed) tags.add("CLOSED_CONFIRMED");
   if (!closureConfirmed || !providerComplete || gaps.length || attempts.some(a => ["UNKNOWN", "Working", "Live", "Partially Filled"].includes(a.status))) tags.add("UNRESOLVED");
   const confirmedLimits = events.filter(e => e.kind === "LIMIT_ATTEMPT" && e.correlation === "EXPLICIT_ORDER_ID" && e.broker_limit_consistency !== "CONFLICT");
@@ -395,7 +424,7 @@ export async function buildOOBrokerAudit(service: BrokerHistoryService, input: O
       `券商取消 ${attempts.filter(a => ["Cancelled", "Canceled"].includes(a.status)).length} 筆；拒單 ${attempts.filter(a => a.status === "Rejected").length} 筆。取消不等於拒單。`,
       `資料涵蓋：委託 ${orders.coverage.status}；交易 ${transactions.coverage.status}。空白或無權存取代表證據缺口，不推測不存在的委託或原因。`,
       ...dailyCoverage.filter(d => d.gap).map(d => `${d.date_et} ET 無可用個別委託／交易證據；涵蓋缺口，未編造委託 ID 或失敗原因。`),
-      ...sideCashFlows.map(s => `${s.side} 視窗現金流 ${s.gross_cash_flow} USD；已實現毛損益 ${s.realized_gross ?? "未確認"}；淨損益 ${s.realized_net ?? "費用或資料不完整"}。`),
+      ...sideCashFlows.map(s => `${s.side} 觀察到的視窗現金流 ${s.gross_cash_flow} USD（不代表已核對金額）；已實現毛損益 ${s.realized_gross ?? "未確認"}；淨損益 ${s.realized_net ?? "費用或資料不完整"}。`),
       ...episodes.map(e => `停損門檻 ${e.threshold ?? "未提供"}；首筆關聯限價 ${e.first_limit ?? "未確認"}；最終組合成交成本 ${e.final_package_debit ?? "未確認"}。停損至成交成本差 ${e.stop_to_fill_difference_per_contract_usd ?? "未確認"} USD／口；不等於全部可避免滑價。`),
       ...attempts.flatMap(a => a.oo_fill_reports.map(f => `委託 ${a.order_id}：OO ${f.time.original}；券商 ${f.broker_time?.original ?? "缺少成交時間"}；OO 減券商時間 ${f.oo_minus_broker_ms ?? "未確認"} ms（非已校準時鐘偏移）。`)),
       "OO 與券商時間來源各自保留；跨時鐘延遲未校準。缺乏同期雙腿／組合報價，市價可成交性、流動性及根因均未確認。",

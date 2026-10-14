@@ -70,7 +70,7 @@ export const BROKER_HISTORY_PROPERTIES = {
   },
   start: { type: "string", pattern: TIMESTAMP_PATTERN },
   end: { type: "string", pattern: TIMESTAMP_PATTERN },
-  page_size: { type: "integer", minimum: 1, maximum: 250 },
+  page_size: { type: "integer", minimum: 1, maximum: 200 },
   max_pages: { type: "integer", minimum: 1, maximum: 1000 },
 } as const;
 export const BROKER_HISTORY_SCHEMA = {
@@ -132,7 +132,7 @@ function validateInput(input: BrokerHistoryInput): void {
       Object.keys(input.account).some(k => !["type", "account_number"].includes(k)) ||
       (input.account.account_number !== undefined && (typeof input.account.account_number !== "string" || !/^[A-Za-z0-9-]{4,32}$/.test(input.account.account_number))) ||
       typeof input.start !== "string" || typeof input.end !== "string" ||
-      !Number.isInteger(input.page_size ?? 100) || (input.page_size ?? 100) < 1 || (input.page_size ?? 100) > 250 ||
+      !Number.isInteger(input.page_size ?? 100) || (input.page_size ?? 100) < 1 || (input.page_size ?? 100) > 200 ||
       !Number.isInteger(input.max_pages ?? 100) || (input.max_pages ?? 100) < 1 || (input.max_pages ?? 100) > 1000) {
     throw new Error("INVALID_HISTORY_INPUT");
   }

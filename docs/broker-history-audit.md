@@ -59,7 +59,7 @@ malformed packages produce an explicit gap instead of losing legs silently.
 Provider records outside the requested half-open window are excluded with a
 gap; records without a membership timestamp remain explicitly unverified.
 
-`page_size` defaults to 100 (maximum 250); `max_pages` defaults to 100 (maximum
+`page_size` defaults to 100 (maximum 200); `max_pages` defaults to 100 (maximum
 1000). Budget exhaustion, changing totals, mismatched unique totals, missing
 pagination, premature empty pages, repeated pages and conflicting duplicates
 are **INCOMPLETE**, not success. Exact duplicate IDs are suppressed. A complete
@@ -67,6 +67,9 @@ empty result is `EMPTY` with `NO_ELIGIBLE_SPXW_EVIDENCE`. Access/scope,
 authentication, rate-limit and provider errors have fixed safe codes. Already
 retrieved pages are retained on later failure. Requests are serial; rate limits
 stop acquisition rather than triggering hidden retries or live fallback.
+The shared limit of 200 respects the historical orders endpoint maximum;
+transactions and combined audits use that same conservative limit. Larger
+values are rejected before authentication or broker requests, not silently capped.
 
 `pagination_complete` establishes enumeration of the **provider query result**,
 not proof of exhaustive broker event history or account entitlement. Historical
@@ -128,8 +131,14 @@ offset. `oo_minus_broker_ms` preserves both original clocks; e.g. 14:06:57 versu
 ## Exact cash flows, independent sides and root cause
 
 Financial inputs remain decimal strings and use `ExactDecimal`, never JS
-floating-point cash arithmetic. Signed gross cash flow uses provider value/effect,
-cross-checking available per-leg price × quantity × SPX multiplier 100.
+floating-point cash arithmetic. Side/campaign cash flows, episode package debit
+and full-closure confirmation share per-transaction reconciliation: supported
+USD trades, exact symbols and opening/closing actions, positive quantities,
+nonnegative per-leg prices, execution timestamps and no unreconciled reversals.
+Signed gross cash flow uses provider value/effect, cross-checking per-leg
+price × quantity × SPX multiplier 100. If provider value is absent, supported
+price/quantity arithmetic can establish gross cash flow; an invalid supplied
+value/effect cannot be ignored.
 Independent expiration CALL/PUT groups support verticals, iron condors and
 partial fills; they do not merge a put stop into a call stop.
 Quantities and opening-before-closing inventory are reconciled. Window round-trip
@@ -145,7 +154,16 @@ Side totals describe the requested expiration/side window, not strategy or
 full-lifetime campaign attribution. Campaign totals cover only explicitly
 caller-referenced order IDs; no field claims that these comprise all strategy
 history. Filled status alone is insufficient for `CLOSED_CONFIRMED`: all closing
-legs require matching execution quantities/actions/prices/times.
+legs require matching, reconciled execution quantities/actions/prices/times and
+complete provider pagination. Episode package debit, threshold-to-fill cost
+difference and final-fill latency require that same complete closure; package
+debit additionally requires equal positive leg quantities. Conflicts or missing
+gross execution evidence suppress those definitive claims and propagate into
+`coverage.gaps` and `UNRESOLVED`. Valid evidence on an unrelated side remains
+available; a valid closure and `UNRESOLVED` can coexist when another order has
+gaps. Observed cash-flow totals are not verified realized amounts, including in
+the Traditional Chinese summary. Fee/net-only gaps do not invalidate a
+reconciled gross package debit or full closure.
 
 Incident tags: `STOP_TRIGGERED`, `EXIT_WORKING`, `RETRY_LIMIT_EXHAUSTED`,
 `BROKER_CANCELLED`, `BROKER_REJECTED`, `CLOSED_CONFIRMED`, `UNRESOLVED`.
@@ -186,6 +204,7 @@ does not close or satisfy that live-acquisition criterion; issue #102 stays open
 Consulted during implementation:
 
 - [Historical account orders](https://developer.tastytrade.com/reference/orders/getAccountsAccountNumberOrders/)
+- [Orders OpenAPI (per-page maximum 200)](https://developer.tastytrade.com/openapi/orders.json)
 - [Historical transactions](https://developer.tastytrade.com/reference/transactions/getAccountsAccountNumberTransactions/)
 - [Current customer accounts](https://developer.tastytrade.com/reference/accounts-and-customers/getCustomersCustomerIdAccounts/)
 
