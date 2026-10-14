@@ -290,13 +290,24 @@ Completed-date rows from an interrupted retry are retained alongside good
 initial bars, with explicit partial diagnostics. Initial transport failure
 remains visible even if the retry recovers dates.
 
-An `UNAUTHORIZED` recovery response retains committed rows, consumed event
+An `UNAUTHORIZED` initial or recovery response retains committed rows, consumed event
 and buffer counters, and the failed attempt's window, including zero-event
 attempts. The existing authentication policy permits one token invalidation
 and one forced refresh **across the entire request**, including initial
-authentication. Refresh resumes only the interrupted native recovery window,
+authentication. Initial reconnects subscribe only incomplete peers; recovery
+refresh resumes only the interrupted native recovery window,
 with the original deadline and residual event/output/buffer allowances.
 Already committed timestamps are not replaced by refreshed revisions.
+An initial reconnect shares the original cumulative ledger: previously committed
+native index/timestamp pairs remain immutable even across `SNAPSHOT_BEGIN` and
+`REMOVE_EVENT`. A changed timestamp for a committed index, or a different index
+for its timestamp, fails closed as `PROVIDER_SCHEMA_MISMATCH`; no revision is
+silently substituted. Other uncommitted rows follow ordinary snapshot resets.
+Uncommitted transactions do not cross sockets; their retained bytes remain
+conservatively charged. Duplicate wire events still consume the event allowance.
+No reconnect opens when less than one millisecond remains on either the original
+monotonic deadline or the injected market clock; zero is never raised to a fresh
+one-millisecond allowance.
 Successful reauthentication reports `REFRESHED` and retains a sanitized
 `provider_error`; the failed window records `AUTH_FAILED` even when recovery
 subsequently succeeds. Repeated rejection or refresh acquisition failure
@@ -308,6 +319,10 @@ explicitly rather than becoming a temporary provider failure.
 
 `recovery_diagnostics` records attempts, recovered dates, stop reason,
 failures, and bounded request windows with END/timeout/event evidence.
+Its separate `initial_windows` list records interrupted initial attempts and their
+reconnects with per-symbol event deltas, original range, completion, failure stage,
+and failure/timeout provenance, including zero-event handshake rejection. These
+are initial authentication attempts, not extra missing-date recovery windows.
 Buffer accounting is conservative across attempts; the existing peak
 counter measures attempted reservations, which can exceed the limit on a
 rejected allocation, not permission to retain excess memory.

@@ -248,6 +248,15 @@ export type HistoricalCandlesResult = {
     recovered_session_dates: string[];
     failures: HistoricalCandlesFailureReason[];
     stopped_reason: string | null;
+    initial_windows: {
+      start: string;
+      end: string;
+      provider_snapshot_complete: boolean;
+      failure_reason: HistoricalCandlesFailureReason | null;
+      timeout_stage: HistoricalCandlesTimeoutStage | null;
+      failure_stage: HistoricalCandlesTimeoutStage | null;
+      received_events: number;
+    }[];
     windows: {
       start: string;
       end: string;
@@ -1260,6 +1269,7 @@ export class TastytradeHistoricalCandlesClient {
       recovered_session_dates: [] as string[],
       failures: [] as HistoricalCandlesFailureReason[],
       stopped_reason: null as string | null,
+      initial_windows: [] as NonNullable<HistoricalCandlesResult["recovery_diagnostics"]>["initial_windows"],
       windows: [] as NonNullable<HistoricalCandlesResult["recovery_diagnostics"]>["windows"],
     }));
     const reserveRecoveryTime = budgets.deadlineMs >= 20 &&
@@ -1271,6 +1281,7 @@ export class TastytradeHistoricalCandlesClient {
       budgets.deadlineMs - (performance.now() - snapshotStartedAt!),
     ));
     let retainedSnapshot: SnapshotReadResult | null = null;
+    let initialInterrupted = false;
     let attempts = 0;
     let resumeIndex = 0;
     let interruptedWindow: RthCalendarPlan["sessions"] | null = null;
@@ -1281,20 +1292,69 @@ export class TastytradeHistoricalCandlesClient {
         const now = this.clock();
         snapshotDeadlineAt ??= now + budgets.deadlineMs;
         snapshotStartedAt ??= performance.now();
-        const snapshot = retainedSnapshot ?? await this.readSnapshot({
-          quoteToken,
-          candleSymbols,
-          startMs,
-          endMs,
-          session,
-          budgets: {
-            ...budgets,
-            deadlineMs: Math.max(1, Math.min(deadlineRemaining(),
-              reserveRecoveryTime ? Math.floor(budgets.deadlineMs * 0.75) : budgets.deadlineMs)),
-          },
-          signal: input.signal,
-          rthDaily: calendarDailyRequest,
-        });
+        if (initialInterrupted && retainedSnapshot &&
+            (deadlineRemaining() < 1 ||
+              retainedSnapshot.requestCounters.received_events >= budgets.maxReceivedEvents ||
+              retainedSnapshot.requestCounters.retained_bytes >= budgets.maxBufferBytes)) {
+          for (const [index, state] of [...retainedSnapshot.symbolStates.values()].entries()) {
+            if (state.providerComplete || state.providerSnipped || state.localFailureReason) continue;
+            recoveryDiagnostics[index].failures.push("AUTH_FAILED");
+            recoveryDiagnostics[index].stopped_reason = "SHARED_RESOURCE_BUDGET_EXHAUSTED";
+          }
+          return retainedSnapshot;
+        }
+        let snapshot = retainedSnapshot;
+        if (!snapshot || initialInterrupted) {
+          const reconnecting = initialInterrupted;
+          const previousEvents = new Map(
+            [...(snapshot?.symbolStates.values() ?? [])]
+              .map((state) => [state.candleSymbol, state.counters.received_events]),
+          );
+          let authenticationError: SnapshotAuthenticationError | null = null;
+          try {
+            const remainingInitialTime = Math.min(deadlineRemaining(),
+              reserveRecoveryTime ? Math.floor(budgets.deadlineMs * 0.75) : budgets.deadlineMs);
+            snapshot = await this.readSnapshot({
+              quoteToken, candleSymbols, startMs, endMs, session,
+              budgets: {
+                ...budgets,
+                deadlineMs: calendarDailyRequest ? remainingInitialTime : Math.max(1, remainingInitialTime),
+              },
+              signal: input.signal,
+              rthDaily: calendarDailyRequest,
+              preserveFailureSnapshot: calendarDailyRequest,
+              ...(reconnecting ? { retainedSnapshot: snapshot! } : {}),
+            });
+          } catch (error) {
+            assertNotAborted(input.signal);
+            if (error instanceof SnapshotAuthenticationError) {
+              snapshot = error.snapshot;
+              authenticationError = error;
+            } else if (error instanceof SnapshotReadError) {
+              snapshot = error.snapshot;
+            } else {
+              throw error;
+            }
+          }
+          retainedSnapshot = snapshot;
+          if (authenticationError || reconnecting) {
+            for (const [index, state] of [...snapshot.symbolStates.values()].entries()) {
+              if (reconnecting && (state.providerComplete || state.providerSnipped || state.localFailureReason) &&
+                  state.counters.received_events === previousEvents.get(state.candleSymbol)) continue;
+              recoveryDiagnostics[index].initial_windows.push({
+                start, end, provider_snapshot_complete: state.providerComplete,
+                failure_reason: state.localFailureReason ?? (state.providerSnipped ? "PROVIDER_SNAPSHOT_SNIPPED" : null) ??
+                  (state.providerComplete ? null : snapshot.requestFailureReason),
+                timeout_stage: snapshot.timeoutStage,
+                failure_stage: state.providerComplete ? null
+                  : authenticationError ? "AUTHENTICATING" : snapshot.timeoutStage,
+                received_events: state.counters.received_events - (previousEvents.get(state.candleSymbol) ?? 0),
+              });
+            }
+          }
+          initialInterrupted = authenticationError !== null;
+          if (authenticationError) throw authenticationError;
+        }
         retainedSnapshot = snapshot;
         for (const [index, plan] of calendarPlans.entries()) {
           if (index < resumeIndex) continue;
@@ -1432,12 +1492,18 @@ export class TastytradeHistoricalCandlesClient {
       input.signal,
     ).catch((error: unknown): DxlinkAuthRecoveryResult<SnapshotReadResult> => {
       assertNotAborted(input.signal);
-      if (!(error instanceof DxlinkAuthFailedError) || !retainedSnapshot || !interruptedWindow) {
+      if (!(error instanceof DxlinkAuthFailedError) || !retainedSnapshot ||
+          (!interruptedWindow && !initialInterrupted)) {
         throw error;
       }
-      const diagnostic = recoveryDiagnostics[resumeIndex];
-      diagnostic.failures.push("AUTH_FAILED");
-      diagnostic.stopped_reason = "AUTH_FAILED_PRESERVED_COMMITTED_BARS";
+      const failedIndices = initialInterrupted
+        ? [...retainedSnapshot.symbolStates.values()].flatMap((state, index) =>
+            state.providerComplete || state.providerSnipped || state.localFailureReason ? [] : [index])
+        : [resumeIndex];
+      for (const index of failedIndices) {
+        recoveryDiagnostics[index].failures.push("AUTH_FAILED");
+        recoveryDiagnostics[index].stopped_reason = "AUTH_FAILED_PRESERVED_COMMITTED_BARS";
+      }
       return {
         value: retainedSnapshot,
         dxlinkAuth: error.dxlinkAuth,
@@ -1758,10 +1824,11 @@ export class TastytradeHistoricalCandlesClient {
     rthDaily?: boolean;
     excludedTimestamps?: Set<number>;
     preserveFailureSnapshot?: boolean;
+    retainedSnapshot?: SnapshotReadResult;
   }): Promise<SnapshotReadResult> {
     assertNotAborted(input.signal);
     return new Promise((resolve, reject) => {
-      const symbolStates = new Map<string, SnapshotSymbolState>(
+      const symbolStates = input.retainedSnapshot?.symbolStates ?? new Map<string, SnapshotSymbolState>(
         input.candleSymbols.map((candleSymbol) => [
           candleSymbol,
           {
@@ -1792,23 +1859,43 @@ export class TastytradeHistoricalCandlesClient {
           },
         ]),
       );
+      const protectedData = new Map((input.retainedSnapshot ? [...symbolStates.values()] : []).map((state) => [
+        state.candleSymbol, {
+          candles: new Map(state.candlesByIndex),
+          indices: new Set(state.seenIndices),
+          unique: state.counters.unique_observations,
+          rows: state.counters.retained_rows,
+        },
+      ]));
+      if (input.retainedSnapshot) {
+        for (const state of symbolStates.values()) {
+          // Uncommitted transactions cannot cross sockets; their memory stays charged.
+          state.pendingTransactionEvents = [];
+          state.snapshotDataBytes = 0;
+        }
+      }
       const symbolStatesByCanonical = new Map(
         [...symbolStates.values()].map((state) => [
           state.canonicalSymbol,
           state,
         ]),
       );
-      const unmatchedSymbols = new Map<string, number>();
-      const requestCounters = {
+      const unmatchedSymbols = new Map<string, number>(
+        input.retainedSnapshot?.unmatchedSymbols.map((symbol) => [symbol, 0]),
+      );
+      const requestCounters = input.retainedSnapshot?.requestCounters ?? {
         ...emptyResourceCounters(),
         unmatched_received_events: 0,
         unmatched_symbol_count: 0,
         peak_buffer_bytes: 0,
       };
-      const activeSymbols = new Set(input.candleSymbols);
+      const activeSymbols = new Set(input.candleSymbols.filter((symbol) =>
+        !symbolStates.get(symbol)!.providerComplete &&
+        !symbolStates.get(symbol)!.providerSnipped &&
+        !symbolStates.get(symbol)!.localFailureReason));
       let subscribed = false;
       let settled = false;
-      let retainedBytes = 0;
+      let retainedBytes = requestCounters.retained_bytes;
       let pendingMessageBytes = 0;
       let keepalive: ReturnType<typeof setInterval> | null = null;
       let deadline: ReturnType<typeof setTimeout> | null = null;
@@ -1953,6 +2040,7 @@ export class TastytradeHistoricalCandlesClient {
         state: SnapshotSymbolState,
         index: string,
       ) => {
+        if (input.retainedSnapshot && protectedData.get(state.candleSymbol)!.candles.has(index)) return;
         const retained = state.candlesByIndex.get(index);
         if (!retained) return;
         state.pipeline.removed_indices += 1;
@@ -1966,16 +2054,21 @@ export class TastytradeHistoricalCandlesClient {
       };
       const resetSnapshotData = (state: SnapshotSymbolState) => {
         state.pipeline.snapshot_resets += 1;
+        const protectedState = input.retainedSnapshot ? protectedData.get(state.candleSymbol)! : null;
+        const removedUnique = state.counters.unique_observations - (protectedState?.unique ?? 0);
+        const removedRows = state.counters.retained_rows - (protectedState?.rows ?? 0);
         requestCounters.unique_observations -=
-          state.counters.unique_observations;
-        requestCounters.retained_rows -= state.counters.retained_rows;
+          removedUnique;
+        requestCounters.retained_rows -= removedRows;
         requestCounters.retained_bytes -= state.snapshotDataBytes;
         state.counters.retained_bytes -= state.snapshotDataBytes;
         retainedBytes -= state.snapshotDataBytes;
         state.candlesByIndex.clear();
         state.seenIndices.clear();
-        state.counters.unique_observations = 0;
-        state.counters.retained_rows = 0;
+        for (const [key, value] of protectedState?.candles ?? []) state.candlesByIndex.set(key, value);
+        for (const key of protectedState?.indices ?? []) state.seenIndices.add(key);
+        state.counters.unique_observations = protectedState?.unique ?? 0;
+        state.counters.retained_rows = protectedState?.rows ?? 0;
         state.counters.returned_rows = 0;
         state.snapshotDataBytes = 0;
         state.providerComplete = false;
@@ -1994,6 +2087,19 @@ export class TastytradeHistoricalCandlesClient {
           return;
         }
         if (input.excludedTimestamps?.has(candle.timestamp)) return;
+        if (input.retainedSnapshot) {
+          const protectedCandles = protectedData.get(state.candleSymbol)!.candles;
+          const earlier = protectedCandles.get(candle.index);
+          const sameTimestamp = [...protectedCandles.values()].find(
+            (value) => value.candle.timestamp === candle.timestamp,
+          );
+          if ((earlier && earlier.candle.timestamp !== candle.timestamp) ||
+              (sameTimestamp && sameTimestamp.candle.index !== candle.index)) {
+            state.localFailureReason = "PROVIDER_SCHEMA_MISMATCH";
+            return;
+          }
+          if (earlier) return;
+        }
         const existing = state.candlesByIndex.get(candle.index);
         if (existing) state.pipeline.replaced_indices += 1;
         if (
@@ -2277,7 +2383,7 @@ export class TastytradeHistoricalCandlesClient {
             type: "FEED_SUBSCRIPTION",
             channel: 3,
             reset: true,
-            add: input.candleSymbols.map((symbol) => ({
+            add: [...activeSymbols].map((symbol) => ({
               type: "Candle",
               symbol,
               // Production DXLink expects milliseconds despite the
