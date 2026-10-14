@@ -249,12 +249,28 @@ The +450 is not all labelled avoidable slippage. Generated attempt/entry IDs
 are synthetic, not incident evidence. For October 12, no synthetic IDs or
 root-cause explanations are created; missing eligible evidence is a definite gap.
 
-**Outstanding operational acceptance:** authorized retrieval of the real eligible
-October 12 and 13 Traditional IRA histories, all unsuccessful attempts and their
-actual IDs, full pagination/entitlement validation, actual transaction/fee
-reconciliation and original OO log correlation. No credentials or broker network
-acquisition were authorized or performed during implementation. Fixture success
-does not close or satisfy that live-acquisition criterion; issue #102 stays open.
+**Completed authorized broker acquisition:** the real October 12 and 13 ET
+Traditional IRA queries enumerated 59 eligible orders and 76 transactions,
+including unsuccessful closing attempts, with complete provider-result pagination
+and no normalization gaps. This establishes access and enumeration for those
+queries, not exhaustive retained history or intermediate lifecycle events.
+Observed execution and available fee arithmetic are not proof of final fees,
+complete settlement or strategy/campaign lifetime evidence.
+
+**Outstanding original-source acceptance:** original OO precise event clocks,
+October 12 individual failure-episode identification, and complete final fee,
+settlement and campaign evidence remain unestablished. The original authenticated
+October 13 Activity Log panel displayed no events with debug both off and on;
+captured OO summaries provide minute-level times, not event logs or verified
+precise source clocks. An empty displayed panel does not prove backend logs are
+absent. The October 12 historical strategy label differs from the current linked
+labels; no rename or configuration continuity is inferred.
+
+Full issue acceptance remains false and issue #102 stays open. Fixtures and the
+example payload remain explicitly synthetic; neither fixture success nor
+completed broker enumeration substitutes for the missing original-source evidence.
+`QUOTE_EVIDENCE_UNAVAILABLE` remains an allowed, explicit limitation, not evidence
+of marketability, blame or avoidable slippage.
 
 ## Official API sources
 

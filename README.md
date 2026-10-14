@@ -42,8 +42,12 @@ account identifiers, and expose only broker GET requests. They do not use the
 recent/live order snapshot. See [broker history and OO audit](docs/broker-history-audit.md)
 for window semantics, privacy, completeness, quote limitations, and a
 [synthetic FinPilot input](docs/examples/oo-broker-audit-synthetic.json).
-Engineering fixtures are not live acceptance evidence: issue #102 remains open
-pending authorized acquisition of the actual October 12–13 broker history.
+Engineering fixtures remain explicitly synthetic, not live acceptance evidence.
+Authorized October 12–13 ET broker queries enumerated 59 orders and 76 transactions
+with complete provider-result pagination, not exhaustive lifecycle-event history.
+Issue #102 remains open; full acceptance is outstanding on original OO precise
+clocks and October 12 episode identification, plus complete final fee, settlement
+and campaign evidence.
 
 ### Research and regression tools
 
