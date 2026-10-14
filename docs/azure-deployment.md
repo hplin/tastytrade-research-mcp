@@ -22,16 +22,17 @@ tastytrade OAuth credentials in Azure Key Vault-backed Container App secrets.
 - Health URL:
   `https://tastytrade-research-mcp.victoriousfield-047d2c99.westus2.azurecontainerapps.io/healthz`
 - Production revision:
-  `tastytrade-research-mcp--main-6670bb2`
+  `tastytrade-research-mcp--main-6568af57075e`
 - ACR image:
-  `hplintradingmcp.azurecr.io/tastytrade-research-mcp:main-6670bb2`
+  `hplintradingmcp.azurecr.io/tastytrade-research-mcp:main-6568af57075e`
 - Image digest:
-  `sha256:f57ef75719b6d0b5ead86f6165a9d768773458f3ebb9974b06a405ecd3275cc8`
+  `sha256:86ac32192f3034d6fc5716ee7394f58e03a7267022e0856e9416a4f310fc6527`
+- The deployed image reference is pinned to this digest rather than the mutable tag.
 - Source commit:
-  `6670bb2211d6a1c0486088d1e457a60544450b82`
+  `6568af57075e52f1fcceb2e53def54ba9b5ad469`
 - Managed identity: `mi-tastytrade-research-mcp`
 - Rollback revision:
-  `tastytrade-research-mcp--main-5eafdca`
+  `tastytrade-research-mcp--main-6670bb2`
 
 Production OAuth uses Entra resource application
 `f6c77904-5bf9-46cf-96f9-be5f2e841054` and delegated scope
@@ -166,19 +167,17 @@ provider domain. HTTP 429 responses can extend the shared cooldown through
 so a restarted replica does not immediately retry deferred checkpoints.
 
 For emergency rollback, move 100% traffic to the still-active revision
-`tastytrade-research-mcp--main-5eafdca`. That revision contains the Level 2
-unified snapshot, bounded DXLink batching, and Level 3 heuristic signed-GEX
-research, but predates the expiry-aware shared DXLink authentication lifecycle
-and one-reconnect `UNAUTHORIZED` recovery. It retains the same Entra OAuth,
-Key Vault-backed tastytrade configuration, persistent Azure Files mount, and
-process-wide Backtester request gate.
+`tastytrade-research-mcp--main-6670bb2`. This is the previous production
+revision, including the shared DXLink authentication lifecycle. It retains
+the same Entra OAuth, Key Vault-backed tastytrade configuration, persistent
+Azure Files mount, and process-wide Backtester request gate.
 
 After deployment, verify:
 
 1. `/healthz` returns HTTP 200.
 2. The protected-resource metadata names Entra and the `mcp.read` scope.
 3. `/mcp` without a bearer token returns HTTP 401 with `resource_metadata`.
-4. A real Entra token connects, lists all 24 tools, and can call a local-only
+4. A real Entra token connects, lists all 27 tools, and can call a local-only
    tool such as `tastytrade_price_option_package`.
 5. A live provider smoke test can call
    `tastytrade_get_historical_spx_candidate_universe` and verify bounded
@@ -214,7 +213,45 @@ After deployment, verify:
     bounds gamma-flip search to the caller's range, and remains
     `RESEARCH_ONLY` with `production_gate_eligible=false`.
 
-## Current DXLink authentication-lifecycle deployment verification
+## Historical broker/audit deployment verification
+
+Revision `tastytrade-research-mcp--main-6568af57075e` was deployed and verified
+on 2026-10-14 UTC:
+
+- ACR build run `cc16` built source
+  `6568af57075e52f1fcceb2e53def54ba9b5ad469` and produced the production digest
+  recorded above. The build context contained only 41 tracked Docker inputs,
+  each verified against that source's Git blob; no local `.env`, private broker
+  evidence, original OO logs, or session artifacts were uploaded.
+- The existing app was updated only with the digest-pinned image and revision
+  suffix. Entra OAuth, managed identity, Key Vault references, container
+  resources, one-replica scale, persistent Azure Files cache volume, `BYPASS`
+  default, and 100 ms Backtester request gate were preserved.
+- The new revision was `Healthy` and `Provisioned`, with one replica, before
+  promotion. Revision-specific and production endpoints both returned public
+  HTTP 200 health, expected RFC 9728 metadata, and HTTP 401 with
+  `resource_metadata` for anonymous MCP requests.
+- Real delegated Entra `mcp.read` tokens initialized MCP, listed the exact
+  27-tool source catalog, and called the local-only package-pricing tool with
+  synthetic inputs, returning a natural credit of `1`. The catalog includes
+  `tastytrade_get_historical_orders`,
+  `tastytrade_get_historical_transactions`, and
+  `tastytrade_audit_oo_broker_orders`.
+- Production traffic is 100% on the new revision; `main-6670bb2` remains
+  healthy and active at 0% for rollback. The older `main-5eafdca` revision
+  was left unchanged at 0%.
+
+These deployment checks made no broker or market-data provider calls and did
+not rotate credentials. They do not establish provider credential freshness
+or repeat the live research checks listed above.
+
+The existing lockfile also reports one production `HIGH` advisory,
+`GHSA-6qxp-vccf-f47h`, concerning the MCP SDK OAuth client accepting an
+authorization server selected by an MCP server. Dependencies were not changed
+as part of this deployment; the warning is not a completed security review or
+a claim that this server deployment is exploitable.
+
+## Historical DXLink authentication-lifecycle deployment verification
 
 Revision `tastytrade-research-mcp--main-6670bb2` was verified on 2026-09-30
 with:
