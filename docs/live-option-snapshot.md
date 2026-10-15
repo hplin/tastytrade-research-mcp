@@ -347,13 +347,111 @@ Jest additionally covers native-time absence, skew, stale IV, crossed quotes,
 partial Greeks/flags, metadata mismatches, session/DST anomalies and thresholds.
 They are **not real-provider validation**.
 
-Real live validation is **BLOCKED: no operational authorization or provider
-session used for #99 implementation**. No credentials, entitlements, broker
-mutations, provider acquisitions, deployments or services were accessed.
+The initial implementation used no operational provider session. A later,
+explicitly owner-authorized, read-only capture is recorded below; it does not
+turn the synthetic fixtures into provider observations.
 The pre-existing live Gamma/OI probe remains separately opt-in; it can accept
 `TASTYTRADE_LIVE_OPTION_EXACT_PACKAGE_JSON` containing the full explicit policy
 and reports `exact_package_quality_outcome` independently from its legacy
 Gamma/OI outcome. This documentation does not authorize running it.
+
+### Dated, bounded actual-provider cohort (#99)
+
+The owner subsequently authorized at most three read-only snapshots using
+existing credentials, with **120,000 ms aggregate wall time** including
+authentication, canonical chain discovery and cleanup. The single run began
+`2026-10-15T03:13:07.071Z` and settled at `2026-10-15T03:13:11.198Z`
+(4,127 ms). All three requests were consumed, including their successful
+transport but unsuccessful strict quality outcomes. No further capture is
+authorized by that exhausted budget.
+
+The exchange-session check was at `2026-10-15T03:13:07.005Z`: Wednesday
+October 14, 23:13 EDT, calendar date **2026-10-14** in New York; the
+cross-midnight GTH trade date was **2026-10-15**. The explicit policy session
+was October 14, 20:15 EDT through October 15, 09:25 EDT
+(`2026-10-15T00:15:00Z`–`2026-10-15T13:25:00Z`), using
+[Cboe SPX specifications](https://www.cboe.com/en/tradable-products/sp-500/spx-options/spx-specifications/)
+and the [official hours/holiday schedule](https://www.cboe.com/en/about/hours/us-options/).
+Exchange hours alone do not prove a Tastytrade entitlement. Actual DXLink
+authentication was confirmed and all requested event categories arrived in
+this cohort; broader GTH coverage or entitlement is not inferred.
+
+Canonical listed SPXW, PM, multiplier-100 contracts formed a same-strike
+two-expiry Call calendar, a 1:2:1 unequal-wing three-Call diagnostic package,
+and a four-leg Put/Call diagnostic package. These identities were selected
+for data diagnostics, not recommendations. The median common listed strike
+was a **selection reference only**, not observed current spot; no
+spot-dependent Gamma-concentration result is claimed.
+
+| Diagnostic package | Legs | Event subscriptions received/requested | Strict result | Native-time skew | Oldest native age | Receive skew |
+| --- | ---: | ---: | --- | ---: | ---: | ---: |
+| Cross-expiry calendar | 2 | 6/6 | NOT_READY | 43,587 ms | 90,571 ms | 2 ms |
+| Unequal-wing Calls | 3 | 9/9 | NOT_READY | 43,587 ms | 91,687 ms | 2 ms |
+| Four-leg Put/Call package | 4 | 12/12 | NOT_READY | 0 ms | 92,711 ms | 1 ms |
+
+Denominators: three packages, nine leg appearances, seven distinct contracts,
+27 requested/received Quote/Greeks/Summary events. Each request completed one
+transport batch with no partial, timed-out or failed batch. All nine leg
+appearances had positive sizes, OI, Greek/IV values and Greek flags `0`.
+However:
+
+- Quote `bidTime` and `askTime` were **zero in all 9/9 appearances**;
+  normalized native quote timestamps remained null/UNKNOWN. Local receipt
+  never became native quote time.
+- Summary `eventTime` was **zero in all 9/9 appearances**; OI was available,
+  but its native original time remained unknown.
+- Greek event times existed in 9/9 appearances, but were stale against the
+  explicit 5,000 ms Greek/IV age limits. A Greek event time is not a known
+  calculation timestamp; calculation time remained null/UNKNOWN.
+- Option volume was unavailable in this requested Quote/Greeks/Summary
+  contract (9/9 null/UNKNOWN); it was not fabricated or fetched elsewhere.
+- Quote/Greek skew could not be proven without native quote times.
+  The calendar and unequal-wing packages also exceeded the explicit
+  1,000 ms cross-leg limit. The four-leg package's zero Greek-time skew
+  did **not** establish fresh quotes or overall synchronization.
+
+All three results had `transport_complete=true`, `content_complete=false`,
+`ABSENT_QUOTE_TIME`, `STALE_GREEKS` and `STALE_IV`. The first two additionally
+had `CROSS_LEG_SKEW`. Quote age, native Quote/Greek skew and full
+synchronization remain unproven; **0/3 strict READY**, not an acceptance pass
+for synchronized live packages. The policy was not weakened: quote/Greek/IV
+age limits stayed 5,000 ms, quote/Greek, cross-leg and receive skew limits
+stayed 1,000 ms, quote size and OI were required, volume was explicitly not
+required. No core session semantics were changed to fit GTH.
+
+The first actual sanitized observations, exact identities, negotiated field
+layouts, zero native times, flags and source-lineage/hash manifest are kept
+in the owner's private session artifacts (`capture-99-observed/`). No public
+market-data redistribution authority was verified. **No observed prices,
+Greeks, OI or raw observation fixtures are committed.** This measurement
+summary is not a grant of redistribution rights.
+
+`scripts/capture-live-option-quality.mjs` is a dated, explicit-authorization
+harness, not a general recurring probe. It persists the start/counter before
+outbound activity/each snapshot, refuses consumed or uncertain budgets,
+shares an abort signal and remaining-time HTTP timeout, and has a
+child-process termination watchdog. Three created sockets closed and the
+capture child exited; no helper remains. It performs no account, position,
+order, purchase, deployment or activation operations.
+
+Offline reproduction requires access to the private manifest:
+
+```bash
+node scripts/replay-live-option-quality.mjs /private/path/capture-99-observed/manifest.json
+TASTYTRADE_CAPTURE_REPLAY_MANIFEST=/private/path/capture-99-observed/manifest.json \
+  npm test -- --runTestsByPath test/live-option-observed-replay.test.js test/live-option-capture.test.js
+```
+
+The replay verifies observation hashes, decodes actual negotiated layouts
+and flags, checks native-time absence separately from local receipt, and
+reproduces the actual client's strict outcomes offline. For each package it
+also **derives** a negative by removing one canonical chain leg: missing-leg
+content rejection is checked despite complete transport for remaining
+subscriptions. This omission was **not observed live**. It is labeled
+derived, not another capture. Without the private manifest, the observed
+Jest test explicitly skips; it never substitutes synthetic “live” evidence
+or falls back to network access. Existing synthetic synchronized-positive
+tests remain separately identified.
 
 Official public references audited for field semantics (not account entitlement):
 
