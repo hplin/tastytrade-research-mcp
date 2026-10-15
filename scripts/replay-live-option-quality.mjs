@@ -9,8 +9,14 @@ const jsonEqual = (left, right) => isDeepStrictEqual(
   JSON.parse(JSON.stringify(left)), JSON.parse(JSON.stringify(right)),
 );
 
+function parsePrivateJson(text) {
+  try { return JSON.parse(text); }
+  catch { throw new Error("Invalid private replay JSON (market values suppressed)."); }
+}
+
 export async function replayObservedFixture(fixture, { derivedMissingLeg = false } = {}) {
-  assert.equal(fixture.evidence_kind, "SANITIZED_ACTUAL_LIVE_OBSERVATION");
+  assert.ok(fixture.evidence_kind === "SANITIZED_ACTUAL_LIVE_OBSERVATION",
+    "Invalid observed evidence kind (market values suppressed).");
   const omitted = derivedMissingLeg ? fixture.request.exact_package.legs.at(-1).provider_symbol : null;
   const chain = structuredClone(fixture.chain);
   for (const item of chain.data.items) for (const expiry of item.expirations) {
@@ -34,11 +40,16 @@ export async function replayObservedFixture(fixture, { derivedMissingLeg = false
   }
   for (const contract of fixture.contracts) {
     const state = states.get(contract.streamer_symbol);
-    assert.equal(state.quote?.bidTimeMs ?? null, contract.quote?.bid_time ? Date.parse(contract.quote.bid_time) : null);
-    assert.equal(state.quote?.askTimeMs ?? null, contract.quote?.ask_time ? Date.parse(contract.quote.ask_time) : null);
-    assert.equal(state.greeks?.eventFlags ?? null, contract.greeks?.event_flags ?? null);
-    assert.equal(state.greeks?.timeMs ?? null, contract.greeks?.provider_event_timestamp ? Date.parse(contract.greeks.provider_event_timestamp) : null);
-    assert.equal(state.summary?.eventTimeMs ?? null, contract.summary?.provider_event_timestamp ? Date.parse(contract.summary.provider_event_timestamp) : null);
+    assert.ok((state.quote?.bidTimeMs ?? null) === (contract.quote?.bid_time ? Date.parse(contract.quote.bid_time) : null),
+      "Observed native quote time replay mismatch (market values suppressed).");
+    assert.ok((state.quote?.askTimeMs ?? null) === (contract.quote?.ask_time ? Date.parse(contract.quote.ask_time) : null),
+      "Observed native quote time replay mismatch (market values suppressed).");
+    assert.ok((state.greeks?.eventFlags ?? null) === (contract.greeks?.event_flags ?? null),
+      "Observed Greek flags replay mismatch (market values suppressed).");
+    assert.ok((state.greeks?.timeMs ?? null) === (contract.greeks?.provider_event_timestamp ? Date.parse(contract.greeks.provider_event_timestamp) : null),
+      "Observed native Greek time replay mismatch (market values suppressed).");
+    assert.ok((state.summary?.eventTimeMs ?? null) === (contract.summary?.provider_event_timestamp ? Date.parse(contract.summary.provider_event_timestamp) : null),
+      "Observed native Summary time replay mismatch (market values suppressed).");
   }
   const sockets = [];
   class ReplaySocket {
@@ -119,7 +130,7 @@ export async function replayObservedFixture(fixture, { derivedMissingLeg = false
     for (const contract of result.contracts) {
       const observed = fixture.contracts.find((item) => item.provider_symbol === contract.provider_symbol);
       for (const [key, value] of Object.entries(observed)) {
-        assert.ok(jsonEqual(contract[key], value), `Observed contract ${key} replay mismatch (market values suppressed).`);
+        assert.ok(jsonEqual(contract[key], value), "Observed contract replay mismatch (market values suppressed).");
       }
     }
   }
@@ -127,16 +138,18 @@ export async function replayObservedFixture(fixture, { derivedMissingLeg = false
 }
 
 export async function replayManifest(path) {
-  const manifest = JSON.parse(readFileSync(path, "utf8"));
-  assert.equal(manifest.evidence_kind, "PRIVATE_SANITIZED_LIVE_CAPTURE_MANIFEST");
+  const manifest = parsePrivateJson(readFileSync(path, "utf8"));
+  assert.ok(manifest.evidence_kind === "PRIVATE_SANITIZED_LIVE_CAPTURE_MANIFEST",
+    "Invalid private manifest evidence kind (market values suppressed).");
   const outcomes = [];
   for (const entry of manifest.fixtures) {
     const text = readFileSync(entry.path, "utf8");
-    assert.equal(hash(text), entry.sha256);
-    const fixture = JSON.parse(text);
+    assert.ok(hash(text) === entry.sha256, "Observed fixture hash mismatch (market values suppressed).");
+    const fixture = parsePrivateJson(text);
     const frameText = readFileSync(entry.frames_path, "utf8");
-    assert.equal(hash(frameText), entry.frames_sha256);
-    assert.deepEqual(JSON.parse(frameText).frames, fixture.frames);
+    assert.ok(hash(frameText) === entry.frames_sha256, "Observed frame hash mismatch (market values suppressed).");
+    assert.ok(jsonEqual(parsePrivateJson(frameText).frames, fixture.frames),
+      "Observed frame replay mismatch (market values suppressed).");
     const observed = await replayObservedFixture(fixture);
     const missing = await replayObservedFixture(fixture, { derivedMissingLeg: true });
     outcomes.push({

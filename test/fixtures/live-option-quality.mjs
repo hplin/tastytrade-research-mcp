@@ -31,6 +31,7 @@ export function mockLiveOptionPackage({
   omitFields = {},
   missingEventLeg = false,
   root = "SPXW",
+  dispatchFeedConfig = (message, socket) => socket.emit(message),
   dispatchFeedData = (message, socket) => socket.emit(message),
   clientOptions = {},
 } = {}) {
@@ -101,7 +102,7 @@ export function mockLiveOptionPackage({
           this.fields = Object.fromEntries(Object.entries(frame.acceptEventFields).map(([type, fields]) => [
             type, (reorderFields ? [...fields].reverse() : fields).filter((field) => !omitFields[type]?.includes(field)),
           ]));
-          this.emit({ type: "FEED_CONFIG", channel: 3, eventFields: this.fields });
+          dispatchFeedConfig({ type: "FEED_CONFIG", channel: 3, eventFields: this.fields }, this, sockets.indexOf(this));
         } else if (frame.type === "FEED_SUBSCRIPTION" && frame.add) {
           const data = [];
           for (const { type, symbol } of frame.add) {

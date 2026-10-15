@@ -28,6 +28,131 @@ function greekFlagFrame(message, socket, flags) {
 }
 
 describe("fixture/mock exact-package DXLink integration (not live provider validation)", () => {
+  test.each([false, true])("stale Greeks cannot become READY with a swapped time/index layout (late=%s)", async (late) => {
+    const { result, frames, sockets } = await snapshot({
+      reorderFields: false,
+      mutateEvent: (event) => { event.time = NOW - 9000; event.index = NOW; },
+      dispatchFeedConfig: (message, socket) => {
+        const fields = socket.fields.Greeks;
+        const time = fields.indexOf("time"), index = fields.indexOf("index");
+        [fields[time], fields[index]] = [fields[index], fields[time]];
+        socket.emit({ ...message, eventFields: late ? {} : socket.fields });
+      },
+      dispatchFeedData: (message, socket) => {
+        if (late) socket.emit({ type: "FEED_CONFIG", channel: 3, eventFields: { Greeks: socket.fields.Greeks } });
+        socket.emit(message);
+      },
+    });
+    expect(result.exact_package_quality.status).toBe("NOT_READY");
+    expect(result.exact_package_quality.reasons).toEqual(expect.arrayContaining([
+      "STALE_GREEKS", "STALE_IV", "QUOTE_GREEK_SKEW", "CROSS_LEG_SKEW",
+    ]));
+    expect(result.contracts.every((contract) =>
+      Date.parse(contract.greeks.provider_event_timestamp) === NOW - 9000)).toBe(true);
+    expect(frames.filter((frame) => frame.type === "FEED_SUBSCRIPTION" && frame.add)).toHaveLength(1);
+    expect(sockets.every((socket) => socket.readyState === 3 && socket.timers.size === 0)).toBe(true);
+  });
+
+  test.each([
+    [{}, "READY", []],
+    [{ Quote: ["bidTime"] }, "NOT_READY", ["ABSENT_QUOTE_TIME"]],
+    [{ Greeks: ["time"] }, "NOT_READY", ["ABSENT_GREEKS_TIME"]],
+    [{ Greeks: ["theta"] }, "NOT_READY", ["PARTIAL_GREEKS"]],
+  ])("late partial layouts preserve other categories and negotiated omissions: %j", async (omissions, status, reasons) => {
+    const { result, frames, sockets } = await snapshot({
+      omitFields: {
+        Quote: ["eventType", ...(omissions.Quote ?? [])],
+        Greeks: ["eventType", ...(omissions.Greeks ?? [])],
+        Summary: ["eventType", "eventTime"],
+      },
+      dispatchFeedConfig: (message, socket) => socket.emit({ ...message, eventFields: {} }),
+      dispatchFeedData: (message, socket) => {
+        socket.emit({ type: "FEED_CONFIG", channel: 3, eventFields: { Quote: ["eventSymbol"] } });
+        for (const type of ["Quote", "Summary", "Greeks"]) {
+          socket.emit({ type: "FEED_CONFIG", channel: 3, eventFields: { [type]: socket.fields[type] } });
+        }
+        socket.emit({ type: "FEED_CONFIG", channel: 3, eventFields: { Unsupported: ["ignored"] } });
+        socket.emit({ type: "FEED_CONFIG", channel: 5, eventFields: { Greeks: [] } });
+        socket.emit({ ...message, data: ["Unsupported", ["ignored"], ...message.data] });
+      },
+    });
+    expect(result.exact_package_quality).toMatchObject({
+      status, transport_complete: true, reasons,
+      order_authorized: false, production_gate_eligible: false, live_permission_backfill: false,
+    });
+    expect(result.contracts.every((contract) =>
+      contract.quote.bid !== null && contract.quote.ask !== null &&
+      contract.summary.open_interest !== null &&
+      contract.summary.provider_event_timestamp === null &&
+      contract.summary.provider_event_timestamp_source === "UNKNOWN")).toBe(true);
+    if (omissions.Quote) expect(result.contracts.every((contract) => contract.quote.bid_time === null)).toBe(true);
+    if (omissions.Greeks?.includes("time")) {
+      expect(result.contracts.every((contract) =>
+        contract.greeks.provider_event_timestamp === null &&
+        contract.greeks.provider_event_timestamp_source === "UNKNOWN")).toBe(true);
+    }
+    if (omissions.Greeks?.includes("theta")) expect(result.contracts.every((contract) => contract.greeks.theta === null)).toBe(true);
+    expect(result.gamma_concentration_proxy.status).toBe(omissions.Greeks?.includes("time") ? "NOT_AVAILABLE" : "COMPLETE");
+    expect(frames.filter((frame) => frame.type === "FEED_SUBSCRIPTION" && frame.add)).toHaveLength(1);
+    expect(frames.filter((frame) => frame.type === "FEED_SUBSCRIPTION" && frame.remove)).toHaveLength(1);
+    expect(sockets.every((socket) => socket.readyState === 3 && socket.timers.size === 0)).toBe(true);
+  });
+
+  test.each([
+    { Greeks: [] }, { Greeks: ["eventSymbol", "time", "time"] },
+    { Greeks: ["eventSymbol", 42] }, { Greeks: ["time", "index"] },
+    { Greeks: "invalid" }, { Quote: [] }, { Summary: ["eventTime", "openInterest"] }, null, [],
+  ])("invalid later layouts fail the actual collector closed: %j", async (eventFields) => {
+    const { result, frames, sockets } = await snapshot({
+      dispatchFeedData: (message, socket) => {
+        socket.emit({ ...message, data: message.data.slice(0, 2) });
+        socket.emit({ type: "FEED_CONFIG", channel: 3, eventFields });
+        socket.emit(message);
+      },
+    });
+    expect(result.exact_package_quality.status).toBe("NOT_READY");
+    expect(result.exact_package_quality.transport_complete).toBe(false);
+    expect(result.transport.failed_batches).toBe(1);
+    expect(result.transport.batches[0].error).toMatch(/negotiated field layout|FEED_CONFIG.eventFields/);
+    expect(frames.filter((frame) => frame.type === "FEED_SUBSCRIPTION" && frame.add)).toHaveLength(1);
+    expect(sockets.every((socket) => socket.readyState === 3 && socket.timers.size === 0)).toBe(true);
+  });
+
+  test("late per-type layouts remain request-bound across chunks and authentication recovery", async () => {
+    let invalidations = 0;
+    const { result, frames, sockets } = await snapshot({
+      legCount: 4,
+      clientOptions: {
+        maxDxlinkSubscriptionFrameBytes: 256, maxConcurrentDxlinkBatches: 1,
+        quoteTokens: {
+          getQuoteToken: async () => ({ token: "fixture-only", url: "wss://tasty-openapi-ws.dxfeed.com/realtime" }),
+          invalidateQuoteToken: () => { invalidations += 1; },
+        },
+      },
+      dispatchFeedConfig: (message, socket, attempt) => {
+        if (attempt === 0 && socket.fields.Greeks) {
+          socket.fields.Greeks = socket.fields.Greeks.filter((field) => field !== "time");
+        }
+        socket.emit({ ...message, eventFields: {} });
+      },
+      dispatchFeedData: (message, socket, attempt) => {
+        for (const [type, fields] of Object.entries(socket.fields)) {
+          socket.emit({ type: "FEED_CONFIG", channel: 3, eventFields: { [type]: fields } });
+        }
+        socket.emit(greekFlagFrame(message, socket, attempt === 0 ? [4 | 1, 2 | 1] : [0]));
+        if (attempt === 0) socket.emit({ type: "AUTH_STATE", state: "UNAUTHORIZED" });
+      },
+    });
+    expect(invalidations).toBe(1);
+    expect(result.dxlink_auth.retry_count).toBe(1);
+    expect(result.transport.batch_count).toBeGreaterThan(1);
+    expect(result.exact_package_quality).toMatchObject({
+      status: "READY", transport_complete: true, content_complete: true, reasons: [],
+    });
+    expect(frames.filter((frame) => frame.type === "FEED_SUBSCRIPTION" && frame.add)).toHaveLength(sockets.length);
+    expect(sockets.every((socket) => socket.readyState === 3 && socket.timers.size === 0)).toBe(true);
+  });
+
   test.each([
     [4, 2, 0], [4, 2, null, 0], [4, 8 | 1, 2 | 1, null],
     [4, 16 | 1, 2 | 1, null],

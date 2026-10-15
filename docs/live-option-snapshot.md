@@ -294,6 +294,13 @@ The collector waits for both pending states to finish, or the existing bounded
 request deadline, including across subscription chunks. Authentication retry
 clears both states together with all observations.
 
+Every channel-3 `FEED_CONFIG` is validated, including updates after the initial
+subscription. Partial per-type layouts replace only that category's previous
+layout; the other categories are retained, and `FEED_SUBSCRIPTION` is sent once
+per connection. Reordered fields are decoded by name. Valid field omissions
+remain null/UNKNOWN rather than shifting columns. Invalid layouts fail the
+batch explicitly instead of falling back to requested positions.
+
 If every requested event category arrived but Greek completion is still pending
 at the deadline, transport batches remain `COMPLETE` and strict content remains
 incomplete with `PARTIAL_GREEKS`; `SNAPSHOT_DEADLINE_EXCEEDED` records the collection
@@ -346,6 +353,12 @@ cross-expiry 2/4-leg packages, missing chain legs and missing event legs.
 Jest additionally covers native-time absence, skew, stale IV, crossed quotes,
 partial Greeks/flags, metadata mismatches, session/DST anomalies and thresholds.
 They are **not real-provider validation**.
+
+Actual-client regressions also cover an empty initial configuration followed
+by separate reordered/omitted category layouts, retained Quote/Summary layouts,
+one-time subscription, invalid later updates, chunks and authentication reset.
+A synthetic time/index swap with stale Greeks must remain NOT_READY regardless
+of whether negotiation occurs before or after subscription.
 
 The initial implementation used no operational provider session. A later,
 explicitly owner-authorized, read-only capture is recorded below; it does not
@@ -426,6 +439,12 @@ market-data redistribution authority was verified. **No observed prices,
 Greeks, OI or raw observation fixtures are committed.** This measurement
 summary is not a grant of redistribution rights.
 
+Each actual request retained an initially empty configuration and later
+per-category configurations. Those recorded layouts were compatible with the
+requested defaults; their saved normalization and negative outcomes remain
+unchanged. The subsequent offline late-layout fix does not retroactively
+change the captured core revision or constitute a new provider observation.
+
 `scripts/capture-live-option-quality.mjs` is a dated, explicit-authorization
 harness, not a general recurring probe. It persists the start/counter before
 outbound activity/each snapshot, refuses consumed or uncertain budgets,
@@ -452,6 +471,12 @@ derived, not another capture. Without the private manifest, the observed
 Jest test explicitly skips; it never substitutes synthetic “live” evidence
 or falls back to network access. Existing synthetic synchronized-positive
 tests remain separately identified.
+
+Replay frame and native-field mismatches use boolean-only assertions with
+fixed sanitized diagnostics, not raw actual/expected payloads. Invalid private
+JSON is also reported without quoting its source text. In-memory synthetic
+sentinel tests check both error text and inspected error properties; they
+never alter the original observations or publish mismatch values.
 
 Official public references audited for field semantics (not account entitlement):
 

@@ -2951,12 +2951,11 @@ export class TastytradeLiveOptionSnapshotClient {
           });
         } else if (
           message.type === "FEED_CONFIG" &&
-          message.channel === 3 &&
-          !subscribed
+          message.channel === 3
         ) {
           if (message.eventFields !== undefined) {
             const configured = asRecord(message.eventFields, "FEED_CONFIG.eventFields");
-            negotiatedEventFields = {};
+            negotiatedEventFields ??= {};
             for (const type of ["Quote", "Greeks", "Summary"] as const) {
               const fields = configured[type];
               if (fields === undefined) continue;
@@ -2970,8 +2969,10 @@ export class TastytradeLiveOptionSnapshotClient {
               negotiatedEventFields[type] = fields;
             }
           }
-          subscribed = true;
-          send(subscriptionMessage(subscriptions));
+          if (!subscribed) {
+            subscribed = true;
+            send(subscriptionMessage(subscriptions));
+          }
         } else if (
           message.type === "FEED_DATA" &&
           message.channel === 3
