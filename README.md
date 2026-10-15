@@ -99,6 +99,9 @@ migration guidance are documented in
 The external historical-source capability review, explicit no-spend decision,
 and approval gates are documented in
 [`docs/historical-provider-decision.md`](docs/historical-provider-decision.md).
+The pinned offline March–August 2026 exact-leg inventory, blocked coverage
+matrix, and reproducible report command are documented in
+[`docs/historical-coverage-audit.md`](docs/historical-coverage-audit.md).
 The quote-backed exact-leg handoff, signed inventory convention, and
 valuation/simulation/broker separation are documented in
 [`docs/historical-execution-evidence.md`](docs/historical-execution-evidence.md).
