@@ -10,6 +10,10 @@ broker reconciliation.
 The output contract is `1.0.0`; its machine-readable schema is
 [`historical-execution-evidence.schema.json`](historical-execution-evidence.schema.json).
 
+The additive [HistoricalStrategyEvidence V2](historical-strategy-evidence.md)
+tool supports named calendars, diagonals, condors, butterflies, and staged SIC
+entry facts. It does not broaden this V1 schema or change V1 output hashes.
+
 ## Evidence layers
 
 The handoff keeps three layers structurally separate:

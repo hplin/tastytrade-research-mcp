@@ -1,0 +1,199 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/hplin/tastytrade-research-mcp/docs/historical-strategy-evidence.schema.json",
+  "title": "HistoricalStrategyEvidence V2",
+  "type": "object",
+  "required": [
+    "contract_version", "evidence_id", "evidence_type", "status", "strategy",
+    "frozen_selection_id", "selection", "inventory", "quote_policy",
+    "execution_events", "checkpoints", "coverage", "provenance",
+    "broker_fill_verified", "verified_global_maximum_loss_dollars",
+    "loss_certificate", "limitations"
+  ],
+  "properties": {
+    "contract_version": { "const": "2.0.0" },
+    "evidence_id": { "$ref": "#/$defs/contentId" },
+    "evidence_type": { "const": "HISTORICAL_STRATEGY_EVIDENCE" },
+    "status": { "enum": ["AVAILABLE", "PARTIAL", "NOT_AVAILABLE"] },
+    "strategy": {
+      "type": "object",
+      "required": ["strategy_id", "family", "underlying", "root"],
+      "properties": {
+        "strategy_id": { "$ref": "#/$defs/text" },
+        "family": {
+          "enum": ["CDS", "PDS", "PCS", "CCS", "IC", "AIC", "SIC", "RIC", "DD", "DC", "Hybrid", "CALL_CALENDAR", "PUT_CALENDAR", "LIB", "BWB", "SIB"]
+        },
+        "underlying": { "const": "SPX" },
+        "root": { "enum": ["SPX", "SPXW"] }
+      },
+      "additionalProperties": false
+    },
+    "frozen_selection_id": { "$ref": "#/$defs/contentId" },
+    "selection": {
+      "type": "object",
+      "required": ["source_timestamp", "available_at", "retrieved_at", "source", "selected_at", "reference_cost"],
+      "properties": {
+        "source_timestamp": { "$ref": "#/$defs/timestamp" },
+        "available_at": { "$ref": "#/$defs/timestamp" },
+        "retrieved_at": { "$ref": "#/$defs/timestamp" },
+        "selected_at": { "$ref": "#/$defs/timestamp" },
+        "source": { "$ref": "#/$defs/source" },
+        "reference_cost": {
+          "anyOf": [
+            { "$ref": "historical-execution-evidence.schema.json#/$defs/reference" },
+            { "type": "null" }
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "inventory": {
+      "type": "array",
+      "minItems": 2,
+      "maxItems": 4,
+      "items": { "$ref": "#/$defs/inventoryLeg" }
+    },
+    "quote_policy": { "$ref": "historical-execution-evidence.schema.json#/properties/quote_policy" },
+    "execution_events": {
+      "anyOf": [
+        { "type": "array", "maxItems": 10000, "items": { "$ref": "#/$defs/executionEvent" } },
+        { "type": "null" }
+      ]
+    },
+    "checkpoints": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 10000,
+      "items": { "$ref": "#/$defs/checkpoint" }
+    },
+    "coverage": {
+      "type": "object",
+      "required": ["expected_observations", "observed_observations", "missing_observation_times", "executable_quote_observations", "reference_only_observations"],
+      "properties": {
+        "expected_observations": { "type": "integer", "minimum": 1 },
+        "observed_observations": { "type": "integer", "minimum": 0 },
+        "missing_observation_times": { "type": "array", "uniqueItems": true, "items": { "$ref": "#/$defs/timestamp" } },
+        "executable_quote_observations": { "type": "integer", "minimum": 0 },
+        "reference_only_observations": { "type": "integer", "minimum": 0 }
+      },
+      "additionalProperties": false
+    },
+    "provenance": {
+      "type": "object",
+      "required": ["manifest_ids", "normalized_content_ids", "source_and_license_claims_verified", "cache_contents_verified"],
+      "properties": {
+        "manifest_ids": { "type": "array", "uniqueItems": true, "items": { "$ref": "#/$defs/contentId" } },
+        "normalized_content_ids": { "type": "array", "uniqueItems": true, "items": { "$ref": "#/$defs/contentId" } },
+        "source_and_license_claims_verified": { "const": false },
+        "cache_contents_verified": { "const": false }
+      },
+      "additionalProperties": false
+    },
+    "broker_fill_verified": { "const": false },
+    "verified_global_maximum_loss_dollars": { "type": "null" },
+    "loss_certificate": { "type": "null" },
+    "limitations": { "type": "array", "items": { "$ref": "#/$defs/text" } }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "contentId": { "$ref": "historical-execution-evidence.schema.json#/$defs/contentId" },
+    "text": { "$ref": "historical-execution-evidence.schema.json#/$defs/nonEmptyString" },
+    "timestamp": { "$ref": "historical-execution-evidence.schema.json#/$defs/timestamp" },
+    "nullableTimestamp": { "$ref": "historical-execution-evidence.schema.json#/$defs/nullableTimestamp" },
+    "decimal": { "$ref": "historical-execution-evidence.schema.json#/$defs/decimal" },
+    "nullableDecimal": { "$ref": "historical-execution-evidence.schema.json#/$defs/nullableDecimal" },
+    "source": { "$ref": "historical-execution-evidence.schema.json#/$defs/source" },
+    "phase": { "enum": ["ENTRY", "FIRST", "SECOND"] },
+    "symbol": { "type": "string", "minLength": 21, "maxLength": 21 },
+    "inventoryLeg": {
+      "type": "object",
+      "required": ["provider_symbol", "streamer_symbol", "option_side", "strike", "action", "ratio", "inventory_quantity", "expiration", "settlement", "multiplier", "root", "entry_phase"],
+      "properties": {
+        "provider_symbol": { "$ref": "#/$defs/symbol" },
+        "streamer_symbol": { "$ref": "#/$defs/text" },
+        "option_side": { "enum": ["CALL", "PUT"] },
+        "strike": { "$ref": "#/$defs/decimal" },
+        "action": { "enum": ["BUY_TO_OPEN", "SELL_TO_OPEN"] },
+        "ratio": { "type": "integer", "minimum": 1 },
+        "inventory_quantity": { "type": "integer", "not": { "const": 0 } },
+        "expiration": { "$ref": "historical-execution-evidence.schema.json#/$defs/date" },
+        "settlement": { "enum": ["AM", "PM"] },
+        "multiplier": { "const": "100" },
+        "root": { "enum": ["SPX", "SPXW"] },
+        "entry_phase": { "$ref": "#/$defs/phase" }
+      },
+      "additionalProperties": false
+    },
+    "executionEvent": {
+      "type": "object",
+      "required": ["event_id", "execution_id", "phase", "source_timestamp", "available_at", "retrieved_at", "source", "fills", "evidence_class", "broker_fill_verified"],
+      "properties": {
+        "event_id": { "$ref": "#/$defs/contentId" },
+        "execution_id": { "$ref": "#/$defs/text" },
+        "phase": { "$ref": "#/$defs/phase" },
+        "source_timestamp": { "$ref": "#/$defs/timestamp" },
+        "available_at": { "$ref": "#/$defs/timestamp" },
+        "retrieved_at": { "$ref": "#/$defs/timestamp" },
+        "source": { "$ref": "#/$defs/source" },
+        "evidence_class": { "const": "CALLER_SUPPLIED_EXECUTION_FACT" },
+        "broker_fill_verified": { "const": false },
+        "fills": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 4,
+          "items": {
+            "type": "object",
+            "required": ["provider_symbol", "inventory_quantity", "price", "signed_cost_dollars"],
+            "properties": {
+              "provider_symbol": { "$ref": "#/$defs/symbol" },
+              "inventory_quantity": { "type": "integer", "not": { "const": 0 } },
+              "price": { "$ref": "#/$defs/decimal" },
+              "signed_cost_dollars": { "$ref": "#/$defs/decimal" }
+            },
+            "additionalProperties": false
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "checkpoint": {
+      "type": "object",
+      "required": ["checkpoint_id", "observed_at", "evidence_level", "quote_inventory_scope", "quote_evidence", "active_inventory", "actual_entry_cost_dollars", "active_execution_event_ids", "first_entry_at", "second_entry_at", "missing_observation_reason"],
+      "properties": {
+        "checkpoint_id": { "$ref": "#/$defs/contentId" },
+        "observed_at": { "$ref": "#/$defs/timestamp" },
+        "evidence_level": { "enum": ["EXECUTABLE_QUOTE", "REFERENCE_ONLY", "NONE"] },
+        "quote_inventory_scope": { "const": "FROZEN_PLANNED_INVENTORY" },
+        "quote_evidence": {
+          "anyOf": [
+            { "$ref": "historical-execution-evidence.schema.json#/$defs/observation" },
+            { "type": "null" }
+          ]
+        },
+        "active_inventory": {
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 4,
+          "items": {
+            "type": "object",
+            "required": ["provider_symbol", "planned_inventory_quantity", "active_inventory_quantity", "execution_fact_status", "entry_phase"],
+            "properties": {
+              "provider_symbol": { "$ref": "#/$defs/symbol" },
+              "planned_inventory_quantity": { "type": "integer", "not": { "const": 0 } },
+              "active_inventory_quantity": { "type": ["integer", "null"] },
+              "execution_fact_status": { "enum": ["NO_SUPPLIED_FILL", "PARTIAL_FILL", "PLANNED_QUANTITY_FILLED"] },
+              "entry_phase": { "$ref": "#/$defs/phase" }
+            },
+            "additionalProperties": false
+          }
+        },
+        "actual_entry_cost_dollars": { "$ref": "#/$defs/nullableDecimal" },
+        "active_execution_event_ids": { "type": "array", "uniqueItems": true, "items": { "$ref": "#/$defs/contentId" } },
+        "first_entry_at": { "$ref": "#/$defs/nullableTimestamp" },
+        "second_entry_at": { "$ref": "#/$defs/nullableTimestamp" },
+        "missing_observation_reason": { "enum": ["MISSING_OBSERVATION", null] }
+      },
+      "additionalProperties": false
+    }
+  }
+}
