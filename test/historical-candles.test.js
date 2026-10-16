@@ -1,4 +1,5 @@
 import { readFileSync } from "node:fs";
+import { getEventListeners } from "node:events";
 import { describe, expect, jest, test } from "@jest/globals";
 import {
   TastytradeHistoricalCandlesClient,
@@ -66,6 +67,20 @@ function dailyRequest(symbol = "SPY", overrides = {}) {
     deadline_ms: 100, max_output_candles: 100, max_received_events: 1000,
     max_buffer_bytes: 1_000_000, ...overrides,
   };
+}
+
+async function withinWatchdog(promise, milliseconds = 1000) {
+  let timer;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise((_, reject) => {
+        timer = setTimeout(() => reject(new Error("Synthetic request did not settle before watchdog")), milliseconds);
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 const FIELDS_PER_ROW = 17;
@@ -710,6 +725,260 @@ describe("calendar-verified RTH daily coverage (synthetic, not live)", () => {
     expect(sockets).toHaveLength(3);
   });
 
+  test.each(["initial", "recovery"].flatMap((stage) =>
+    ["late resolve", "late reject", "cooperative abort"].map((completion) => [stage, completion]),
+  ))("%s pending refresh settles before gate release (%s), preserving rows, peers and ledgers", async (stage, completion) => {
+    const dates = dailyFixture.expected_session_dates;
+    const missing = dailyFixture.omissions.SPX;
+    const initial = stage === "initial";
+    const controller = new AbortController();
+    let release;
+    let rejectGate;
+    let entered;
+    let refreshSignal;
+    let refreshTimer;
+    let gateReleased = false;
+    const timers = jest.spyOn(globalThis, "setTimeout");
+    const clearedTimers = jest.spyOn(globalThis, "clearTimeout");
+    const gate = new Promise((resolve, reject) => { release = resolve; rejectGate = reject; });
+    const refreshEntered = new Promise((resolve) => { entered = resolve; });
+    const attempts = initial ? [{
+      rows: [...dailyRows("QQQ", dates), ...dailyRows("SPX", [dates[0]], false)],
+      unauthorized: true,
+    }] : [
+      [...dailyRows("SPX", dates.filter((date) => !missing.includes(date))), ...dailyRows("QQQ", dates)],
+      { rows: dailyRows("SPX", [missing[0]], false), unauthorized: true },
+    ];
+    const { client, sockets, quoteTokens } = dailyClient(attempts, undefined, (signal, request) => {
+      if (!request?.forceRefresh) return;
+      refreshSignal = signal;
+      refreshTimer = timers.mock.results.at(-1).value;
+      if (completion === "cooperative abort") {
+        signal.addEventListener("abort", () => rejectGate(signal.reason), { once: true });
+      }
+      entered();
+      return gate;
+    });
+    const startedAt = performance.now();
+    const request = client.getHistoricalCandlesBatch({
+      ...dailyRequest("SPX", { signal: controller.signal }),
+      instruments: [{ symbol: "SPX", instrument_type: "INDEX" }, { symbol: "QQQ", instrument_type: "EQUITY" }],
+    });
+    let settled = false;
+    void request.then(() => { settled = true; }, () => { settled = true; });
+    try {
+      await withinWatchdog(refreshEntered);
+      expect(settled).toBe(false);
+      expect(refreshSignal).not.toBe(controller.signal);
+      expect(refreshSignal.aborted).toBe(false);
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(settled).toBe(false);
+      expect(refreshSignal.aborted).toBe(false);
+      const results = await withinWatchdog(request);
+      expect(gateReleased).toBe(false);
+      expect(performance.now() - startedAt).toBeLessThan(500);
+      expect(refreshSignal.aborted).toBe(true);
+      expect(controller.signal.aborted).toBe(false);
+      expect(getEventListeners(controller.signal, "abort")).toHaveLength(0);
+      expect(clearedTimers).toHaveBeenCalledWith(refreshTimer);
+      const [spx, qqq] = results;
+      expect(spx.status).toBe("PARTIAL");
+      expect(spx.candles).toHaveLength(initial ? 1 : 31);
+      expect(spx.candles.some((candle) => candle.source_time ===
+        new Date(rthSession(initial ? dates[0] : missing[0]).open).toISOString())).toBe(true);
+      expect(spx.failure_reasons).toEqual(expect.arrayContaining(["AUTH_FAILED", "SNAPSHOT_TIMEOUT", "PROVIDER_TIMEOUT"]));
+      expect(spx.recovery_diagnostics).toMatchObject({
+        attempts: initial ? 0 : 1,
+        stopped_reason: "AUTH_REFRESH_DEADLINE_EXHAUSTED",
+        failures: ["AUTH_FAILED", "SNAPSHOT_TIMEOUT", "PROVIDER_TIMEOUT"],
+        recovered_session_dates: initial ? [] : [missing[0]],
+      });
+      expect(spx.recovery_diagnostics[initial ? "initial_windows" : "windows"]).toMatchObject([
+        { received_events: 1, failure_reason: "AUTH_FAILED", provider_snapshot_complete: false },
+      ]);
+      expect(spx.transport_diagnostics.timeout_stage).toBe(initial ? "AUTHENTICATING" : null);
+      expect(spx.resource_usage.request).toMatchObject({
+        received_events: initial ? 35 : 66,
+        retained_rows: initial ? 34 : 64,
+        returned_rows: initial ? 34 : 64,
+      });
+      expect(spx.resource_usage.request.retained_bytes).toBeGreaterThan(0);
+      expect(spx.resource_usage.request.peak_buffer_bytes).toBeGreaterThanOrEqual(spx.resource_usage.request.retained_bytes);
+      expect(spx.resource_usage.symbol.received_events).toBe(initial ? 1 : 32);
+      expect(qqq).toMatchObject({
+        status: "AVAILABLE", snapshot_complete: true, provider_snapshot_complete: true,
+        session_coverage_complete: true, failure_reasons: [],
+        session_coverage: { ma20_eligible: true },
+      });
+      expect(qqq.candles).toHaveLength(33);
+      expect(qqq.resource_usage.symbol.received_events).toBe(34);
+      for (const result of results) {
+        expect(result.dxlink_auth).toMatchObject({ status: "FAILED", retry_count: 1, refresh_attempted: true });
+        expect(result.provider_error).toEqual({ code: "UNAUTHORIZED", message: "Authentication failed" });
+      }
+      expect(sockets).toHaveLength(initial ? 1 : 2);
+      expect(sockets.every((socket) => socket.closeCalls.length === 1)).toBe(true);
+      expect(quoteTokens.getQuoteToken).toHaveBeenCalledTimes(2);
+      expect(quoteTokens.invalidateQuoteToken).toHaveBeenCalledTimes(1);
+      const beforeLateCompletion = JSON.stringify(results);
+      gateReleased = true;
+      if (completion === "late reject") rejectGate(new Error("Synthetic late acquisition failure"));
+      else release();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(JSON.stringify(results)).toBe(beforeLateCompletion);
+      expect(sockets).toHaveLength(initial ? 1 : 2);
+      expect(quoteTokens.getQuoteToken).toHaveBeenCalledTimes(2);
+    } finally {
+      release();
+      try {
+        await withinWatchdog(request);
+      } finally {
+        timers.mockRestore();
+        clearedTimers.mockRestore();
+      }
+    }
+  });
+
+  test.each(["initial", "recovery"])("%s caller abort settles a non-cooperative pending refresh distinctly", async (stage) => {
+    const controller = new AbortController();
+    let rejectGate;
+    let entered;
+    let refreshSignal;
+    let refreshTimer;
+    const timers = jest.spyOn(globalThis, "setTimeout");
+    const clearedTimers = jest.spyOn(globalThis, "clearTimeout");
+    const gate = new Promise((_, reject) => { rejectGate = reject; });
+    const refreshEntered = new Promise((resolve) => { entered = resolve; });
+    const { client, sockets } = dailyClient(stage === "initial" ? [
+      { rows: dailyRows("SPY", [dailyFixture.expected_session_dates[0]], false), unauthorized: true },
+    ] : [
+      dailyRows("SPY", dailyFixture.expected_session_dates.filter((date) => date !== "2026-10-08")),
+      { rows: dailyRows("SPY", ["2026-10-08"], false), unauthorized: true },
+    ], undefined, (signal, request) => {
+      if (!request?.forceRefresh) return;
+      refreshSignal = signal;
+      refreshTimer = timers.mock.results.at(-1).value;
+      entered();
+      return gate;
+    });
+    const request = client.getHistoricalCandles(dailyRequest("SPY", { deadline_ms: 1000, signal: controller.signal }));
+    const rejected = expect(withinWatchdog(request)).rejects.toMatchObject({ name: "HistoricalCandlesAbortedError" });
+    try {
+      await withinWatchdog(refreshEntered);
+      controller.abort();
+      await rejected;
+      expect(refreshSignal.aborted).toBe(true);
+      expect(getEventListeners(controller.signal, "abort")).toHaveLength(0);
+      expect(clearedTimers).toHaveBeenCalledWith(refreshTimer);
+      expect(sockets).toHaveLength(stage === "initial" ? 1 : 2);
+    } finally {
+      rejectGate(new Error("Synthetic late failure after caller abort"));
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      timers.mockRestore();
+      clearedTimers.mockRestore();
+    }
+    expect(sockets).toHaveLength(stage === "initial" ? 1 : 2);
+  });
+
+  test.each(["resolve", "reject"])("refresh acquisition %s cleans its deadline timer and caller listener", async (completion) => {
+    const controller = new AbortController();
+    let refreshTimer;
+    let refreshSignal;
+    const timers = jest.spyOn(globalThis, "setTimeout");
+    const clearedTimers = jest.spyOn(globalThis, "clearTimeout");
+    try {
+      const { client, sockets } = dailyClient([
+        { rows: dailyRows("SPY", [dailyFixture.expected_session_dates[0]], false), unauthorized: true },
+        dailyRows("SPY", dailyFixture.expected_session_dates),
+      ], undefined, (signal, request) => {
+        if (!request?.forceRefresh) return;
+        refreshSignal = signal;
+        refreshTimer = timers.mock.results.at(-1).value;
+        if (completion === "reject") throw new Error("Synthetic acquisition failure");
+      });
+      const result = await client.getHistoricalCandles(dailyRequest("SPY", { signal: controller.signal }));
+      expect(result.dxlink_auth.status).toBe(completion === "resolve" ? "REFRESHED" : "FAILED");
+      expect(sockets).toHaveLength(completion === "resolve" ? 2 : 1);
+      expect(refreshSignal.aborted).toBe(false);
+      expect(getEventListeners(controller.signal, "abort")).toHaveLength(0);
+      expect(clearedTimers).toHaveBeenCalledWith(refreshTimer);
+      controller.abort();
+      expect(refreshSignal.aborted).toBe(false);
+    } finally {
+      timers.mockRestore();
+      clearedTimers.mockRestore();
+    }
+  });
+
+  test.each(["market", "monotonic"])("exhausted %s deadline prevents forced acquisition, not just reconnect", async (clockKind) => {
+    let now = Date.parse("2026-12-31T23:00:00Z");
+    let wall = 0;
+    const performanceClock = jest.spyOn(performance, "now").mockImplementation(() => wall);
+    try {
+      const { client, sockets, quoteTokens } = dailyClient([
+        { rows: dailyRows("SPY", [dailyFixture.expected_session_dates[0]], false), unauthorized: true },
+      ], () => now);
+      quoteTokens.invalidateQuoteToken.mockImplementation(() => {
+        if (clockKind === "market") now += 100;
+        else wall += 100;
+      });
+      const result = await client.getHistoricalCandles(dailyRequest());
+      expect(quoteTokens.getQuoteToken).toHaveBeenCalledTimes(1);
+      expect(sockets).toHaveLength(1);
+      expect(result.candles).toHaveLength(1);
+      expect(result.dxlink_auth.status).toBe("FAILED");
+      expect(result.recovery_diagnostics.stopped_reason).toBe("AUTH_REFRESH_DEADLINE_EXHAUSTED");
+      expect(result.failure_reasons).toEqual(expect.arrayContaining(["AUTH_FAILED", "SNAPSHOT_TIMEOUT", "PROVIDER_TIMEOUT"]));
+    } finally {
+      performanceClock.mockRestore();
+    }
+  });
+
+  test("pending forced acquisition gets only seven residual milliseconds, never a fresh deadline", async () => {
+    let now = Date.parse("2026-12-31T23:00:00Z");
+    let release;
+    let entered;
+    let refreshSignal;
+    let refreshAllowance;
+    const gate = new Promise((resolve) => { release = resolve; });
+    const refreshEntered = new Promise((resolve) => { entered = resolve; });
+    const performanceClock = jest.spyOn(performance, "now").mockReturnValue(0);
+    const timers = jest.spyOn(globalThis, "setTimeout");
+    const { client, sockets, quoteTokens } = dailyClient([
+      { rows: dailyRows("SPY", [dailyFixture.expected_session_dates[0]], false), unauthorized: true },
+    ], () => now, (signal, request) => {
+      if (!request?.forceRefresh) return;
+      refreshSignal = signal;
+      refreshAllowance = timers.mock.calls.at(-1)[1];
+      entered();
+      return gate;
+    });
+    quoteTokens.invalidateQuoteToken.mockImplementation(() => { now += 93; });
+    const request = client.getHistoricalCandles(dailyRequest());
+    try {
+      await withinWatchdog(refreshEntered);
+      expect(refreshAllowance).toBe(7);
+      expect(refreshSignal.aborted).toBe(false);
+      const result = await withinWatchdog(request);
+      expect(refreshSignal.aborted).toBe(true);
+      expect(result.candles).toHaveLength(1);
+      expect(result.recovery_diagnostics.stopped_reason).toBe("AUTH_REFRESH_DEADLINE_EXHAUSTED");
+      expect(sockets).toHaveLength(1);
+      expect(quoteTokens.getQuoteToken).toHaveBeenCalledTimes(2);
+      release();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(sockets).toHaveLength(1);
+    } finally {
+      release();
+      try {
+        await withinWatchdog(request);
+      } finally {
+        performanceClock.mockRestore();
+        timers.mockRestore();
+      }
+    }
+  });
+
   test.each([34, 35])("initial committed row survives refresh at exact cumulative event cap %i", async (limit) => {
     const refreshed = dailyRows("SPY", dailyFixture.expected_session_dates);
     for (const value of refreshed) for (let index = 7; index <= 10; index += 1) value[index] = "101";
@@ -845,7 +1114,7 @@ describe("calendar-verified RTH daily coverage (synthetic, not live)", () => {
       const result = await client.getHistoricalCandles(dailyRequest("SPY", {
         start_time: "2026-10-07T00:00:00Z", end_time: "2026-10-09T23:00:00Z",
       }));
-      expect(timers.mock.calls.map((call) => call[1])).toEqual([100, 7]);
+      expect(timers.mock.calls.map((call) => call[1])).toEqual([100, 100, 7]);
       expect(sockets).toHaveLength(2);
       expect(result.resource_usage.request.received_events).toBe(1);
       expect(result.candles).toHaveLength(1);

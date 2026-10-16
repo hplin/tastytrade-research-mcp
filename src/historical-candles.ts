@@ -1285,8 +1285,51 @@ export class TastytradeHistoricalCandlesClient {
     let attempts = 0;
     let resumeIndex = 0;
     let interruptedWindow: RthCalendarPlan["sessions"] | null = null;
+    let authRefreshDeadlineExpired = false;
+    const quoteTokens: DxlinkQuoteTokenProvider = calendarDailyRequest ? {
+      invalidateQuoteToken: () => this.quoteTokens.invalidateQuoteToken?.(),
+      getQuoteToken: async (signal, request) => {
+        if (!request?.forceRefresh) return this.quoteTokens.getQuoteToken(signal, request);
+        assertNotAborted(signal);
+        const remaining = deadlineRemaining();
+        const timeout = () => {
+          authRefreshDeadlineExpired = true;
+          return new Error("Historical candle authentication refresh exceeded the original deadline.");
+        };
+        if (remaining < 1) throw timeout();
+        const controller = new AbortController();
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        let abort: (() => void) | undefined;
+        const interrupted = new Promise<never>((_, reject) => {
+          abort = () => {
+            const error = new HistoricalCandlesAbortedError();
+            reject(error);
+            controller.abort(error);
+          };
+          signal?.addEventListener("abort", abort, { once: true });
+          timer = setTimeout(() => {
+            const error = timeout();
+            reject(error);
+            controller.abort(error);
+          }, remaining);
+        });
+        try {
+          // Race only acquisition: a late provider cannot resume snapshot processing.
+          return await Promise.race([
+            Promise.resolve().then(() => {
+              assertNotAborted(signal);
+              return this.quoteTokens.getQuoteToken(controller.signal, request);
+            }),
+            interrupted,
+          ]);
+        } finally {
+          clearTimeout(timer);
+          if (abort) signal?.removeEventListener("abort", abort);
+        }
+      },
+    } : this.quoteTokens;
     const recovery = await withDxlinkAuthRecovery(
-      this.quoteTokens,
+      quoteTokens,
       async (quoteToken) => {
         assertNotAborted(input.signal);
         const now = this.clock();
@@ -1502,7 +1545,15 @@ export class TastytradeHistoricalCandlesClient {
         : [resumeIndex];
       for (const index of failedIndices) {
         recoveryDiagnostics[index].failures.push("AUTH_FAILED");
-        recoveryDiagnostics[index].stopped_reason = "AUTH_FAILED_PRESERVED_COMMITTED_BARS";
+        if (authRefreshDeadlineExpired) {
+          recoveryDiagnostics[index].failures.push("SNAPSHOT_TIMEOUT", "PROVIDER_TIMEOUT");
+        }
+        recoveryDiagnostics[index].stopped_reason = authRefreshDeadlineExpired
+          ? "AUTH_REFRESH_DEADLINE_EXHAUSTED" : "AUTH_FAILED_PRESERVED_COMMITTED_BARS";
+      }
+      if (authRefreshDeadlineExpired && initialInterrupted) {
+        retainedSnapshot.requestFailureReason = "SNAPSHOT_TIMEOUT";
+        retainedSnapshot.timeoutStage = "AUTHENTICATING";
       }
       return {
         value: retainedSnapshot,

@@ -308,6 +308,16 @@ conservatively charged. Duplicate wire events still consume the event allowance.
 No reconnect opens when less than one millisecond remains on either the original
 monotonic deadline or the injected market clock; zero is never raised to a fresh
 one-millisecond allowance.
+For calendar-daily requests, forced quote-token acquisition itself is bounded
+by that same remaining allowance, not just the subsequent socket reconnect.
+Its provider receives a derived abort signal, cancelled on deadline exhaustion
+or explicit caller abort. A non-cooperative provider cannot hold the public
+request open: acquisition is raced against the deadline/caller cancellation,
+and late resolution or rejection cannot resume snapshot processing, open a
+socket, or modify the returned result. Deadline timers and caller listeners
+are removed on success, failure, timeout, and cancellation. An exhausted
+deadline prevents even starting forced acquisition; initial token acquisition
+before the original snapshot deadline starts is unchanged.
 Successful reauthentication reports `REFRESHED` and retains a sanitized
 `provider_error`; the failed window records `AUTH_FAILED` even when recovery
 subsequently succeeds. Repeated rejection or refresh acquisition failure
@@ -316,6 +326,13 @@ erasing initial/recovered rows or completed peers. If the remaining budgets
 prevent reauthentication, authentication remains `NOT_CONFIRMED` with explicit
 failure/stop diagnostics, never falsely `CONFIRMED`. Cancellation still rejects
 explicitly rather than becoming a temporary provider failure.
+If forced acquisition exhausts its deadline, authentication is `FAILED`,
+the affected symbol records `AUTH_FAILED`, `SNAPSHOT_TIMEOUT`, and
+`PROVIDER_TIMEOUT`, and its stop reason is `AUTH_REFRESH_DEADLINE_EXHAUSTED`.
+An interrupted initial snapshot additionally reports timeout stage
+`AUTHENTICATING`. Attempted socket windows retain their original authentication
+failure evidence; a pending token acquisition does not invent another socket
+window or erase a completed peer's transport/coverage status.
 
 `recovery_diagnostics` records attempts, recovered dates, stop reason,
 failures, and bounded request windows with END/timeout/event evidence.
