@@ -783,6 +783,49 @@ function normalizeInventory(
     throw new Error(`${family} requires exactly ${expectedCount} legs.`);
   }
 
+  const inventory = normalizeHistoricalInventoryLegs(legs);
+
+  const buyCount = inventory.filter(
+    (item) => item.inventory_quantity > 0,
+  ).length;
+  if (buyCount !== expectedCount / 2) {
+    throw new Error(
+      `${family} requires equal numbers of long and short legs.`,
+    );
+  }
+  const expirations = new Map<string, number>();
+  for (const item of inventory) {
+    expirations.set(
+      item.expiration,
+      (expirations.get(item.expiration) ?? 0) + 1,
+    );
+  }
+  if (
+    family === "DOUBLE_DIAGONAL" &&
+    (expirations.size !== 2 ||
+      [...expirations.values()].some((count) => count !== 2))
+  ) {
+    throw new Error(
+      "DOUBLE_DIAGONAL requires two legs in each of two expirations.",
+    );
+  }
+  if (family !== "DOUBLE_DIAGONAL" && expirations.size !== 1) {
+    throw new Error(`${family} requires a single shared expiration.`);
+  }
+
+  const multipliers = unique(inventory.map((item) => item.multiplier));
+  if (multipliers.length !== 1) {
+    throw new Error(
+      "All legs must use the same verified contract multiplier.",
+    );
+  }
+  return { inventory, multiplier: multipliers[0] };
+}
+
+/** Exact-leg parsing shared with the additive strategy contract; no family inference. */
+export function normalizeHistoricalInventoryLegs(
+  legs: HistoricalExecutionInventoryLegInput[],
+): HistoricalExecutionInventoryLeg[] {
   const symbols = new Set<string>();
   const inventory = legs.map((leg, index) => {
     if (symbols.has(leg.provider_symbol)) {
@@ -831,42 +874,16 @@ function normalizeInventory(
     };
   });
 
-  const buyCount = inventory.filter(
-    (item) => item.inventory_quantity > 0,
-  ).length;
-  if (buyCount !== expectedCount / 2) {
-    throw new Error(
-      `${family} requires equal numbers of long and short legs.`,
-    );
-  }
-  const expirations = new Map<string, number>();
-  for (const item of inventory) {
-    expirations.set(
-      item.expiration,
-      (expirations.get(item.expiration) ?? 0) + 1,
-    );
-  }
-  if (
-    family === "DOUBLE_DIAGONAL" &&
-    (expirations.size !== 2 ||
-      [...expirations.values()].some((count) => count !== 2))
-  ) {
-    throw new Error(
-      "DOUBLE_DIAGONAL requires two legs in each of two expirations.",
-    );
-  }
-  if (family !== "DOUBLE_DIAGONAL" && expirations.size !== 1) {
-    throw new Error(`${family} requires a single shared expiration.`);
-  }
-
-  const multipliers = unique(inventory.map((item) => item.multiplier));
-  if (multipliers.length !== 1) {
-    throw new Error(
-      "All legs must use the same verified contract multiplier.",
-    );
-  }
-  return { inventory, multiplier: multipliers[0] };
+  return inventory;
 }
+
+export {
+  normalizeObservation as normalizeHistoricalEvidenceObservation,
+  normalizeSource as normalizeHistoricalEvidenceSource,
+  normalizeReference as normalizeHistoricalEvidenceReference,
+  INPUT_SOURCE_PROPERTIES as HISTORICAL_EVIDENCE_SOURCE_PROPERTIES,
+  INPUT_SOURCE_REQUIRED as HISTORICAL_EVIDENCE_SOURCE_REQUIRED,
+};
 
 function quoteTimingReasons(
   observedAt: number,
