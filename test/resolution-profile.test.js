@@ -8,6 +8,29 @@ import {
 import { resolveCheckpoint } from "../dist/time.js";
 
 describe("research resolution profiles", () => {
+  test("calendar timing is opt-in, exact, and cannot reinterpret legacy daily rows", () => {
+    const source_time = "2026-11-27T14:30:00.000Z";
+    const verified = {
+      source_time, bar_end: "2026-11-27T18:00:00.000Z",
+      session_timing: { calendar_id: "us-cash-rth-2026/1", session_date: "2026-11-27" },
+    };
+    expect(resolveHistoricalBarTiming(verified, "1d").available_at).toBe(verified.bar_end);
+    expect(resolveHistoricalBarTiming({ source_time }, "1d").bar_end)
+      .toBe("2026-11-28T14:30:00.000Z");
+    expect(() => resolveHistoricalBarTiming({ source_time, bar_end: verified.bar_end }, "1d"))
+      .toThrow("bar_end must equal bar_start + 1d");
+    for (const session_timing of [
+      { calendar_id: "legacy", session_date: "2026-11-27" },
+      { calendar_id: "us-cash-rth-2026/1", session_date: "2026-11-26" },
+      { calendar_id: "us-cash-rth-2026/1", session_date: "2026-02-30" },
+    ]) {
+      expect(() => resolveHistoricalBarTiming({ ...verified, session_timing }, "1d"))
+        .toThrow("Invalid verified RTH daily session timing");
+    }
+    expect(() => resolveHistoricalBarTiming({ ...verified,
+      available_at: "2026-11-27T17:00:00Z" }, "1d"))
+      .toThrow("available_at must be at or after bar_end");
+  });
   test("preserves the omitted-profile five-minute compatibility policy", () => {
     const profile = normalizeResolutionProfile(undefined, {
       default_requested_aggregation: "5m",

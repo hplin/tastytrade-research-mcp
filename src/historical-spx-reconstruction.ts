@@ -632,7 +632,8 @@ function completeObservation(
   profile: ResolutionProfile,
   maxObservationAgeMs = MAX_OBSERVATION_AGE_MS,
 ): CandleObservation | null {
-  if (!result.snapshot_complete || result.snapshot_truncated) return null;
+  if (!result.snapshot_complete || result.snapshot_truncated ||
+      result.session_coverage_complete === false) return null;
   const candidates = result.candles
     .map((candle) => {
       const timing = resolveHistoricalBarTiming(
