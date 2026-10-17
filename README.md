@@ -71,6 +71,7 @@ final data.
 | `tastytrade_get_historical_option_package_horizons` | Reconstruct a frozen exact-leg candidate inventory at caller-supplied ENTRY/+3/+5 trading sessions, with an opt-in research-only model fallback for candle-missing legs |
 | `tastytrade_normalize_historical_execution_evidence` | Normalize immutable exact-leg quote snapshots/windows into signed, provider-neutral simulated-execution inputs without claiming a fill |
 | `tastytrade_normalize_historical_strategy_evidence` | Normalize V2 frozen strategy identities, exact inventory, historical quote/reference evidence and optional actual entry facts, including staged SIC, without inferring fills or certifying maximum loss |
+| `tastytrade_build_historical_event_path` | Replay caller-frozen exact-leg observations and staged entry/partial close/roll/settlement events with timestamp-safe risk, shared execution/fee models, bounded resume and full metric denominators |
 | `tastytrade_simulate_historical_execution` | Apply one caller-frozen, hashed execution profile to immutable exact-leg evidence and return a separate simulated fill/P&L result |
 | `tastytrade_build_historical_replay_report` | Aggregate frozen baseline/research decisions and immutable execution simulations into deterministic +3/+5-day metrics without changing grading or paper state |
 | `tastytrade_prepare_spx_spread` | Deterministically normalize SPX legs without calling an upstream service |
@@ -109,6 +110,10 @@ valuation/simulation/broker separation are documented in
 The additive V2 family shapes, frozen selection/reference costs, actual entry
 facts, and independently timestamped staged SIC exposure are documented in
 [`docs/historical-strategy-evidence.md`](docs/historical-strategy-evidence.md).
+The additive variable-checkpoint event-path contract, caller-frozen exit
+instructions, lifecycle ledger, pagination and reproducible real-evidence
+`NOT_ASSESSABLE` audit are documented in
+[`docs/historical-event-path.md`](docs/historical-event-path.md).
 Caller-frozen execution profiles, fill statuses, exact P&L arithmetic, and
 fee semantics are documented in
 [`docs/historical-execution-model.md`](docs/historical-execution-model.md).
@@ -119,7 +124,7 @@ runner guidance are documented in
 ## Private historical evidence cache
 
 The historical candle, SPX candidate/universe, and exact-package tools accept
-an opt-in `evidence_cache` policy. The server exposes 28 tools, including the
+an opt-in `evidence_cache` policy. The server exposes 29 tools, including the
 local-only historical quote normalizer, deterministic execution-model
 adapter, and historical replay report builder.
 `READ_WRITE` stores sanitized source observations and normalized results as

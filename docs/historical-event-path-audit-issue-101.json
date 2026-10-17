@@ -1,0 +1,75 @@
+{
+  "audit_id": "sha256:2b625a318aae8f9514624d5e6e22bddb8d9962fab5a4a04dc529f03ac94911ef",
+  "contract_version": "1.0.0",
+  "generator_version": "issue-101-offline-event-path/1",
+  "status": "NOT_ASSESSABLE",
+  "acceptance_alternative": "ISSUE_101_AC1_DOCUMENTED_GAPS",
+  "network_requests": 0,
+  "credentials_accessed": false,
+  "source_decision": "DO_NOT_ENABLE",
+  "provider_enablement_changed": false,
+  "licensed_vertical_slice_replayed": false,
+  "measured_market_results": false,
+  "fixtures_used_as_market_observations": false,
+  "inputs": [
+    {
+      "path": "docs/historical-quote-capability-2026-09-26.json",
+      "byte_sha256": "sha256:221258ffee16f94386a982a09f666a6b25017d3f4a9838cec66a4ff0830ec069"
+    },
+    {
+      "path": "docs/historical-replay-smoke-2026-09-26.json",
+      "byte_sha256": "sha256:4f3d31163c76f3fb1c072b4da6e8623cf6f6e2ba11e584c03cb31f6cca22896b"
+    },
+    {
+      "path": "docs/historical-coverage-audit-issue-98.json",
+      "byte_sha256": "sha256:211d68f084ce998edd9097fbaf5443f50f5c1b8016d4772073f4a6a8faada075"
+    }
+  ],
+  "retained_evidence": {
+    "smoke_status": "NOT_ASSESSABLE",
+    "replay_report_built": false,
+    "smoke_replay_blockers": [
+      "HISTORICAL_BID_ASK_AND_SIZE_UNSUPPORTED",
+      "QUOTE_BACKED_ENTRY_AND_EXIT_EVIDENCE_UNAVAILABLE",
+      "FROZEN_UPSTREAM_GRADING_OUTPUTS_NOT_SUPPLIED"
+    ],
+    "coverage_status": "BLOCKED",
+    "coverage_blockers": [
+      "SIX_MONTH_FROZEN_INITIAL_INVENTORY_NOT_SUPPLIED",
+      "EXACT_FAMILY_LEGS_QUANTITIES_AND_STAGE_EVENTS_NOT_SUPPLIED",
+      "EARLY_EXIT_AND_COMPLETE_TRADING_SESSION_CHECKPOINTS_NOT_SUPPLIED",
+      "NATIVE_HISTORICAL_BID_ASK_SIZE_NOT_SUPPLIED",
+      "REFERENCED_CACHE_OBJECTS_AND_MANIFESTS_NOT_RECOVERED",
+      "WRITTEN_ENTITLEMENT_STORAGE_REPLAY_RIGHTS_AND_FINAL_COST_UNCONFIRMED"
+    ],
+    "source_and_license_claims_verified": false,
+    "cache_contents_verified": false
+  },
+  "gaps": [
+    "AUTHORIZED_RETAINED_EXACT_LEG_BID_ASK_SIZE_SEQUENCE_UNAVAILABLE",
+    "AUTHORITATIVE_EVENT_PATH_CALENDAR_AND_VARIABLE_CHECKPOINTS_NOT_RETAINED",
+    "FROZEN_ENTRY_PARTIAL_CLOSE_ROLL_AND_SETTLEMENT_LEDGER_NOT_RETAINED",
+    "TIMESTAMP_SAFE_FRONT_BACK_IV_AND_GREEKS_SEQUENCE_UNAVAILABLE",
+    "REFERENCED_IMMUTABLE_CACHE_OBJECTS_AND_MANIFESTS_NOT_RECOVERED",
+    "ENTITLEMENT_STORAGE_REPLAY_RIGHTS_AND_COST_UNCONFIRMED"
+  ],
+  "coverage": {
+    "expected_checkpoints": null,
+    "expected_active_leg_observations": null,
+    "measured_pnl_checkpoints": null,
+    "quote_backed_checkpoints": null,
+    "denominator_status": "NO_FROZEN_REAL_EVENT_PATH_INVENTORY_OR_CALENDAR"
+  },
+  "metrics": {
+    "net_pnl_dollars": null,
+    "mae_dollars": null,
+    "mfe_dollars": null,
+    "holding_duration_ms": null
+  },
+  "conclusion": "The tracked sanitized artifacts do not establish one licensed exact-leg vertical slice from entry through a variable early exit. No invented calendar, inventory, fill, zero-denominator result, market P/L or coverage claim substitutes for missing retained evidence. Deterministic fixtures verify only the additive local contract.",
+  "boundaries": [
+    "ISSUE_98_SIX_MONTH_ACCEPTANCE_REMAINS_INCOMPLETE",
+    "ISSUE_42_DO_NOT_ENABLE_UNCHANGED",
+    "NO_PROVIDER_CALL_PURCHASE_CREDENTIAL_ACCESS_CACHE_RECOVERY_OR_POLICY_MUTATION"
+  ]
+}
