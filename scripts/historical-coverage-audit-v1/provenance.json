@@ -1,0 +1,46 @@
+{
+  "origin_repository": "hplin/tastytrade-research-mcp",
+  "origin_revision": "3ca41fa6f5b05f471640cb172e723c893935eafc",
+  "files": [
+    {
+      "path": "scripts/audit-historical-coverage.mjs",
+      "byte_sha256": "sha256:5f13c64e7d9bff6e24da93d3127ce23cf5304fe5d47b6ee399773379ed95b983",
+      "git_blob_id": "55ec4f91f01d4234bfced0d07877e4e432a3784f"
+    },
+    {
+      "path": "docs/historical-provider-decision.md",
+      "byte_sha256": "sha256:2ad9f2c7ea524701a6111368bf6e21bdc748849efb221da3195b82cc2ebb4445",
+      "git_blob_id": "ce558cf792ea9d93b7d4cc485927265b415744ef"
+    },
+    {
+      "path": "docs/historical-candles.md",
+      "byte_sha256": "sha256:dd67a4be1f209cda7cb7ca885dd5d550d1fa1aa67dfd0f90ffa84e844110e03f",
+      "git_blob_id": "e5e0f78c20726c7a3e1af05f79504d77c393a8cd"
+    },
+    {
+      "path": "docs/historical-option-package.md",
+      "byte_sha256": "sha256:b8e2096b22f49147d2130f85c4b1418d3ad06f4166b251529637a6f777e23a43",
+      "git_blob_id": "07b65aca8449e24ac12a1f4bd2e158f39f7f9b25"
+    },
+    {
+      "path": "docs/historical-replay.md",
+      "byte_sha256": "sha256:029abff6613c02ca9c7fbd0f82f89698dfda35c4591bc33865d14089829c5e62",
+      "git_blob_id": "24552ea2c6a0129f87b264e42c87548140031bc4"
+    },
+    {
+      "path": "docs/evidence-cache.md",
+      "byte_sha256": "sha256:05743fdade5d19b7cfbd208cf71380ce5462a14758c16c865dac8965254373c7",
+      "git_blob_id": "24b4392cac5272220410f9c799851c9340ce3021"
+    },
+    {
+      "path": "docs/historical-quote-capability-2026-09-26.json",
+      "byte_sha256": "sha256:221258ffee16f94386a982a09f666a6b25017d3f4a9838cec66a4ff0830ec069",
+      "git_blob_id": "ef64886d68813b1a37605ebc5062e6fabc07ba63"
+    },
+    {
+      "path": "docs/historical-replay-smoke-2026-09-26.json",
+      "byte_sha256": "sha256:4f3d31163c76f3fb1c072b4da6e8623cf6f6e2ba11e584c03cb31f6cca22896b",
+      "git_blob_id": "640561981cc76a797aa9d78ce71b2769747bb308"
+    }
+  ]
+}
