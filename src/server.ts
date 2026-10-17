@@ -1694,7 +1694,7 @@ export const TOOLS: Tool[] = [
   {
     name: "tastytrade_get_live_option_snapshot",
     description:
-      "Retrieve one bounded SPX/SPXW live option cohort directly from tastytrade and DXLink, merging exact option-chain identity with Quote, Greeks, and Summary.openInterest. Returns timestamp provenance, completeness, temporal alignment, and a deterministic unsigned OI-based gamma concentration proxy that is explicitly supporting evidence rather than dealer GEX or a production gate.",
+      "Retrieve one bounded SPX/SPXW live option cohort directly from tastytrade and DXLink, merging exact option-chain identity with Quote, Greeks, and Summary.openInterest. Returns native versus local timestamp provenance, completeness, temporal alignment, and a research-only unsigned OI-based gamma concentration proxy. Optional exact_package selects 2/3/4 exact OCC legs, including calendars, with mandatory caller quality/session policy; READY routes supporting evidence only to FinPilot, never authorizes orders or a production gate.",
     inputSchema: LIVE_OPTION_SNAPSHOT_INPUT_SCHEMA,
   },
   {

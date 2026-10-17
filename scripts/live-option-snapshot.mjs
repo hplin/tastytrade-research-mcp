@@ -51,6 +51,9 @@ if (missingEnvironment.length > 0) {
     max_temporal_skew_ms: Number(
       process.env.TASTYTRADE_LIVE_OPTION_MAX_TEMPORAL_SKEW_MS ?? "5000",
     ),
+    ...(process.env.TASTYTRADE_LIVE_OPTION_EXACT_PACKAGE_JSON ? {
+      exact_package: JSON.parse(process.env.TASTYTRADE_LIVE_OPTION_EXACT_PACKAGE_JSON),
+    } : {}),
   });
   const gammaAndOpenInterestContracts = result.contracts.filter(
     (contract) =>
@@ -76,6 +79,9 @@ if (missingEnvironment.length > 0) {
       {
         gate: "LIVE_SPX_GAMMA_OPEN_INTEREST_SNAPSHOT",
         outcome,
+        exact_package_quality_outcome: result.exact_package_quality
+          ? (result.exact_package_quality.status === "READY" ? "PASS" : "FAIL")
+          : "NOT_REQUESTED",
         verified: {
           direct_provider: result.provider,
           open_interest_source: result.source.open_interest,
@@ -92,6 +98,8 @@ if (missingEnvironment.length > 0) {
           oi_freshness: result.oi_freshness,
           greeks_freshness: result.greeks_freshness,
           temporal_alignment: result.temporal_alignment,
+          timestamp_provenance: result.timestamp_provenance,
+          exact_package_quality: result.exact_package_quality,
           gamma_proxy_status:
             result.gamma_concentration_proxy.status,
           dealer_gex_status:
