@@ -197,3 +197,7 @@ V2 is additive and must be requested by its new tool name and version.
 Its broader shapes and caller entry ledger are not accepted by the V1
 execution simulator or replay-report contract; this change does not introduce
 the dynamic path/exit replay from issue #101.
+The separate additive
+[`historical-event-path.md`](historical-event-path.md) contract now consumes
+the same frozen selection with an explicit lifecycle ledger and variable
+checkpoints. V2 itself remains entry-only and unchanged.

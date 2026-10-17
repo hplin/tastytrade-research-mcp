@@ -3,6 +3,7 @@ import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { describe, expect, jest, test } from "@jest/globals";
 import { createResearchServer } from "../dist/server.js";
 import { fixture as strategyFixture } from "./fixtures/historical-strategy-evidence.js";
+import { pathFixture } from "./fixtures/historical-event-path.js";
 
 function textResult(result) {
   const text = result.content.find((item) => item.type === "text")?.text;
@@ -145,6 +146,14 @@ describe("generic strategy evidence MCP adapter", () => {
       noFillFacts.execution_events = [{ phase: "FIRST" }];
       await expect(client.callTool({ name, arguments: { request: noFillFacts } })).rejects.toThrow("Invalid arguments");
       expect(forbidden).not.toHaveBeenCalled();
+      const pathName = "tastytrade_build_historical_event_path";
+      const path = textResult(await client.callTool({ name: pathName, arguments: { request: pathFixture() } }));
+      expect(path).toMatchObject({ evidence_type: "HISTORICAL_EVENT_PATH", status: "NOT_ASSESSABLE", mutates_broker_or_paper_state: false });
+      expect(path.coverage.expected_checkpoints).toBe(2);
+      const invalidPath = pathFixture();
+      invalidPath.unknown = true;
+      await expect(client.callTool({ name: pathName, arguments: { request: invalidPath } })).rejects.toThrow("Invalid arguments");
+      expect(forbidden).not.toHaveBeenCalled();
     } finally {
       await client.close();
       await server.close();
@@ -216,7 +225,7 @@ describe("MCP research server", () => {
     await client.connect(clientTransport);
     try {
       const tools = await client.listTools();
-      expect(tools.tools).toHaveLength(28);
+      expect(tools.tools).toHaveLength(29);
       expect(tools.tools.map((tool) => tool.name)).toEqual(
         expect.arrayContaining([
           "tastytrade_get_live_option_snapshot",
@@ -230,6 +239,7 @@ describe("MCP research server", () => {
           "tastytrade_get_historical_option_package_horizons",
           "tastytrade_normalize_historical_execution_evidence",
           "tastytrade_normalize_historical_strategy_evidence",
+          "tastytrade_build_historical_event_path",
           "tastytrade_simulate_historical_execution",
           "tastytrade_build_historical_replay_report",
           "tastytrade_verify_historical_fill",

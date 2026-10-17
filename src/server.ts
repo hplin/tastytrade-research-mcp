@@ -70,6 +70,11 @@ import {
   type HistoricalStrategyEvidenceInput,
 } from "./historical-strategy-evidence.js";
 import {
+  HISTORICAL_EVENT_PATH_INPUT_SCHEMA,
+  buildHistoricalEventPath,
+  type HistoricalEventPathInput,
+} from "./historical-event-path.js";
+import {
   HISTORICAL_REPLAY_INPUT_SCHEMA,
   buildHistoricalReplayReport,
   type HistoricalReplayInput,
@@ -1758,6 +1763,12 @@ export const TOOLS: Tool[] = [
     inputSchema: HISTORICAL_STRATEGY_EVIDENCE_INPUT_SCHEMA,
   },
   {
+    name: "tastytrade_build_historical_event_path",
+    description:
+      "Build immutable caller-frozen exact-leg event-path evidence with authoritative caller sessions, staged entry/partial close/roll/settlement facts, timestamp-safe quotes and risk, bounded resume and complete metric denominators. Uses shared frozen execution/fee models; no provider calls, live exit decisions, broker verification or state mutation.",
+    inputSchema: HISTORICAL_EVENT_PATH_INPUT_SCHEMA,
+  },
+  {
     name: "tastytrade_simulate_historical_execution",
     description:
       "Apply one caller-frozen, versioned historical execution profile to immutable exact-leg evidence. Supports quote limit-touch, quote cross, explicit midpoint-to-adverse price improvement, and low-evidence reference-cost scenarios; never verifies a broker fill or mutates live/paper state.",
@@ -2094,6 +2105,8 @@ export function createResearchServer(
             requestArg<HistoricalStrategyEvidenceInput>(args),
           ),
         );
+      case "tastytrade_build_historical_event_path":
+        return toolResult(buildHistoricalEventPath(requestArg<HistoricalEventPathInput>(args)));
       case "tastytrade_build_historical_replay_report":
         return toolResult(
           buildHistoricalReplayReport(

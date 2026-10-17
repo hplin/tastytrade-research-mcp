@@ -611,6 +611,10 @@ type NormalizedWindow = {
   evidence: HistoricalExecutionEvidenceResult | null;
 };
 
+type PhaseWindow = Omit<NormalizedWindow, "evidence"> & {
+  evidence: Pick<HistoricalExecutionEvidenceResult, "observations" | "expected_observation_times"> | null;
+};
+
 type SelectedPoint = {
   observedAt: string;
   timestamp: number;
@@ -878,6 +882,33 @@ function normalizeFeeModel(
   };
 }
 
+export {
+  normalizeProfile as normalizeHistoricalExecutionProfile,
+  normalizeFeeModel as normalizeHistoricalFeeModel,
+};
+
+/** Shared single-transaction model for caller-scheduled event paths. */
+export function evaluateHistoricalExecutionTransaction(input: {
+  execution_profile: HistoricalExecutionProfileInput;
+  window_start: string;
+  evaluated_at: string;
+  signed_limit: DecimalInput;
+  observation: HistoricalExecutionEvidenceResult["observations"][number] | null;
+}): HistoricalExecutionPhaseResult {
+  const profile = normalizeProfile(input.execution_profile);
+  const start = timestamp(input.window_start, "window_start");
+  const end = timestamp(input.evaluated_at, "evaluated_at");
+  if (Date.parse(start) > Date.parse(end)) throw new Error("Transaction window_start must not exceed evaluated_at.");
+  const limit = ExactDecimal.parse(input.signed_limit, "signed_limit");
+  if (!tickAligned(limit, ExactDecimal.parse(profile.tick_size))) throw new Error("Transaction signed_limit must be tick aligned.");
+  if (input.observation !== null && input.observation.observed_at !== end) throw new Error("Transaction observation must match evaluated_at.");
+  return evaluatePhase("ENTRY", {
+    window_start: start, window_end: end, start_ms: Date.parse(start), end_ms: Date.parse(end),
+    signed_limit: limit,
+    evidence: { observations: input.observation ? [input.observation] : [], expected_observation_times: [end] },
+  }, profile, 1, Date.parse(start));
+}
+
 function normalizeSourceContract(
   input: HistoricalExecutionSourceContract,
 ): HistoricalExecutionSourceContract {
@@ -1074,7 +1105,7 @@ function selectedReference(
 }
 
 function selectedPoints(
-  window: NormalizedWindow,
+  window: PhaseWindow,
   profile: NormalizedHistoricalExecutionProfile,
 ): SelectedPoint[] {
   const evidence = window.evidence;
@@ -1194,7 +1225,7 @@ function reachesLimit(
 
 function evaluatePhase(
   phase: "ENTRY" | "EXIT",
-  window: NormalizedWindow,
+  window: PhaseWindow,
   profile: NormalizedHistoricalExecutionProfile,
   quantity: number,
   notBeforeMs: number,
