@@ -275,7 +275,7 @@ export function buildHistoricalEventPath(input: HistoricalEventPathInput) {
   const lastSourceTime = new Map<string, string>();
   const eventResults: ReturnType<typeof applyEvent>[] = [];
   let cash = ExactDecimal.zero(), fees = ExactDecimal.zero(), hasEntry = false;
-  let firstEntry: string | null = null, lastExit: string | null = null;
+  let firstEntry: string | null = null, lastExit: string | null = null, latestClose: string | null = null;
   function applyEvent(event: typeof events[number]) {
     need(event.source_timestamp >= selectedAt && event.available_at <= expected.at(-1)!, "Events must follow selection and be available within the frozen path.");
     need(event.kind === "SETTLEMENT" ? event.evidence_kind === "SETTLEMENT" : event.evidence_kind !== "SETTLEMENT", "Settlement evidence and event kind must agree.");
@@ -333,8 +333,12 @@ export function buildHistoricalEventPath(input: HistoricalEventPathInput) {
         if (fill.side === "OPEN") opened.set(fill.provider_symbol, opened.get(fill.provider_symbol)! + fill.quantity);
       }
       need([...quantities.values()].filter((quantity) => quantity !== 0).length <= 4, "Active inventory is bounded to four exact legs.");
-      if (isOpen) { hasEntry = true; firstEntry ??= event.source_timestamp; }
-      if ([...quantities.values()].every((quantity) => quantity === 0) && hasEntry) lastExit = event.source_timestamp;
+      if (isOpen) {
+        hasEntry = true;
+        if (firstEntry === null || event.source_timestamp < firstEntry) firstEntry = event.source_timestamp;
+      }
+      if (isClose && (latestClose === null || event.source_timestamp > latestClose)) latestClose = event.source_timestamp;
+      if ([...quantities.values()].every((quantity) => quantity === 0) && hasEntry) lastExit = latestClose;
       else lastExit = null;
       cash = cash.subtract(signedCost);
       fees = fees.add(charged!);
@@ -349,18 +353,30 @@ export function buildHistoricalEventPath(input: HistoricalEventPathInput) {
   function normalizeObservation(observation: HistoricalEvidenceObservationInput, active: typeof inventory) {
     for (const ref of observation.references ?? []) need(ref.bar_end === null || ref.available_at === null || time(ref.bar_end) <= time(ref.available_at), "Completed reference bars must be available before evaluation.");
     const normalized = normalizeHistoricalEvidenceObservation(observation, active, selection.quote_policy);
-    if (inSession(normalized.observed_at)) return normalized;
+    const expired = active.some((leg) => normalized.observed_at >= cutoff(leg.provider_symbol));
+    const reasons = [
+      ...(!inSession(normalized.observed_at) ? ["OUTSIDE_AUTHORITATIVE_SESSION"] : []),
+      ...(expired ? ["SETTLEMENT_CUTOFF_REACHED"] : []),
+    ];
+    if (!reasons.length) return normalized;
     const reject = (quote: typeof normalized.synthetic_package_quote) => {
       const { evidence_id: ignored, ...body } = quote;
-      const rejected = { ...body, usable_for_simulated_execution: false, rejection_reasons: [...body.rejection_reasons, "OUTSIDE_AUTHORITATIVE_SESSION"] };
+      const rejected = {
+        ...body, ...(expired ? { signed_bid: null, signed_ask: null } : {}),
+        usable_for_simulated_execution: false, rejection_reasons: [...body.rejection_reasons, ...reasons],
+      };
       return { evidence_id: stableEvidenceContentId({ inventory: active, quote: rejected }), ...rejected };
     };
     const { observation_id: ignored, ...body } = normalized;
     const rejected = {
-      ...body, status: "REJECTED" as const, quote_coverage: "NONE" as const,
+      ...body, status: "REJECTED" as const,
+      quote_coverage: inSession(normalized.observed_at) && body.quote_coverage !== "NONE" ? "PARTIAL" as const : "NONE" as const,
+      leg_quotes: body.leg_quotes.map((quote) => normalized.observed_at >= cutoff(quote.provider_symbol) ? {
+        ...quote, status: "REJECTED" as const, rejection_reasons: [...quote.rejection_reasons, "SETTLEMENT_CUTOFF_REACHED"],
+      } : quote),
       synthetic_package_quote: reject(body.synthetic_package_quote),
       native_package_quote: body.native_package_quote ? reject(body.native_package_quote) : null,
-      rejection_reasons: [...body.rejection_reasons, "OUTSIDE_AUTHORITATIVE_SESSION"],
+      rejection_reasons: [...body.rejection_reasons, ...reasons],
     };
     return { observation_id: stableEvidenceContentId(rejected), ...rejected };
   }
@@ -375,10 +391,10 @@ export function buildHistoricalEventPath(input: HistoricalEventPathInput) {
     if (raw) need(raw.inventory_id === inventory_id, "Observation inventory_id does not match exact active inventory.");
     const session = inSession(observed_at);
     const expired = active.some((leg) => observed_at >= cutoff(leg.provider_symbol));
-    const quote_evidence = raw && active.length && !expired ? normalizeObservation(raw, active) : null;
+    const quote_evidence = raw && active.length ? normalizeObservation(raw, active) : null;
     const natural = quote_evidence?.synthetic_package_quote;
     const quoteUsable = session !== null && !expired && natural?.usable_for_simulated_execution === true;
-    const reference = quote_evidence?.references.find((ref) => ref.status === "AVAILABLE" && ref.price_semantics === "SIGNED_CASH_FLOW_PER_UNIT");
+    const reference = !expired ? quote_evidence?.references.find((ref) => ref.status === "AVAILABLE" && ref.price_semantics === "SIGNED_CASH_FLOW_PER_UNIT") : undefined;
     const evidence_level = active.length === 0 && hasEntry ? "CLOSED_LEDGER" : quoteUsable ? "OBSERVED_QUOTE" : reference?.evidence_type ?? "NONE";
     const liquidation = !hasEntry ? null : active.length === 0 ? dec(0) : quoteUsable ? dec(natural!.signed_bid!).multiply(dec(100)) :
       reference?.signed_value != null ? dec(reference.signed_value).multiply(dec(100)) : null;
@@ -395,7 +411,7 @@ export function buildHistoricalEventPath(input: HistoricalEventPathInput) {
       const clock = clockValue(risk);
       const reasons = clock.available_at > observed_at ? ["RISK_NOT_YET_AVAILABLE"] :
         Date.parse(observed_at) - Date.parse(clock.source_timestamp) > selection.quote_policy.max_quote_age_ms ? ["RISK_STALE"] : [];
-      if (expired) reasons.push("SETTLEMENT_CUTOFF_REACHED");
+      if (observed_at >= cutoff(risk.provider_symbol)) reasons.push("SETTLEMENT_CUTOFF_REACHED");
       const fields = ["implied_volatility", "delta", "gamma", "theta", "vega", "rho"] as const;
       const fieldValue = (field: typeof fields[number]): string | null => {
         const value = risk[field] === null ? null : dec(risk[field]).toString();

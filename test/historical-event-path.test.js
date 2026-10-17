@@ -84,6 +84,46 @@ describe("generic timestamp-safe exact-leg event paths", () => {
     expect(after.checkpoints[1].active_inventory).toEqual([]);
   });
 
+  test("delayed independent opens use the earliest available source entry without rewriting earlier checkpoints", () => {
+    const input = pathFixture();
+    const [a, b] = input.selection.legs;
+    const first = "2026-09-24T14:40:00.000Z";
+    input.events = [event([a], first, "OPEN", "a-open")];
+    input.expected_checkpoints = [first, EXIT];
+    input.observations = [observation([a], first)];
+    const before = build(input);
+    const delayed = event([b], ENTRY, "OPEN", "b-open");
+    delayed.available_at = "2026-09-24T15:00:00.000Z";
+    input.events.push(delayed);
+    input.observations.push(observation([a, b], EXIT));
+    const result = build(input);
+    expect(result.checkpoints[0]).toEqual(before.checkpoints[0]);
+    expect(result.checkpoints[1].holding_duration_ms).toBe(3600000);
+    expect(result.metrics.holding_duration_ms).toBe(3600000);
+  });
+
+  test("a closed delayed independent-leg ledger ends at the latest closing source time, not receipt time", () => {
+    const input = pathFixture();
+    const [a, b] = input.selection.legs;
+    const aClose = "2026-09-24T15:20:00.000Z";
+    input.events = [
+      event([a], "2026-09-24T14:40:00.000Z", "OPEN", "a-open"),
+      { ...event([b], ENTRY, "OPEN", "b-open"), available_at: "2026-09-24T14:50:00.000Z" },
+      { ...event([a], aClose, "CLOSE", "a-close"), kind: "PARTIAL_CLOSE" },
+      { ...event([b], "2026-09-24T15:00:00.000Z", "CLOSE", "b-close"), kind: "PARTIAL_CLOSE", available_at: EXIT },
+    ];
+    input.expected_checkpoints = [aClose, EXIT];
+    input.observations = [];
+    const before = build({ ...input, events: input.events.slice(0, 3) });
+    const result = build(input);
+    expect(result.checkpoints[0]).toEqual(before.checkpoints[0]);
+    expect(result.checkpoints[1]).toMatchObject({ active_inventory: [], evidence_level: "CLOSED_LEDGER", holding_duration_ms: 3000000 });
+    expect(result.metrics.holding_duration_ms).toBe(3000000);
+    const closed = build({ ...input, expected_checkpoints: [EXIT] });
+    expect(closed.status).toBe("ASSESSABLE");
+    expect(closed.metrics.holding_duration_ms).toBe(3000000);
+  });
+
   test("staggered SIC changes only actual available legs and rejects SECOND before FIRST", () => {
     const input = pathFixture("SIC");
     const first = input.selection.legs.filter((leg) => leg.entry_phase === "FIRST");
@@ -241,6 +281,65 @@ describe("generic timestamp-safe exact-leg event paths", () => {
     expect(result.checkpoints[3].risk[0].expiry_role).toBe("BACK");
     input.events[1].evidence_kind = "BROKER_FILL";
     expect(() => build(input)).toThrow(/Settlement evidence/);
+  });
+
+  test.each([false, true])("pending front settlement retains live back quotes and risk without package valuation (back-only quotes: %s)", (backOnly) => {
+    const input = pathFixture("CALL_CALENDAR");
+    const [front, back] = input.selection.legs;
+    const at = "2026-10-16T20:00:00.000Z", after = "2026-11-20T14:00:00.000Z";
+    input.expected_checkpoints = [at, after];
+    const pending = observation(input.selection.legs, at);
+    const { provider_symbol: ignoredSymbol, bid: ignoredBid, ask: ignoredAsk, ...native } = pending.leg_quotes[0];
+    pending.native_package_quote = { ...native, signed_bid: "1", signed_ask: "2", price_semantics: "SIGNED_CASH_FLOW_PER_UNIT" };
+    if (backOnly) pending.leg_quotes = pending.leg_quotes.filter((quote) => quote.provider_symbol === back.provider_symbol);
+    pending.references = [reference({ source_timestamp: at, available_at: at, bar_end: at, signed_value: "100" })];
+    input.observations = [pending];
+    const before = build(input);
+    const settle = event([front], at, "CLOSE", "delayed-settlement");
+    settle.kind = "SETTLEMENT"; settle.evidence_kind = "SETTLEMENT"; settle.available_at = after;
+    input.events.push(settle);
+    input.observations.push(observation([back], after));
+    const result = build(input), point = result.checkpoints[0];
+    expect(point).toEqual(before.checkpoints[0]);
+    expect(point).toMatchObject({
+      evidence_level: "NONE", package_natural: null, liquidation_value_dollars: null, net_pnl_dollars: null,
+    });
+    expect(point.quote_evidence).not.toBeNull();
+    expect(point.quote_evidence.leg_quotes.find((quote) => quote.provider_symbol === back.provider_symbol))
+      .toMatchObject({ status: "COMPLETE", bid: "2", ask: "2.25", rejection_reasons: [] });
+    const expiredQuote = point.quote_evidence.leg_quotes.find((quote) => quote.provider_symbol === front.provider_symbol);
+    expect(expiredQuote.status).toBe("REJECTED");
+    expect(expiredQuote.rejection_reasons).toContain("SETTLEMENT_CUTOFF_REACHED");
+    for (const packageQuote of [point.quote_evidence.synthetic_package_quote, point.quote_evidence.native_package_quote]) {
+      expect(packageQuote).toMatchObject({ usable_for_simulated_execution: false, signed_bid: null, signed_ask: null });
+      expect(packageQuote.rejection_reasons).toContain("SETTLEMENT_CUTOFF_REACHED");
+      const { evidence_id, ...packageBody } = packageQuote;
+      expect(evidence_id).toBe(stableEvidenceContentId({ inventory: point.active_inventory, quote: packageBody }));
+    }
+    const { observation_id, ...quoteBody } = point.quote_evidence;
+    expect(observation_id).toBe(stableEvidenceContentId(quoteBody));
+    expect(point.risk.find((risk) => risk.provider_symbol === back.provider_symbol)).toMatchObject({
+      status: "AVAILABLE", expiry_role: "BACK", implied_volatility: "0.2", delta: "0.4",
+      gamma: "0.01", theta: "-1", vega: "0.5", rho: "0.1", rejection_reasons: [],
+    });
+    expect(point.risk.find((risk) => risk.provider_symbol === front.provider_symbol)).toMatchObject({
+      status: "NOT_AVAILABLE", implied_volatility: null, rejection_reasons: ["SETTLEMENT_CUTOFF_REACHED"],
+    });
+    expect(point.risk_gaps.map((gap) => gap.provider_symbol)).toEqual([front.provider_symbol]);
+    expect(before.coverage).toMatchObject({
+      accepted_leg_quotes: 1, expected_active_leg_observations: 4,
+      available_risk_leg_observations: 1, expected_risk_leg_observations: 4,
+      available_risk_field_observations: 6, expected_risk_field_observations: 24,
+    });
+    expect(result.checkpoints[1].active_inventory.map((leg) => leg.provider_symbol)).toEqual([back.provider_symbol]);
+    expect(result.checkpoints[1].evidence_level).toBe("OBSERVED_QUOTE");
+    expect(result.checkpoints[1].net_pnl_dollars).not.toBeNull();
+    expect(result.checkpoints[1].risk[0].status).toBe("AVAILABLE");
+    expect(result.coverage).toMatchObject({
+      accepted_leg_quotes: 2, expected_active_leg_observations: 3,
+      available_risk_leg_observations: 2, expected_risk_leg_observations: 3,
+      available_risk_field_observations: 12, expected_risk_field_observations: 18,
+    });
   });
 
   test("overnight intervals remain unobserved and do not carry executable quotes", () => {

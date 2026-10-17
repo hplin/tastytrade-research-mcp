@@ -105,7 +105,12 @@ claims are not independent proof that a differently relabeled duplicate is genui
 
 After a cutoff, an unsettled active leg leaves P/L unknown with
 `SETTLEMENT_NOT_AVAILABLE_ACTIVE_INVENTORY_UNRESOLVED`; it is never carried forward
-as an executable quote. Once official settlement is available, only the actual
+as an executable quote. Supplied quotes are still normalized and retained per
+exact leg: only expired legs receive `SETTLEMENT_CUTOFF_REACHED`, while valid
+later-expiring quotes remain accepted. Synthetic/native package bid/ask and
+execution eligibility are unavailable until expired active inventory is resolved;
+neither back-only quotes nor package references can value that unresolved package.
+Once official settlement is available, only the actual
 settled leg is removed; later-expiring legs remain exact and independently valued.
 Post-cutoff trade events are rejected.
 
@@ -126,7 +131,9 @@ IV/Greek fields remain null, with `PARTIAL` rows, `missing_fields` and full
 six-field-per-active-leg denominators. `expiry_role` is
 FRONT for the earliest frozen expiry and BACK otherwise; exact expiry remains
 on the inventory. Unavailable/stale/post-cutoff risk values remain null with
-reasons. Risk cannot promote missing quotes to execution evidence. `risk_gaps`
+reasons. Cutoffs apply per risk symbol, so pending front settlement does not erase
+valid back-leg IV/Greeks or their risk-coverage numerator.
+Risk cannot promote missing quotes to execution evidence. `risk_gaps`
 names active legs without accepted risk rows.
 
 Every checkpoint reports active inventory, known signed cash flow, modeled fees,
@@ -136,7 +143,10 @@ is `active signed_bid * 100`; references remain valuation-only. Thus
 `net_pnl = cumulative_cash_flow + liquidation_value - nonoverlapping_fees`.
 A fully closed supplied ledger needs no fabricated liquidation quote.
 Holding duration is wall-clock first-entry to checkpoint/final close, including
-overnights and any flat intervals; it is not trading-session time.
+overnights and any flat intervals; it is not trading-session time. Its endpoints
+are the earliest applied opening source timestamp and, once flat, the latest
+applied closing/settlement source timestamp, not receipt order. Only facts already
+available at the checkpoint contribute; delayed facts never rewrite earlier IDs.
 
 MAE is the nonpositive minimum sampled net P/L relative to zero; MFE the
 nonnegative maximum. Full-denominator MAE/MFE are null if any requested P/L is
