@@ -339,6 +339,30 @@ owner's policy.
 
 ### Local integration evidence and official-source audit
 
+#### Current engineering acceptance (#99, owner-approved Plan A)
+
+At `2026-10-16T20:26:39.734-07:00`, the owner explicitly authorized
+[replacing AC1 only](https://github.com/hplin/tastytrade-research-mcp/issues/99#issuecomment-6229055506):
+clearly labeled synthetic fixtures validate synchronized 2/3/4-leg,
+cross-expiry and missing-leg behavior; actual sanitized observations validate
+provider fields, timestamp provenance and fail-closed diagnostics. Missing
+native timestamps remain null/UNKNOWN, and missing or stale required timing
+must produce NOT_READY. Actual native synchronized coverage remains unproven
+and is no longer a completion condition for this engineering delivery; it
+cannot confer live permission.
+
+This is a substantive acceptance-scope amendment, not a retrospective pass
+under the original synchronized-live AC1. The earlier blocked acceptance and
+CHANGES_REQUESTED reviews remain historical conclusions under that original
+scope. The dated negative observations, source/layout hashes and exhausted
+three-request budget below remain unchanged. AC2–AC5, all caller age/skew
+thresholds and trading safety boundaries are unchanged: READY is evidence only
+for the FinPilot gate, never order or production permission or historical
+live-permission backfill. Gamma remains research-only; ZeroGEX remains the sole
+current live SPX Gamma regime source. Fresh independent exact-HEAD review of
+the revised contract and latest-base integration is still required; this
+documentation does not claim reviewer approval or authorize another capture.
+
 ```bash
 npm run build
 node scripts/probe-live-option-quality-fixtures.mjs
@@ -427,7 +451,11 @@ All three results had `transport_complete=true`, `content_complete=false`,
 `ABSENT_QUOTE_TIME`, `STALE_GREEKS` and `STALE_IV`. The first two additionally
 had `CROSS_LEG_SKEW`. Quote age, native Quote/Greek skew and full
 synchronization remain unproven; **0/3 strict READY**, not an acceptance pass
-for synchronized live packages. The policy was not weakened: quote/Greek/IV
+for synchronized live packages under the original AC1 or proof of provider
+synchronization under revised Plan A. These actual negative observations
+support the revised engineering acceptance's provenance and fail-closed
+checks, not its separately synthetic synchronized-behavior checks.
+The policy was not weakened: quote/Greek/IV
 age limits stayed 5,000 ms, quote/Greek, cross-leg and receive skew limits
 stayed 1,000 ms, quote size and OI were required, volume was explicitly not
 required. No core session semantics were changed to fit GTH.

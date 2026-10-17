@@ -27,6 +27,7 @@ import {
   type ResolutionProfileSession,
 } from "./resolution-profile.js";
 import { normalizeRfc3339 } from "./time.js";
+import { RTH_CALENDAR_VERSION } from "./rth-calendar.js";
 
 export const EVIDENCE_CACHE_CONTRACT_VERSION = "1.0.0" as const;
 
@@ -160,6 +161,7 @@ type SourceIdentity = {
   normalization_version: string;
   model_version: string;
   source_revision: string;
+  rth_daily_coverage_version?: string;
 };
 
 type EvidenceContext = {
@@ -210,6 +212,12 @@ export type HistoricalSourceEvidenceManifest = {
       requested_range: HistoricalCandlesResult["requested_range"];
       actual_range: HistoricalCandlesResult["actual_range"];
       provider_snapshot_complete: boolean;
+      session_coverage_complete?: boolean | null;
+      session_coverage?: HistoricalCandlesResult["session_coverage"];
+      expected_session_dates?: string[];
+      observed_session_dates?: string[];
+      missing_session_dates?: string[];
+      coverage_ratio?: number | null;
       snapshot_complete: boolean;
       snapshot_truncated: boolean;
       failure_reasons: HistoricalCandlesResult["failure_reasons"];
@@ -762,6 +770,14 @@ function providerPayload(
       snapshot_complete: result.snapshot_complete,
       snapshot_truncated: result.snapshot_truncated,
       provider_snapshot_complete: result.provider_snapshot_complete,
+      session_coverage_complete: result.session_coverage_complete,
+      session_coverage: result.session_coverage,
+      expected_session_dates: result.expected_session_dates,
+      observed_session_dates: result.observed_session_dates,
+      missing_session_dates: result.missing_session_dates,
+      missing_session_diagnostics: result.missing_session_diagnostics,
+      coverage_ratio: result.coverage_ratio,
+      recovery_diagnostics: result.recovery_diagnostics,
       failure_reasons: result.failure_reasons,
       resource_usage: result.resource_usage,
       transport_diagnostics: result.transport_diagnostics,
@@ -1764,6 +1780,10 @@ export class FileEvidenceCache {
       normalization_version: cache.normalizationVersion,
       model_version: cache.modelVersion,
       source_revision: cache.sourceRevision,
+      ...(interval === "1d" && resolutionProfile.provider_id === "tastytrade-dxlink" &&
+        resolutionProfile.session.kind === "REGULAR" &&
+        request.instruments.some((instrument) => ["EQUITY", "INDEX"].includes(instrument.instrument_type))
+        ? { rth_daily_coverage_version: RTH_CALENDAR_VERSION } : {}),
     };
     const requestFingerprint = stableEvidenceContentId(sourceIdentity);
     return {
@@ -1986,6 +2006,17 @@ export class FileEvidenceCache {
         );
       }
       normalizeRfc3339(result.retrieved_at, "result.retrieved_at");
+      if (plan.sourceIdentity.rth_daily_coverage_version &&
+          ["EQUITY", "INDEX"].includes(result.instrument_type) && (
+            result.session_coverage?.calendar_id !== RTH_CALENDAR_VERSION ||
+            typeof result.session_coverage_complete !== "boolean" ||
+            !Array.isArray(result.expected_session_dates) ||
+            !Array.isArray(result.observed_session_dates) ||
+            !Array.isArray(result.missing_session_dates) ||
+            (result.status === "AVAILABLE" && !result.session_coverage_complete)
+          )) {
+        throw new Error("RTH daily cache results require explicit versioned session coverage; legacy data cannot be promoted.");
+      }
       for (const [barIndex, candle] of result.candles.entries()) {
         for (const field of [
           "source_time",
@@ -2048,6 +2079,12 @@ export class FileEvidenceCache {
         requested_range: result.requested_range,
         actual_range: result.actual_range,
         provider_snapshot_complete: result.provider_snapshot_complete,
+        session_coverage_complete: result.session_coverage_complete,
+        session_coverage: result.session_coverage,
+        expected_session_dates: result.expected_session_dates,
+        observed_session_dates: result.observed_session_dates,
+        missing_session_dates: result.missing_session_dates,
+        coverage_ratio: result.coverage_ratio,
         snapshot_complete: result.snapshot_complete,
         snapshot_truncated: result.snapshot_truncated,
         failure_reasons: result.failure_reasons,

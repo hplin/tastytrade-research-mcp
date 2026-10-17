@@ -97,6 +97,19 @@ The suite builds the TypeScript project before running Jest and covers:
 - point-in-time price/delta enrichment for recovered SPX contracts;
 - provider log-shape drift returning `NOT_AVAILABLE` instead of guessed identity;
 - DXLink compact Candle parsing and snapshot flags;
+- synthetic (not live-captured) SPX Sep 28–30 and SPY/QQQ/IWM Oct 8 RTH
+  daily omissions, native-symbol aliases versus local filtering/removal,
+  transport-versus-session completeness, exact 2026 holiday/DST/half-day
+  close timing, unfinished/future daily exclusion, 33/60-session bounded
+  recovery and shared deadlines/events/buffers/output limits, expected-date
+  MA20 eligibility, and immutable legacy-daily cache-policy isolation;
+- initial and recovery authentication rejection before/after committed daily rows,
+  one request-wide credential refresh, sanitized failure provenance, failed
+  attempt counters/windows, retained completed peers, and exact residual
+  deadline/event/output/buffer allowances across authentication reconnects;
+- exact initial receive caps, expired initial handshake deadlines on market and
+  monotonic clocks, immutable initial native index/timestamp revisions across
+  snapshot resets, and explicit schema-conflict rejection;
 - regular and custom overnight session windows;
 - untrusted DXLink-host rejection;
 - MCP tool discovery and dispatch;

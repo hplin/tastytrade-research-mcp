@@ -241,6 +241,9 @@
         },
         "source_revision": {
           "type": "string"
+        },
+        "rth_daily_coverage_version": {
+          "type": "string"
         }
       },
       "required": [

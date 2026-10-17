@@ -1,5 +1,8 @@
 node_modules/
 dist/
+!scripts/historical-coverage-audit-v1/dist/
+!scripts/historical-coverage-audit-v1/dist/evidence-cache.js
+!scripts/historical-coverage-audit-v1/dist/historical-option-package.js
 .env
 .env.*
 !.env.example

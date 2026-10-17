@@ -75,6 +75,20 @@ type. Legacy results without `price_type` are treated as LAST only. This
 separation does not promote bid/ask OHLC aggregates into synchronized quote
 or execution evidence.
 
+DXLink equity/index `REGULAR 1d` requests additionally fingerprint
+`rth_daily_coverage_version: us-cash-rth-2026/1`. The policy is additive only
+for that daily scope: legacy intraday/options and omitted-LAST identities
+remain unchanged. Legacy daily manifests without the policy version cannot
+satisfy the newly verified request; exact-manifest replay rejects them with
+`EVIDENCE_CACHE_POLICY_MISMATCH` rather than interpreting old immutable rows
+as newly calendar-verified. New daily provider results must carry explicit
+versioned coverage before storage. Existing objects are never rewritten.
+Normalized results and provider-observation objects preserve expected,
+observed, missing dates, coverage ratio, native session timing, recovery,
+and transport diagnostics; manifest status exposes session coverage
+independently of END/SNIP completion. See
+[`historical-candles.md`](historical-candles.md) for bounded calendar support.
+
 `retrieved_at` is unknown before a provider call, so it is not part of the
 mutable lookup fingerprint. It is part of every immutable revision manifest,
 whose own content-addressed ID is the frozen cache identity. References and

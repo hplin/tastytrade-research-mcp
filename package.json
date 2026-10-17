@@ -20,6 +20,7 @@
     "live:option-snapshot": "npm run build --silent && node --env-file-if-exists=.env scripts/live-option-snapshot.mjs",
     "live:heuristic-signed-gex": "npm run build --silent && node --env-file-if-exists=.env scripts/live-heuristic-signed-gex.mjs",
     "report:historical-replay": "npm run build --silent && node scripts/build-historical-replay-report.mjs",
+    "report:historical-coverage": "npm run build --silent && node scripts/audit-historical-coverage.mjs",
     "live:resolution-gate": "npm run build --silent && node --env-file-if-exists=.env scripts/live-resolution-profile-gate.mjs",
     "report:evidence-cache": "npm run build --silent && node scripts/evidence-cache-report.mjs",
     "typecheck": "tsc --noEmit",

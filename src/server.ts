@@ -65,6 +65,11 @@ import {
   type HistoricalExecutionSimulationInput,
 } from "./historical-execution-model.js";
 import {
+  HISTORICAL_STRATEGY_EVIDENCE_INPUT_SCHEMA,
+  normalizeHistoricalStrategyEvidence,
+  type HistoricalStrategyEvidenceInput,
+} from "./historical-strategy-evidence.js";
+import {
   HISTORICAL_REPLAY_INPUT_SCHEMA,
   buildHistoricalReplayReport,
   type HistoricalReplayInput,
@@ -1747,6 +1752,12 @@ export const TOOLS: Tool[] = [
     inputSchema: HISTORICAL_EXECUTION_EVIDENCE_INPUT_SCHEMA,
   },
   {
+    name: "tastytrade_normalize_historical_strategy_evidence",
+    description:
+      "Normalize versioned caller-frozen SPX strategy inventory, historical quotes/references and optional actual entry facts through the shared evidence pipeline. Supports calendars, diagonals, condors, butterflies and staged SIC exposure without inferred fills, provider calls, maximum-loss certification, grading or trading decisions. Source/license claims remain caller-supplied.",
+    inputSchema: HISTORICAL_STRATEGY_EVIDENCE_INPUT_SCHEMA,
+  },
+  {
     name: "tastytrade_simulate_historical_execution",
     description:
       "Apply one caller-frozen, versioned historical execution profile to immutable exact-leg evidence. Supports quote limit-touch, quote cross, explicit midpoint-to-adverse price improvement, and low-evidence reference-cost scenarios; never verifies a broker fill or mutates live/paper state.",
@@ -1785,7 +1796,7 @@ export const TOOLS: Tool[] = [
   {
     name: "tastytrade_get_historical_candles",
     description:
-      "Retrieve historical LAST/BID/ASK price OHLC aggregates with explicit bar_start, bar_end, available_at, retrieved_at, and versioned resolution/cohort metadata. BID/ASK candles are valuation-only aggregates, not synchronized NBBO, quote sizes, or executable prices. Supports price-type-isolated immutable cache/offline replay, exact UTC/session windows, canonical provider symbol matching, independent resource budgets, and no resampling.",
+      "Retrieve historical LAST/BID/ASK price OHLC aggregates with explicit bar_start, bar_end, available_at, retrieved_at, and versioned resolution/cohort metadata. REGULAR 1d SPX/SPY/QQQ/IWM cash-market coverage is calendar-verified for 2026 only: expected/observed/missing session dates, coverage_ratio, session_coverage_complete, and ma20 eligibility are independent of transport snapshot_complete. Missing sessions return PARTIAL; unknown daily equity/index calendar semantics fail closed. Recovery uses the original resource budgets without ALL/1h substitution. BID/ASK candles are valuation-only aggregates, not synchronized NBBO, quote sizes, or executable prices. Supports price-type-isolated immutable cache/offline replay, exact UTC/session windows, canonical provider symbol matching, independent resource budgets, and no resampling.",
     inputSchema: HISTORICAL_CANDLES_SCHEMA,
   },
 ];
@@ -2075,6 +2086,12 @@ export function createResearchServer(
         return toolResult(
           simulateHistoricalExecution(
             requestArg<HistoricalExecutionSimulationInput>(args),
+          ),
+        );
+      case "tastytrade_normalize_historical_strategy_evidence":
+        return toolResult(
+          normalizeHistoricalStrategyEvidence(
+            requestArg<HistoricalStrategyEvidenceInput>(args),
           ),
         );
       case "tastytrade_build_historical_replay_report":

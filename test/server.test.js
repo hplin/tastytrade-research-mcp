@@ -2,6 +2,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { describe, expect, jest, test } from "@jest/globals";
 import { createResearchServer } from "../dist/server.js";
+import { fixture as strategyFixture } from "./fixtures/historical-strategy-evidence.js";
 
 function textResult(result) {
   const text = result.content.find((item) => item.type === "text")?.text;
@@ -114,6 +115,43 @@ function liveSnapshotFixture(request) {
   };
 }
 
+describe("generic strategy evidence MCP adapter", () => {
+  test("normalizes locally and validates the versioned request without invoking providers", async () => {
+    const forbidden = jest.fn(() => { throw new Error("Provider calls forbidden in local normalization"); });
+    const server = createResearchServer({
+      backtester: {
+        getAvailableDates: forbidden, listBacktests: forbidden, createBacktest: forbidden,
+        getBacktest: forbidden, getBacktestLogs: forbidden, cancelBacktest: forbidden, simulateTrade: forbidden,
+      },
+      candles: { getHistoricalCandles: forbidden, getHistoricalCandlesBatch: forbidden },
+    });
+    const client = new Client({ name: "generic-evidence-test", version: "1.0.0" });
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    await server.connect(serverTransport);
+    await client.connect(clientTransport);
+    const name = "tastytrade_normalize_historical_strategy_evidence";
+    try {
+      const result = textResult(await client.callTool({ name, arguments: { request: strategyFixture("DC") } }));
+      expect(result).toMatchObject({ contract_version: "2.0.0", strategy: { family: "DC" }, broker_fill_verified: false, verified_global_maximum_loss_dollars: null });
+      expect(result.inventory).toHaveLength(4);
+      expect(result.checkpoints[0].evidence_level).toBe("EXECUTABLE_QUOTE");
+      const badVersion = strategyFixture();
+      badVersion.contract_version = "1.0.0";
+      await expect(client.callTool({ name, arguments: { request: badVersion } })).rejects.toThrow("Invalid arguments");
+      const badShape = strategyFixture("CALL_CALENDAR");
+      badShape.strategy.family = "DC";
+      await expect(client.callTool({ name, arguments: { request: badShape } })).rejects.toThrow("four legs");
+      const noFillFacts = strategyFixture("SIC");
+      noFillFacts.execution_events = [{ phase: "FIRST" }];
+      await expect(client.callTool({ name, arguments: { request: noFillFacts } })).rejects.toThrow("Invalid arguments");
+      expect(forbidden).not.toHaveBeenCalled();
+    } finally {
+      await client.close();
+      await server.close();
+    }
+  });
+});
+
 describe("MCP research server", () => {
   test("lists and invokes the expanded research tool surface", async () => {
     const backtester = {
@@ -178,7 +216,7 @@ describe("MCP research server", () => {
     await client.connect(clientTransport);
     try {
       const tools = await client.listTools();
-      expect(tools.tools).toHaveLength(27);
+      expect(tools.tools).toHaveLength(28);
       expect(tools.tools.map((tool) => tool.name)).toEqual(
         expect.arrayContaining([
           "tastytrade_get_live_option_snapshot",
@@ -191,6 +229,7 @@ describe("MCP research server", () => {
           "tastytrade_get_historical_option_package_path",
           "tastytrade_get_historical_option_package_horizons",
           "tastytrade_normalize_historical_execution_evidence",
+          "tastytrade_normalize_historical_strategy_evidence",
           "tastytrade_simulate_historical_execution",
           "tastytrade_build_historical_replay_report",
           "tastytrade_verify_historical_fill",
@@ -213,6 +252,7 @@ describe("MCP research server", () => {
         deadline_ms: { maximum: 30000 },
         max_temporal_skew_ms: { maximum: 300000 },
       });
+
       const heuristicGexTool = tools.tools.find(
         (tool) =>
           tool.name === "tastytrade_compute_heuristic_signed_gex",
@@ -245,6 +285,9 @@ describe("MCP research server", () => {
       const candleTool = tools.tools.find(
         (tool) => tool.name === "tastytrade_get_historical_candles",
       );
+      expect(candleTool.description).toContain("session_coverage_complete");
+      expect(candleTool.description).toContain("ma20");
+      expect(candleTool.description).toContain("2026 only");
       expect(
         candleTool.inputSchema.properties.request.properties,
       ).toMatchObject({

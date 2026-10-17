@@ -1,10 +1,87 @@
 import { readFileSync } from "node:fs";
+import { getEventListeners } from "node:events";
 import { describe, expect, jest, test } from "@jest/globals";
 import {
   TastytradeHistoricalCandlesClient,
   canonicalizeDxlinkCandleSymbol,
   parseDxlinkCandleData,
 } from "../dist/historical-candles.js";
+import { planRthSessions, rthSession, RTH_CALENDAR_VERSION } from "../dist/rth-calendar.js";
+import { resolveHistoricalBarTiming, historicalBarMatchesResolutionProfile } from "../dist/resolution-profile.js";
+
+const dailyFixture = JSON.parse(readFileSync(
+  new URL("./fixtures/dxlink-rth-daily-synthetic.json", import.meta.url), "utf8",
+));
+
+function dailyRows(symbol, dates, complete = true) {
+  const nativeSymbol = `${symbol}${dailyFixture.wire_shape.canonical_equivalent_received}`;
+  const rows = dates.map((date, index) => row(rthSession(date).open, index === 0 ? 4 : 0,
+    "100", nativeSymbol));
+  if (complete) rows.push(marker(Date.parse("2026-01-01T00:00:00Z"), nativeSymbol));
+  return rows;
+}
+
+function dailyClient(attempts, clock = () => Date.parse("2026-12-31T23:00:00Z"), onToken = () => {}) {
+  const sockets = [];
+  const quoteTokens = {
+    getQuoteToken: jest.fn(async (signal, request) => {
+      await onToken(signal, request);
+      return {
+        token: request?.forceRefresh ? "synthetic-fresh-token" : "synthetic-stale-token",
+        url: "wss://tasty-openapi-dxlink-md-ws.dxfeed.com/realtime",
+      };
+    }),
+    invalidateQuoteToken: jest.fn(),
+  };
+  const client = new TastytradeHistoricalCandlesClient(
+    { getAccessToken: async () => "synthetic-token" }, undefined,
+    () => {
+      const attempt = attempts[Math.min(sockets.length, attempts.length - 1)];
+      if (attempt?.constructionError) throw new Error("Synthetic socket construction failure");
+      const rows = attempt?.rows ?? attempt;
+      const socket = new FakeSocket(rows === null ? [] : [rows], {
+        unauthorizedTokens: attempt?.unauthorizedTokens,
+        afterFeedError: attempt?.unauthorized,
+        feedConfig: attempt?.feedConfig,
+      });
+      if (attempt?.error) {
+        const emit = socket.emit.bind(socket);
+        socket.emit = (message) => {
+          emit(message);
+          if (message.type === "FEED_DATA") setTimeout(() => socket.onerror?.(), 1);
+        };
+      }
+      sockets.push(socket);
+      return socket;
+    }, clock,
+    quoteTokens,
+  );
+  return { client, sockets, quoteTokens };
+}
+
+function dailyRequest(symbol = "SPY", overrides = {}) {
+  return {
+    symbol, instrument_type: symbol === "SPX" ? "INDEX" : "EQUITY",
+    interval: "1d", start_time: dailyFixture.start_time, end_time: dailyFixture.end_time,
+    session: { kind: "REGULAR", timezone: "America/New_York" },
+    deadline_ms: 100, max_output_candles: 100, max_received_events: 1000,
+    max_buffer_bytes: 1_000_000, ...overrides,
+  };
+}
+
+async function withinWatchdog(promise, milliseconds = 1000) {
+  let timer;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise((_, reject) => {
+        timer = setTimeout(() => reject(new Error("Synthetic request did not settle before watchdog")), milliseconds);
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
 
 const FIELDS_PER_ROW = 17;
 const nativeHourFixture = JSON.parse(
@@ -86,6 +163,7 @@ class FakeSocket {
       channel: 3,
     };
     this.useBlob = options.useBlob ?? false;
+    this.afterFeedError = options.afterFeedError ?? false;
     this.unauthorizedTokens = new Set(
       options.unauthorizedTokens ?? [],
     );
@@ -123,6 +201,12 @@ class FakeSocket {
             type: "FEED_DATA",
             channel: 3,
             data: ["Candle", rows.flat()],
+          });
+        }
+        if (this.afterFeedError) {
+          this.emit({
+            type: "ERROR", channel: 0, error: "UNAUTHORIZED",
+            message: "Rejected synthetic-stale-token synthetic-fresh-token",
           });
         }
       }
@@ -197,6 +281,1405 @@ function clientWithAuthTokens(rows, tokens, unauthorizedTokens) {
   );
   return { client, quoteTokens, sockets };
 }
+
+describe("calendar-verified RTH daily coverage (synthetic, not live)", () => {
+  test.each([
+    "2026-01-01", "2026-01-19", "2026-02-16", "2026-04-03",
+    "2026-05-25", "2026-06-19", "2026-07-03", "2026-09-07",
+    "2026-11-26", "2026-12-25",
+  ])("published full closure %s is not a missing session", (date) => {
+    expect(rthSession(date)).toBeNull();
+  });
+
+  test.each(["SPX", "SPY", "QQQ", "IWM"])("%s reported missing dates remain partial despite provider END", async (symbol) => {
+    const missing = dailyFixture.omissions[symbol];
+    const dates = dailyFixture.expected_session_dates.filter((date) => !missing.includes(date));
+    const { client, sockets } = dailyClient([dailyRows(symbol, dates), dailyRows(symbol, [])]);
+    const result = await client.getHistoricalCandles(dailyRequest(symbol));
+    expect(result).toMatchObject({
+      status: "PARTIAL", snapshot_complete: true, provider_snapshot_complete: true,
+      session_coverage_complete: false, expected_session_dates: dailyFixture.expected_session_dates,
+      observed_session_dates: dates, missing_session_dates: missing,
+      coverage_ratio: dates.length / 33,
+      session_coverage: { ma20_eligible: false, calendar_id: RTH_CALENDAR_VERSION },
+    });
+    expect(result.candles).toHaveLength(symbol === "SPX" ? 30 : 32);
+    expect(result.failure_reasons).toEqual(expect.arrayContaining([
+      "SOURCE_RTH_DAILY_MISSING", "CALENDAR_EXPECTED_SESSION_MISSING",
+      "PROVIDER_COMPLETE_BUT_COVERAGE_PARTIAL",
+    ]));
+    expect(result.transport_diagnostics.received_session_dates).toEqual(dates);
+    expect(result.missing_session_diagnostics).toEqual(missing.map((session_date) => ({
+      session_date, attribution: "NO_VALID_CANONICAL_PROVIDER_ROW_OBSERVED",
+      provider_cause_confirmed: false,
+    })));
+    expect(result.transport_diagnostics.local_pipeline.unverified_daily_times).toBe(0);
+    expect(result.warnings.some((warning) => warning.startsWith("MISSING_BAR_GAP"))).toBe(false);
+    expect(sockets).toHaveLength(2);
+    expect(result.recovery_diagnostics.attempts).toBe(1);
+  });
+
+  test.each(["SPX", "SPY", "QQQ", "IWM"])("%s same-native-cohort short retry restores only missing dates", async (symbol) => {
+    const missing = dailyFixture.omissions[symbol];
+    const dates = dailyFixture.expected_session_dates.filter((date) => !missing.includes(date));
+    const { client, sockets } = dailyClient([dailyRows(symbol, dates), dailyRows(symbol, missing)]);
+    const result = await client.getHistoricalCandles(dailyRequest(symbol));
+    expect(result.status).toBe("AVAILABLE");
+    expect(result.session_coverage_complete).toBe(true);
+    expect(result.missing_session_dates).toEqual([]);
+    expect(result.coverage_ratio).toBe(1);
+    expect(result.session_coverage.ma20_eligible).toBe(true);
+    expect(result.candles).toHaveLength(33);
+    expect(result.recovery_diagnostics.recovered_session_dates).toEqual(missing);
+    for (const socket of sockets) {
+      const subscription = socket.sent.find((message) => message.type === "FEED_SUBSCRIPTION" && message.add);
+      expect(subscription.add[0].symbol).toBe(`${symbol}{=d,a=s,tho=true}`);
+    }
+    expect(sockets[1].sent.find((message) => message.add).add[0].fromTime).toBe(rthSession(missing[0]).open);
+    expect(result.resource_usage.request.received_events).toBe(35);
+    expect(result.resource_usage.request.retained_bytes).toBeLessThanOrEqual(1_000_000);
+    expect(result.candles[0]).toMatchObject({
+      source_time: "2026-08-25T13:30:00.000Z", bar_start: "2026-08-25T13:30:00.000Z",
+      bar_end: "2026-08-25T20:00:00.000Z", available_at: "2026-08-25T20:00:00.000Z",
+      session_timing: { calendar_id: RTH_CALENDAR_VERSION, session_date: "2026-08-25" },
+    });
+    const timing = resolveHistoricalBarTiming(result.candles[0], "1d");
+    expect(historicalBarMatchesResolutionProfile(timing, "1d", result.resolution_profile)).toBe(true);
+  });
+
+  test.each([
+    ["2026-09-04", "2026-09-08"],
+    ["2026-04-02", "2026-04-06"],
+    ["2026-07-02", "2026-07-06"],
+    ["2026-10-09", "2026-10-12"],
+  ])("weekend/holiday %s to %s has no false gap", async (first, last) => {
+    const { client, sockets } = dailyClient([dailyRows("SPY", [first, last])]);
+    const result = await client.getHistoricalCandles(dailyRequest("SPY", {
+      start_time: `${first}T00:00:00Z`, end_time: `${last}T23:00:00Z`,
+    }));
+    expect(result.status).toBe("AVAILABLE");
+    expect(result.expected_session_dates).toEqual([first, last]);
+    expect(result.warnings).toEqual([]);
+    expect(sockets).toHaveLength(1);
+  });
+
+  test.each([
+    ["2026-03-06", "2026-03-09", "2026-03-06T21:00:00.000Z", "2026-03-09T20:00:00.000Z"],
+    ["2026-10-30", "2026-11-02", "2026-10-30T20:00:00.000Z", "2026-11-02T21:00:00.000Z"],
+    ["2026-11-25", "2026-11-27", "2026-11-25T21:00:00.000Z", "2026-11-27T18:00:00.000Z"],
+    ["2026-12-23", "2026-12-24", "2026-12-23T21:00:00.000Z", "2026-12-24T18:00:00.000Z"],
+  ])("DST/half-day timing %s to %s", async (first, last, firstClose, lastClose) => {
+    const { client } = dailyClient([dailyRows("SPY", [first, last])]);
+    const result = await client.getHistoricalCandles(dailyRequest("SPY", {
+      start_time: `${first}T00:00:00Z`, end_time: `${last}T23:00:00Z`,
+    }));
+    expect(result.expected_session_dates).toEqual([first, last]);
+    expect(result.candles.map((candle) => candle.available_at)).toEqual([firstClose, lastClose]);
+    expect(resolveHistoricalBarTiming(result.candles[1], "1d").bar_end).toBe(lastClose);
+  });
+
+  test("Monday INITIAL excludes unfinished/future bars but keeps Friday CLOSE", async () => {
+    const { client, sockets } = dailyClient([dailyRows("SPY", ["2026-10-09", "2026-10-12", "2026-10-13"])],
+      () => Date.parse("2026-10-12T14:00:00Z"));
+    const result = await client.getHistoricalCandles(dailyRequest("SPY", {
+      start_time: "2026-10-09T00:00:00Z", end_time: "2026-10-13T23:00:00Z",
+    }));
+    expect(result.expected_session_dates).toEqual(["2026-10-09"]);
+    expect(result.candles).toHaveLength(1);
+    expect(result.candles[0].available_at).toBe("2026-10-09T20:00:00.000Z");
+    expect(result.transport_diagnostics.local_pipeline.unfinished_daily_rows).toBe(2);
+    expect(result.session_coverage.evaluated_through).toBe("2026-10-12T14:00:00.000Z");
+    expect(sockets).toHaveLength(1);
+  });
+
+  test("range checkpoint excludes an unfinished half-day even when retrieved later", async () => {
+    const { client } = dailyClient([dailyRows("SPY", ["2026-11-25", "2026-11-27"])]);
+    const result = await client.getHistoricalCandles(dailyRequest("SPY", {
+      start_time: "2026-11-25T00:00:00Z", end_time: "2026-11-27T17:59:59Z",
+    }));
+    expect(result.expected_session_dates).toEqual(["2026-11-25"]);
+    expect(result.candles).toHaveLength(1);
+  });
+
+  test("twenty rows with an internal expected-date hole do not qualify ma20", async () => {
+    const expected = dailyFixture.expected_session_dates.slice(-21);
+    const missing = "2026-10-08";
+    const { client } = dailyClient([
+      dailyRows("SPY", expected.filter((date) => date !== missing)), dailyRows("SPY", []),
+    ]);
+    const result = await client.getHistoricalCandles(dailyRequest("SPY", {
+      start_time: `${expected[0]}T00:00:00Z`,
+    }));
+    expect(result.candles).toHaveLength(20);
+    expect(result.session_coverage.ma20_expected_session_dates).toHaveLength(20);
+    expect(result.session_coverage.ma20_eligible).toBe(false);
+  });
+
+  test("exactly twenty contiguous completed expected sessions qualify ma20", async () => {
+    const dates = dailyFixture.expected_session_dates.slice(-20);
+    const { client, sockets } = dailyClient([dailyRows("SPY", dates)]);
+    const result = await client.getHistoricalCandles(dailyRequest("SPY", {
+      start_time: `${dates[0]}T00:00:00Z`,
+    }));
+    expect(result.status).toBe("AVAILABLE");
+    expect(result.session_coverage.ma20_eligible).toBe(true);
+    expect(result.session_coverage.ma20_expected_session_dates).toEqual(dates);
+    expect(sockets).toHaveLength(1);
+  });
+
+  test("unknown timestamp alignment is observable local rejection, not claimed provider absence", async () => {
+    const date = "2026-10-08";
+    const native = "SPY{=d,a=s,tho=true}";
+    const misaligned = row(Date.parse(`${date}T00:00:00Z`), 4, "100", native);
+    const { client } = dailyClient([[misaligned, marker(0, native)], dailyRows("SPY", [])]);
+    const result = await client.getHistoricalCandles(dailyRequest("SPY", {
+      start_time: `${date}T00:00:00Z`, end_time: `${date}T23:00:00Z`,
+    }));
+    expect(result.status).toBe("NOT_AVAILABLE");
+    expect(result.failure_reasons).toContain("SOURCE_RTH_DAILY_TIME_UNVERIFIED");
+    expect(result.transport_diagnostics.local_pipeline.unverified_daily_times).toBe(1);
+    expect(result.transport_diagnostics.received_session_dates).toEqual(["2026-10-07"]);
+    expect(result.missing_session_dates).toEqual([date]);
+  });
+
+  test("different-index duplicate daily sessions fail closed rather than count twice", async () => {
+    const native = "SPY{=d,a=s,tho=true}";
+    const time = rthSession("2026-10-08").open;
+    const { client } = dailyClient([[
+      row(time, 4, "100", native, "one"), row(time, 0, "101", native, "two"), marker(0, native),
+    ]]);
+    const result = await client.getHistoricalCandles(dailyRequest("SPY", {
+      start_time: "2026-10-08T00:00:00Z", end_time: "2026-10-08T23:00:00Z",
+    }));
+    expect(result.candles).toEqual([]);
+    expect(result.failure_reasons).toContain("SOURCE_RTH_DAILY_TIME_UNVERIFIED");
+    expect(result.transport_diagnostics.received_session_dates).toEqual(["2026-10-08"]);
+  });
+
+  test.each([
+    { symbol: "UNKNOWN" }, { streamer_symbol: "SPY:UNKNOWN" },
+    { session: { kind: "REGULAR", timezone: "UTC" } },
+    { start_time: "2025-12-31T00:00:00Z" }, { end_time: "2027-01-02T00:00:00Z" },
+  ])("unsupported calendar scope fails closed: %j", async (overrides) => {
+    const { client } = dailyClient([dailyRows(overrides.symbol ?? "SPY", [])]);
+    const result = await client.getHistoricalCandles(dailyRequest("SPY", overrides));
+    expect(result.session_coverage_complete).toBe(false);
+    expect(result.coverage_ratio).toBeNull();
+    expect(result.session_coverage.status).toBe("UNSUPPORTED");
+    expect(result.failure_reasons).toContain("CALENDAR_UNSUPPORTED");
+    expect(result.status).not.toBe("AVAILABLE");
+  });
+
+  test("ALL daily is not allowed to fill the REGULAR cohort", async () => {
+    const time = rthSession("2026-10-08").open;
+    const { client } = dailyClient([[
+      row(time, 4, "751.28", "QQQ{=d}"), marker(0, "QQQ{=d}"),
+    ]]);
+    const result = await client.getHistoricalCandles(dailyRequest("QQQ", {
+      start_time: "2026-10-08T00:00:00Z", end_time: "2026-10-08T23:00:00Z", deadline_ms: 5,
+    }));
+    expect(result.candles).toEqual([]);
+    expect(result.transport_diagnostics.unmatched_received_symbols).toEqual(["QQQ{=d}"]);
+    expect(result.failure_reasons).toContain("PROVIDER_TIMEOUT");
+    expect(result.session_coverage_complete).toBe(false);
+  });
+
+  test("sixty sessions recover within original aggregate event/output/buffer limits", async () => {
+    const request = dailyRequest("SPY", { start_time: "2026-07-17T00:00:00Z",
+      max_output_candles: 60, max_received_events: 62 });
+    const plan = planRthSessions("SPY", "SPY", "EQUITY", "America/New_York",
+      Date.parse(request.start_time), Date.parse(request.end_time), Date.parse("2026-12-31T23:00:00Z"));
+    expect(plan.sessions).toHaveLength(60);
+    const dates = plan.sessions.map((session) => session.date);
+    const { client } = dailyClient([
+      dailyRows("SPY", dates.filter((date) => date !== "2026-10-08")),
+      dailyRows("SPY", ["2026-10-08"]),
+    ]);
+    const result = await client.getHistoricalCandles(request);
+    expect(result.status).toBe("AVAILABLE");
+    expect(result.candles).toHaveLength(60);
+    expect(result.resource_usage.request.received_events).toBe(62);
+    expect(result.resource_usage.request.returned_rows).toBe(60);
+    expect(result.resource_usage.request.retained_bytes).toBeLessThanOrEqual(1_000_000);
+  });
+
+  test("output truncation reports coverage of returned rows without falsely blaming provider", async () => {
+    const { client, sockets } = dailyClient([dailyRows("SPY", dailyFixture.expected_session_dates)]);
+    const result = await client.getHistoricalCandles(dailyRequest("SPY", { max_output_candles: 20 }));
+    expect(result.status).toBe("PARTIAL");
+    expect(result.candles).toHaveLength(20);
+    expect(result.expected_session_dates).toHaveLength(33);
+    expect(result.missing_session_dates).toHaveLength(13);
+    expect(result.coverage_ratio).toBe(20 / 33);
+    expect(result.failure_reasons).toContain("LOCAL_OUTPUT_BUDGET_EXCEEDED");
+    expect(result.transport_diagnostics.received_session_dates.length).toBeGreaterThan(20);
+    expect(sockets).toHaveLength(1);
+  });
+
+  test("receive limit is shared across retry and retains previously good bars", async () => {
+    const dates = dailyFixture.expected_session_dates.filter((date) => date !== "2026-10-08");
+    const { client } = dailyClient([dailyRows("SPY", dates), dailyRows("SPY", ["2026-10-08"])]);
+    const result = await client.getHistoricalCandles(dailyRequest("SPY", { max_received_events: 34 }));
+    expect(result.candles).toHaveLength(33);
+    expect(result.resource_usage.request.received_events).toBe(34);
+    expect(result.status).toBe("PARTIAL");
+    expect(result.failure_reasons).toContain("LOCAL_RECEIVE_BUDGET_EXCEEDED");
+    expect(result.snapshot_complete).toBe(true);
+    expect(result.session_coverage.ma20_eligible).toBe(false);
+  });
+
+  test("retry timeout keeps original bars and exposes provider-timeout diagnostics", async () => {
+    const dates = dailyFixture.expected_session_dates.filter((date) => date !== "2026-10-08");
+    const { client, sockets } = dailyClient([dailyRows("SPY", dates), null]);
+    const before = performance.now();
+    const result = await client.getHistoricalCandles(dailyRequest("SPY", { deadline_ms: 15 }));
+    expect(performance.now() - before).toBeLessThan(100);
+    expect(result.candles).toHaveLength(32);
+    expect(result.status).toBe("PARTIAL");
+    expect(result.recovery_diagnostics.failures).toContain("PROVIDER_TIMEOUT");
+    expect(sockets).toHaveLength(2);
+    expect(sockets.every((socket) => socket.closeCalls.length === 1)).toBe(true);
+  });
+
+  test("batch symbol isolation preserves completed SPY while IWM times out", async () => {
+    const { client, sockets } = dailyClient([dailyRows("SPY", dailyFixture.expected_session_dates)]);
+    const request = dailyRequest();
+    const results = await client.getHistoricalCandlesBatch({
+      ...request, instruments: [{ symbol: "SPY", instrument_type: "EQUITY" },
+        { symbol: "IWM", instrument_type: "EQUITY" }], deadline_ms: 5,
+    });
+    expect(results[0].status).toBe("AVAILABLE");
+    expect(results[0].candles).toHaveLength(33);
+    expect(results[1].status).toBe("NOT_AVAILABLE");
+    expect(results[1].failure_reasons).toContain("PROVIDER_TIMEOUT");
+    expect(sockets).toHaveLength(1);
+  });
+
+  test.each(["SPY", "QQQ", "IWM"])("%s short Oct7-Oct9 window reproduces the same missing Oct8", async (symbol) => {
+    const { client } = dailyClient([
+      dailyRows(symbol, ["2026-10-07", "2026-10-09"]), dailyRows(symbol, []),
+    ]);
+    const result = await client.getHistoricalCandles(dailyRequest(symbol, {
+      start_time: "2026-10-07T00:00:00Z", end_time: "2026-10-09T23:00:00Z",
+    }));
+    expect(result.expected_session_dates).toEqual(["2026-10-07", "2026-10-08", "2026-10-09"]);
+    expect(result.missing_session_dates).toEqual(["2026-10-08"]);
+    expect(result.missing_session_diagnostics[0].attribution).toBe("NO_VALID_CANONICAL_PROVIDER_ROW_OBSERVED");
+    expect(result.coverage_ratio).toBe(2 / 3);
+    expect(result.status).toBe("PARTIAL");
+  });
+
+  test("local index replacement/removal is diagnosed distinctly from absent native events", async () => {
+    const native = "SPY{=d,a=s,tho=true}";
+    const first = rthSession("2026-10-07").open;
+    const removed = rthSession("2026-10-08").open;
+    const { client } = dailyClient([[
+      row(first, 4, "100", native), row(first, 0, "101", native),
+      row(removed, 0, "100", native), row(removed, 2, "100", native),
+      row(rthSession("2026-10-09").open, 0, "100", native), marker(0, native),
+    ], dailyRows("SPY", [])]);
+    const result = await client.getHistoricalCandles(dailyRequest("SPY", {
+      start_time: "2026-10-07T00:00:00Z", end_time: "2026-10-09T23:00:00Z",
+    }));
+    expect(result.candles[0].close).toBe("101");
+    expect(result.transport_diagnostics.received_session_dates)
+      .toEqual(["2026-10-07", "2026-10-08", "2026-10-09"]);
+    expect(result.transport_diagnostics.local_pipeline).toMatchObject({
+      replaced_indices: 1, removed_indices: 1, snapshot_resets: 1,
+    });
+    expect(result.missing_session_dates).toEqual(["2026-10-08"]);
+    expect(result.missing_session_diagnostics[0].attribution).toBe("VALID_PROVIDER_ROW_NOT_RETURNED_LOCALLY");
+  });
+
+  test("failed recovery retains both original rows and a completed session from the interrupted retry", async () => {
+    const missing = dailyFixture.omissions.SPX;
+    const { client } = dailyClient([
+      dailyRows("SPX", dailyFixture.expected_session_dates.filter((date) => !missing.includes(date))),
+      { rows: dailyRows("SPX", [missing[0]], false), error: true },
+    ]);
+    const result = await client.getHistoricalCandles(dailyRequest("SPX"));
+    expect(result.candles).toHaveLength(31);
+    expect(result.status).toBe("PARTIAL");
+    expect(result.missing_session_dates).toEqual(missing.slice(1));
+    expect(result.recovery_diagnostics.failures).toContain("PROVIDER_TEMPORARY_FAILURE");
+    expect(result.resource_usage.request.received_events).toBe(32);
+  });
+
+  test.each([false, true])("recovery rejection with committed row=%s refreshes only its window with cumulative evidence", async (committed) => {
+    const dates = dailyFixture.expected_session_dates.filter((date) => date !== "2026-10-08");
+    const refreshedRows = dailyRows("SPY", ["2026-10-08"]);
+    for (let index = 7; index <= 10; index += 1) refreshedRows[0][index] = "101";
+    const { client, sockets, quoteTokens } = dailyClient([
+      dailyRows("SPY", dates),
+      { rows: committed ? dailyRows("SPY", ["2026-10-08"], false) : [], unauthorized: true },
+      refreshedRows,
+    ]);
+    const result = await client.getHistoricalCandles(dailyRequest("SPY", {
+      max_output_candles: 33, max_received_events: committed ? 36 : 35,
+    }));
+    expect(result.status).toBe("AVAILABLE");
+    expect(result.candles.map((candle) => candle.session_timing.session_date))
+      .toEqual(dailyFixture.expected_session_dates);
+    expect(result.resource_usage.request).toMatchObject({
+      received_events: committed ? 36 : 35, retained_rows: 33, returned_rows: 33,
+      valid_candle_events: committed ? 34 : 33,
+    });
+    expect(result.resource_usage.symbol.received_events).toBe(committed ? 36 : 35);
+    expect(result.candles.find((candle) => candle.session_timing.session_date === "2026-10-08"))
+      .toMatchObject({
+        close: committed ? "100" : "101", source_time: "2026-10-08T13:30:00.000Z",
+        bar_end: "2026-10-08T20:00:00.000Z", available_at: "2026-10-08T20:00:00.000Z",
+      });
+    expect(result.dxlink_auth).toMatchObject({
+      status: "REFRESHED", refresh_attempted: true, retry_count: 1,
+    });
+    expect(result.provider_error).toEqual({ code: "UNAUTHORIZED", message: "Authentication failed" });
+    expect(result.recovery_diagnostics).toMatchObject({
+      attempts: 2, failures: [], recovered_session_dates: ["2026-10-08"],
+      windows: [
+        { failure_reason: "AUTH_FAILED", received_events: committed ? 1 : 0, provider_snapshot_complete: false },
+        { failure_reason: null, received_events: 2, provider_snapshot_complete: true },
+      ],
+    });
+    expect(quoteTokens.getQuoteToken).toHaveBeenCalledTimes(2);
+    expect(quoteTokens.getQuoteToken.mock.calls[1][1]).toEqual({ forceRefresh: true });
+    expect(quoteTokens.invalidateQuoteToken).toHaveBeenCalledTimes(1);
+    expect(sockets).toHaveLength(3);
+    for (const socket of sockets.slice(1)) {
+      expect(socket.sent.find((message) => message.add).add).toEqual([{
+        type: "Candle", symbol: "SPY{=d,a=s,tho=true}", fromTime: rthSession("2026-10-08").open,
+      }]);
+    }
+    expect(JSON.stringify(result)).not.toContain("synthetic-stale-token");
+    expect(JSON.stringify(result)).not.toContain("synthetic-fresh-token");
+  });
+
+  test.each([false, true])("repeated recovery rejection with committed row=%s fails closed without erasing a completed peer", async (committed) => {
+    const missing = dailyFixture.omissions.SPX;
+    const initial = [
+      ...dailyRows("SPX", dailyFixture.expected_session_dates.filter((date) => !missing.includes(date))),
+      ...dailyRows("QQQ", dailyFixture.expected_session_dates),
+    ];
+    const { client, sockets, quoteTokens } = dailyClient([
+      initial,
+      { rows: committed ? dailyRows("SPX", [missing[0]], false) : [], unauthorized: true },
+      { rows: committed ? dailyRows("SPX", [missing[1]], false) : [], unauthorized: true },
+    ]);
+    const [spx, qqq] = await client.getHistoricalCandlesBatch({
+      ...dailyRequest("SPX"),
+      instruments: [{ symbol: "SPX", instrument_type: "INDEX" }, { symbol: "QQQ", instrument_type: "EQUITY" }],
+    });
+    expect(spx.status).toBe("PARTIAL");
+    expect(spx.candles).toHaveLength(committed ? 32 : 30);
+    expect(spx.missing_session_dates).toEqual(committed ? missing.slice(2) : missing);
+    expect(spx.failure_reasons).toContain("AUTH_FAILED");
+    expect(spx.session_coverage.ma20_eligible).toBe(false);
+    expect(spx.resource_usage.request).toMatchObject({
+      received_events: committed ? 67 : 65, retained_rows: committed ? 65 : 63,
+      returned_rows: committed ? 65 : 63,
+    });
+    expect(spx.resource_usage.symbol.received_events).toBe(committed ? 33 : 31);
+    expect(spx.recovery_diagnostics).toMatchObject({
+      attempts: 2, failures: ["AUTH_FAILED"],
+      recovered_session_dates: committed ? missing.slice(0, 2) : [],
+      stopped_reason: "AUTH_FAILED_PRESERVED_COMMITTED_BARS",
+      windows: [
+        { start: "2026-09-28T13:30:00.000Z", end: "2026-09-30T20:00:00.000Z",
+          failure_reason: "AUTH_FAILED", received_events: committed ? 1 : 0 },
+        { start: "2026-09-28T13:30:00.000Z", end: "2026-09-30T20:00:00.000Z",
+          failure_reason: "AUTH_FAILED", received_events: committed ? 1 : 0 },
+      ],
+    });
+    expect(qqq).toMatchObject({
+      status: "AVAILABLE", snapshot_complete: true, provider_snapshot_complete: true,
+      session_coverage_complete: true, failure_reasons: [],
+      transport_diagnostics: { snapshot_end_seen: true, received_session_dates: dailyFixture.expected_session_dates },
+    });
+    expect(qqq.candles).toHaveLength(33);
+    expect(qqq.resource_usage.symbol.received_events).toBe(34);
+    for (const result of [spx, qqq]) {
+      expect(result.dxlink_auth).toMatchObject({ status: "FAILED", retry_count: 1, refresh_attempted: true });
+      expect(result.provider_error).toEqual({ code: "UNAUTHORIZED", message: "Authentication failed" });
+    }
+    expect(sockets).toHaveLength(3);
+    expect(quoteTokens.getQuoteToken).toHaveBeenCalledTimes(2);
+    expect(quoteTokens.invalidateQuoteToken).toHaveBeenCalledTimes(1);
+  });
+
+  test("initial auth refresh and recovery rejection share exactly one refresh allowance", async () => {
+    const dates = dailyFixture.expected_session_dates.filter((date) => date !== "2026-10-08");
+    const { client, sockets, quoteTokens } = dailyClient([
+      { rows: [], unauthorizedTokens: ["synthetic-stale-token"] },
+      dailyRows("SPY", dates),
+      { rows: dailyRows("SPY", ["2026-10-08"], false), unauthorized: true },
+    ]);
+    const result = await client.getHistoricalCandles(dailyRequest());
+    expect(result.status).toBe("PARTIAL");
+    expect(result.failure_reasons).toContain("AUTH_FAILED");
+    expect(result.dxlink_auth.status).toBe("FAILED");
+    expect(result.candles).toHaveLength(33);
+    expect(result.resource_usage.request.received_events).toBe(34);
+    expect(result.recovery_diagnostics.windows).toHaveLength(1);
+    expect(quoteTokens.getQuoteToken).toHaveBeenCalledTimes(2);
+    expect(quoteTokens.invalidateQuoteToken).toHaveBeenCalledTimes(1);
+    expect(sockets).toHaveLength(3);
+  });
+
+  test.each(["initial", "recovery"].flatMap((stage) =>
+    ["late resolve", "late reject", "cooperative abort"].map((completion) => [stage, completion]),
+  ))("%s pending refresh settles before gate release (%s), preserving rows, peers and ledgers", async (stage, completion) => {
+    const dates = dailyFixture.expected_session_dates;
+    const missing = dailyFixture.omissions.SPX;
+    const initial = stage === "initial";
+    const controller = new AbortController();
+    let release;
+    let rejectGate;
+    let entered;
+    let refreshSignal;
+    let refreshTimer;
+    let gateReleased = false;
+    const timers = jest.spyOn(globalThis, "setTimeout");
+    const clearedTimers = jest.spyOn(globalThis, "clearTimeout");
+    const gate = new Promise((resolve, reject) => { release = resolve; rejectGate = reject; });
+    const refreshEntered = new Promise((resolve) => { entered = resolve; });
+    const attempts = initial ? [{
+      rows: [...dailyRows("QQQ", dates), ...dailyRows("SPX", [dates[0]], false)],
+      unauthorized: true,
+    }] : [
+      [...dailyRows("SPX", dates.filter((date) => !missing.includes(date))), ...dailyRows("QQQ", dates)],
+      { rows: dailyRows("SPX", [missing[0]], false), unauthorized: true },
+    ];
+    const { client, sockets, quoteTokens } = dailyClient(attempts, undefined, (signal, request) => {
+      if (!request?.forceRefresh) return;
+      refreshSignal = signal;
+      refreshTimer = timers.mock.results.at(-1).value;
+      if (completion === "cooperative abort") {
+        signal.addEventListener("abort", () => rejectGate(signal.reason), { once: true });
+      }
+      entered();
+      return gate;
+    });
+    const startedAt = performance.now();
+    const request = client.getHistoricalCandlesBatch({
+      ...dailyRequest("SPX", { signal: controller.signal }),
+      instruments: [{ symbol: "SPX", instrument_type: "INDEX" }, { symbol: "QQQ", instrument_type: "EQUITY" }],
+    });
+    let settled = false;
+    void request.then(() => { settled = true; }, () => { settled = true; });
+    try {
+      await withinWatchdog(refreshEntered);
+      expect(settled).toBe(false);
+      expect(refreshSignal).not.toBe(controller.signal);
+      expect(refreshSignal.aborted).toBe(false);
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(settled).toBe(false);
+      expect(refreshSignal.aborted).toBe(false);
+      const results = await withinWatchdog(request);
+      expect(gateReleased).toBe(false);
+      expect(performance.now() - startedAt).toBeLessThan(500);
+      expect(refreshSignal.aborted).toBe(true);
+      expect(controller.signal.aborted).toBe(false);
+      expect(getEventListeners(controller.signal, "abort")).toHaveLength(0);
+      expect(clearedTimers).toHaveBeenCalledWith(refreshTimer);
+      const [spx, qqq] = results;
+      expect(spx.status).toBe("PARTIAL");
+      expect(spx.candles).toHaveLength(initial ? 1 : 31);
+      expect(spx.candles.some((candle) => candle.source_time ===
+        new Date(rthSession(initial ? dates[0] : missing[0]).open).toISOString())).toBe(true);
+      expect(spx.failure_reasons).toEqual(expect.arrayContaining(["AUTH_FAILED", "SNAPSHOT_TIMEOUT", "PROVIDER_TIMEOUT"]));
+      expect(spx.recovery_diagnostics).toMatchObject({
+        attempts: initial ? 0 : 1,
+        stopped_reason: "AUTH_REFRESH_DEADLINE_EXHAUSTED",
+        failures: ["AUTH_FAILED", "SNAPSHOT_TIMEOUT", "PROVIDER_TIMEOUT"],
+        recovered_session_dates: initial ? [] : [missing[0]],
+      });
+      expect(spx.recovery_diagnostics[initial ? "initial_windows" : "windows"]).toMatchObject([
+        { received_events: 1, failure_reason: "AUTH_FAILED", provider_snapshot_complete: false },
+      ]);
+      expect(spx.transport_diagnostics.timeout_stage).toBe(initial ? "AUTHENTICATING" : null);
+      expect(spx.resource_usage.request).toMatchObject({
+        received_events: initial ? 35 : 66,
+        retained_rows: initial ? 34 : 64,
+        returned_rows: initial ? 34 : 64,
+      });
+      expect(spx.resource_usage.request.retained_bytes).toBeGreaterThan(0);
+      expect(spx.resource_usage.request.peak_buffer_bytes).toBeGreaterThanOrEqual(spx.resource_usage.request.retained_bytes);
+      expect(spx.resource_usage.symbol.received_events).toBe(initial ? 1 : 32);
+      expect(qqq).toMatchObject({
+        status: "AVAILABLE", snapshot_complete: true, provider_snapshot_complete: true,
+        session_coverage_complete: true, failure_reasons: [],
+        session_coverage: { ma20_eligible: true },
+      });
+      expect(qqq.candles).toHaveLength(33);
+      expect(qqq.resource_usage.symbol.received_events).toBe(34);
+      for (const result of results) {
+        expect(result.dxlink_auth).toMatchObject({ status: "FAILED", retry_count: 1, refresh_attempted: true });
+        expect(result.provider_error).toEqual({ code: "UNAUTHORIZED", message: "Authentication failed" });
+      }
+      expect(sockets).toHaveLength(initial ? 1 : 2);
+      expect(sockets.every((socket) => socket.closeCalls.length === 1)).toBe(true);
+      expect(quoteTokens.getQuoteToken).toHaveBeenCalledTimes(2);
+      expect(quoteTokens.invalidateQuoteToken).toHaveBeenCalledTimes(1);
+      const beforeLateCompletion = JSON.stringify(results);
+      gateReleased = true;
+      if (completion === "late reject") rejectGate(new Error("Synthetic late acquisition failure"));
+      else release();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(JSON.stringify(results)).toBe(beforeLateCompletion);
+      expect(sockets).toHaveLength(initial ? 1 : 2);
+      expect(quoteTokens.getQuoteToken).toHaveBeenCalledTimes(2);
+    } finally {
+      release();
+      try {
+        await withinWatchdog(request);
+      } finally {
+        timers.mockRestore();
+        clearedTimers.mockRestore();
+      }
+    }
+  });
+
+  test.each(["initial", "recovery"])("%s caller abort settles a non-cooperative pending refresh distinctly", async (stage) => {
+    const controller = new AbortController();
+    let rejectGate;
+    let entered;
+    let refreshSignal;
+    let refreshTimer;
+    const timers = jest.spyOn(globalThis, "setTimeout");
+    const clearedTimers = jest.spyOn(globalThis, "clearTimeout");
+    const gate = new Promise((_, reject) => { rejectGate = reject; });
+    const refreshEntered = new Promise((resolve) => { entered = resolve; });
+    const { client, sockets } = dailyClient(stage === "initial" ? [
+      { rows: dailyRows("SPY", [dailyFixture.expected_session_dates[0]], false), unauthorized: true },
+    ] : [
+      dailyRows("SPY", dailyFixture.expected_session_dates.filter((date) => date !== "2026-10-08")),
+      { rows: dailyRows("SPY", ["2026-10-08"], false), unauthorized: true },
+    ], undefined, (signal, request) => {
+      if (!request?.forceRefresh) return;
+      refreshSignal = signal;
+      refreshTimer = timers.mock.results.at(-1).value;
+      entered();
+      return gate;
+    });
+    const request = client.getHistoricalCandles(dailyRequest("SPY", { deadline_ms: 1000, signal: controller.signal }));
+    const rejected = expect(withinWatchdog(request)).rejects.toMatchObject({ name: "HistoricalCandlesAbortedError" });
+    try {
+      await withinWatchdog(refreshEntered);
+      controller.abort();
+      await rejected;
+      expect(refreshSignal.aborted).toBe(true);
+      expect(getEventListeners(controller.signal, "abort")).toHaveLength(0);
+      expect(clearedTimers).toHaveBeenCalledWith(refreshTimer);
+      expect(sockets).toHaveLength(stage === "initial" ? 1 : 2);
+    } finally {
+      rejectGate(new Error("Synthetic late failure after caller abort"));
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      timers.mockRestore();
+      clearedTimers.mockRestore();
+    }
+    expect(sockets).toHaveLength(stage === "initial" ? 1 : 2);
+  });
+
+  test.each(["resolve", "reject"])("refresh acquisition %s cleans its deadline timer and caller listener", async (completion) => {
+    const controller = new AbortController();
+    let refreshTimer;
+    let refreshSignal;
+    const timers = jest.spyOn(globalThis, "setTimeout");
+    const clearedTimers = jest.spyOn(globalThis, "clearTimeout");
+    try {
+      const { client, sockets } = dailyClient([
+        { rows: dailyRows("SPY", [dailyFixture.expected_session_dates[0]], false), unauthorized: true },
+        dailyRows("SPY", dailyFixture.expected_session_dates),
+      ], undefined, (signal, request) => {
+        if (!request?.forceRefresh) return;
+        refreshSignal = signal;
+        refreshTimer = timers.mock.results.at(-1).value;
+        if (completion === "reject") throw new Error("Synthetic acquisition failure");
+      });
+      const result = await client.getHistoricalCandles(dailyRequest("SPY", { signal: controller.signal }));
+      expect(result.dxlink_auth.status).toBe(completion === "resolve" ? "REFRESHED" : "FAILED");
+      expect(sockets).toHaveLength(completion === "resolve" ? 2 : 1);
+      expect(refreshSignal.aborted).toBe(false);
+      expect(getEventListeners(controller.signal, "abort")).toHaveLength(0);
+      expect(clearedTimers).toHaveBeenCalledWith(refreshTimer);
+      controller.abort();
+      expect(refreshSignal.aborted).toBe(false);
+    } finally {
+      timers.mockRestore();
+      clearedTimers.mockRestore();
+    }
+  });
+
+  test.each(["market", "monotonic"])("exhausted %s deadline prevents forced acquisition, not just reconnect", async (clockKind) => {
+    let now = Date.parse("2026-12-31T23:00:00Z");
+    let wall = 0;
+    const performanceClock = jest.spyOn(performance, "now").mockImplementation(() => wall);
+    try {
+      const { client, sockets, quoteTokens } = dailyClient([
+        { rows: dailyRows("SPY", [dailyFixture.expected_session_dates[0]], false), unauthorized: true },
+      ], () => now);
+      quoteTokens.invalidateQuoteToken.mockImplementation(() => {
+        if (clockKind === "market") now += 100;
+        else wall += 100;
+      });
+      const result = await client.getHistoricalCandles(dailyRequest());
+      expect(quoteTokens.getQuoteToken).toHaveBeenCalledTimes(1);
+      expect(sockets).toHaveLength(1);
+      expect(result.candles).toHaveLength(1);
+      expect(result.dxlink_auth.status).toBe("FAILED");
+      expect(result.recovery_diagnostics.stopped_reason).toBe("AUTH_REFRESH_DEADLINE_EXHAUSTED");
+      expect(result.failure_reasons).toEqual(expect.arrayContaining(["AUTH_FAILED", "SNAPSHOT_TIMEOUT", "PROVIDER_TIMEOUT"]));
+    } finally {
+      performanceClock.mockRestore();
+    }
+  });
+
+  test("pending forced acquisition gets only seven residual milliseconds, never a fresh deadline", async () => {
+    let now = Date.parse("2026-12-31T23:00:00Z");
+    let release;
+    let entered;
+    let refreshSignal;
+    let refreshAllowance;
+    const gate = new Promise((resolve) => { release = resolve; });
+    const refreshEntered = new Promise((resolve) => { entered = resolve; });
+    const performanceClock = jest.spyOn(performance, "now").mockReturnValue(0);
+    const timers = jest.spyOn(globalThis, "setTimeout");
+    const { client, sockets, quoteTokens } = dailyClient([
+      { rows: dailyRows("SPY", [dailyFixture.expected_session_dates[0]], false), unauthorized: true },
+    ], () => now, (signal, request) => {
+      if (!request?.forceRefresh) return;
+      refreshSignal = signal;
+      refreshAllowance = timers.mock.calls.at(-1)[1];
+      entered();
+      return gate;
+    });
+    quoteTokens.invalidateQuoteToken.mockImplementation(() => { now += 93; });
+    const request = client.getHistoricalCandles(dailyRequest());
+    try {
+      await withinWatchdog(refreshEntered);
+      expect(refreshAllowance).toBe(7);
+      expect(refreshSignal.aborted).toBe(false);
+      const result = await withinWatchdog(request);
+      expect(refreshSignal.aborted).toBe(true);
+      expect(result.candles).toHaveLength(1);
+      expect(result.recovery_diagnostics.stopped_reason).toBe("AUTH_REFRESH_DEADLINE_EXHAUSTED");
+      expect(sockets).toHaveLength(1);
+      expect(quoteTokens.getQuoteToken).toHaveBeenCalledTimes(2);
+      release();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(sockets).toHaveLength(1);
+    } finally {
+      release();
+      try {
+        await withinWatchdog(request);
+      } finally {
+        performanceClock.mockRestore();
+        timers.mockRestore();
+      }
+    }
+  });
+
+  test.each([34, 35])("initial committed row survives refresh at exact cumulative event cap %i", async (limit) => {
+    const refreshed = dailyRows("SPY", dailyFixture.expected_session_dates);
+    for (const value of refreshed) for (let index = 7; index <= 10; index += 1) value[index] = "101";
+    const { client, sockets, quoteTokens } = dailyClient([
+      { rows: dailyRows("SPY", [dailyFixture.expected_session_dates[0]], false), unauthorized: true },
+      refreshed,
+    ]);
+    const result = await client.getHistoricalCandles(dailyRequest("SPY", {
+      max_output_candles: 33, max_received_events: limit,
+    }));
+    expect(result.resource_usage.request).toMatchObject({
+      received_events: limit, valid_candle_events: 34, retained_rows: 33, returned_rows: 33,
+    });
+    expect(result.resource_usage.symbol.received_events).toBe(limit);
+    expect(result.candles).toHaveLength(33);
+    expect(result.candles[0]).toMatchObject({
+      close: "100", source_time: "2026-08-25T13:30:00.000Z",
+      bar_start: "2026-08-25T13:30:00.000Z", bar_end: "2026-08-25T20:00:00.000Z",
+    });
+    expect(result.status).toBe(limit === 34 ? "PARTIAL" : "AVAILABLE");
+    expect(result.snapshot_complete).toBe(limit === 35);
+    expect(result.provider_snapshot_complete).toBe(limit === 35);
+    expect(result.dxlink_auth.status).toBe("REFRESHED");
+    expect(result.failure_reasons).toEqual(limit === 34 ? ["LOCAL_RECEIVE_BUDGET_EXCEEDED"] : []);
+    expect(result.recovery_diagnostics.initial_windows).toMatchObject([
+      { received_events: 1, failure_reason: "AUTH_FAILED", provider_snapshot_complete: false },
+      { received_events: limit - 1, failure_reason: limit === 34 ? "LOCAL_RECEIVE_BUDGET_EXCEEDED" : null,
+        provider_snapshot_complete: limit === 35 },
+    ]);
+    expect(result.recovery_diagnostics.windows).toEqual([]);
+    expect(sockets).toHaveLength(2);
+    expect(quoteTokens.getQuoteToken).toHaveBeenCalledTimes(2);
+    expect(quoteTokens.invalidateQuoteToken).toHaveBeenCalledTimes(1);
+    expect(result.provider_error).toEqual({ code: "UNAUTHORIZED", message: "Authentication failed" });
+    expect(JSON.stringify(result)).not.toMatch(/synthetic-(stale|fresh)-token/);
+  });
+
+  test.each(["market", "monotonic"])("initial handshake refresh exhausting %s deadline never opens socket two", async (clockKind) => {
+    let now = Date.parse("2026-12-31T23:00:00Z");
+    let wall = 0;
+    const performanceClock = jest.spyOn(performance, "now").mockImplementation(() => wall);
+    try {
+      const { client, sockets, quoteTokens } = dailyClient([
+        { rows: [], unauthorizedTokens: ["synthetic-stale-token"] },
+        dailyRows("SPY", dailyFixture.expected_session_dates),
+      ], () => now, async (signal, request) => {
+        if (request?.forceRefresh) {
+          if (clockKind === "market") now += 100;
+          else wall += 100;
+        }
+      });
+      const result = await client.getHistoricalCandles(dailyRequest());
+      expect(sockets).toHaveLength(1);
+      expect(quoteTokens.getQuoteToken).toHaveBeenCalledTimes(2);
+      expect(quoteTokens.invalidateQuoteToken).toHaveBeenCalledTimes(1);
+      expect(result.candles).toEqual([]);
+      expect(result.status).toBe("NOT_AVAILABLE");
+      expect(result.dxlink_auth.status).toBe("NOT_CONFIRMED");
+      expect(result.failure_reasons).toEqual(expect.arrayContaining(["AUTH_FAILED"]));
+      expect(result.snapshot_complete).toBe(false);
+      expect(result.provider_snapshot_complete).toBe(false);
+      expect(result.resource_usage.request.received_events).toBe(0);
+      expect(result.recovery_diagnostics).toMatchObject({
+        stopped_reason: "SHARED_RESOURCE_BUDGET_EXHAUSTED",
+        initial_windows: [{
+          start: new Date(dailyFixture.start_time).toISOString(),
+          end: new Date(dailyFixture.end_time).toISOString(),
+          received_events: 0, failure_reason: "AUTH_FAILED", provider_snapshot_complete: false,
+          failure_stage: "AUTHENTICATING",
+        }],
+      });
+      expect(result.provider_error).toEqual({ code: "UNAUTHORIZED", message: "Authentication failed" });
+    } finally {
+      performanceClock.mockRestore();
+    }
+  });
+
+  test.each([false, true])("repeated initial rejection retains committed=%s provenance and counters", async (committed) => {
+    const dates = dailyFixture.expected_session_dates;
+    const { client, sockets, quoteTokens } = dailyClient([
+      { rows: committed ? dailyRows("SPY", [dates[0]], false) : [],
+        unauthorizedTokens: committed ? [] : ["synthetic-stale-token"], unauthorized: committed },
+      { rows: committed ? dailyRows("SPY", [dates[1]], false) : [],
+        unauthorizedTokens: committed ? [] : ["synthetic-fresh-token"], unauthorized: committed },
+    ]);
+    const result = await client.getHistoricalCandles(dailyRequest());
+    expect(result.candles).toHaveLength(committed ? 2 : 0);
+    expect(result.resource_usage.request).toMatchObject({
+      received_events: committed ? 2 : 0, returned_rows: committed ? 2 : 0,
+      retained_rows: committed ? 2 : 0,
+    });
+    expect(result.dxlink_auth).toMatchObject({ status: "FAILED", retry_count: 1, refresh_attempted: true });
+    expect(result.failure_reasons).toContain("AUTH_FAILED");
+    expect(result.recovery_diagnostics.initial_windows).toMatchObject([
+      { received_events: committed ? 1 : 0, failure_reason: "AUTH_FAILED" },
+      { received_events: committed ? 1 : 0, failure_reason: "AUTH_FAILED" },
+    ]);
+    expect(result.snapshot_complete).toBe(false);
+    expect(result.recovery_diagnostics.stopped_reason).toBe("AUTH_FAILED_PRESERVED_COMMITTED_BARS");
+    expect(result.provider_error).toEqual({ code: "UNAUTHORIZED", message: "Authentication failed" });
+    expect(sockets).toHaveLength(2);
+    expect(quoteTokens.getQuoteToken).toHaveBeenCalledTimes(2);
+    expect(quoteTokens.invalidateQuoteToken).toHaveBeenCalledTimes(1);
+  });
+
+  test("initial rejection at the one-event cap cannot open an auth reconnect with a new allowance", async () => {
+    const { client, sockets, quoteTokens } = dailyClient([
+      { rows: dailyRows("SPY", [dailyFixture.expected_session_dates[0]], false), unauthorized: true },
+      dailyRows("SPY", dailyFixture.expected_session_dates),
+    ]);
+    const result = await client.getHistoricalCandles(dailyRequest("SPY", { max_received_events: 1 }));
+    expect(result.candles).toHaveLength(1);
+    expect(result.resource_usage.request.received_events).toBe(1);
+    expect(result.dxlink_auth.status).toBe("NOT_CONFIRMED");
+    expect(result.snapshot_complete).toBe(false);
+    expect(result.failure_reasons).toContain("AUTH_FAILED");
+    expect(result.recovery_diagnostics.stopped_reason).toBe("SHARED_RESOURCE_BUDGET_EXHAUSTED");
+    expect(sockets).toHaveLength(1);
+    expect(quoteTokens.getQuoteToken).toHaveBeenCalledTimes(2);
+  });
+
+  test("initial reconnect gets only seven remaining milliseconds with a fixed monotonic clock", async () => {
+    let now = Date.parse("2026-12-31T23:00:00Z");
+    const performanceClock = jest.spyOn(performance, "now").mockReturnValue(0);
+    const timers = jest.spyOn(globalThis, "setTimeout");
+    try {
+      const { client, sockets } = dailyClient([
+        { rows: dailyRows("SPY", ["2026-10-07"], false), unauthorized: true },
+        [],
+      ], () => now, async (signal, request) => {
+        if (request?.forceRefresh) now += 93;
+      });
+      const result = await client.getHistoricalCandles(dailyRequest("SPY", {
+        start_time: "2026-10-07T00:00:00Z", end_time: "2026-10-09T23:00:00Z",
+      }));
+      expect(timers.mock.calls.map((call) => call[1])).toEqual([100, 100, 7]);
+      expect(sockets).toHaveLength(2);
+      expect(result.resource_usage.request.received_events).toBe(1);
+      expect(result.candles).toHaveLength(1);
+      expect(result.status).toBe("PARTIAL");
+      expect(result.failure_reasons).toEqual(expect.arrayContaining(["SNAPSHOT_TIMEOUT", "PROVIDER_TIMEOUT"]));
+      expect(result.recovery_diagnostics.initial_windows).toMatchObject([
+        { received_events: 1, failure_reason: "AUTH_FAILED" },
+        { received_events: 0, failure_reason: "SNAPSHOT_TIMEOUT", timeout_stage: "SNAPSHOT" },
+      ]);
+    } finally {
+      timers.mockRestore();
+      performanceClock.mockRestore();
+    }
+  });
+
+  test("initial refresh acquisition failure preserves its first committed row and failed window", async () => {
+    const { client, sockets, quoteTokens } = dailyClient([
+      { rows: dailyRows("SPY", [dailyFixture.expected_session_dates[0]], false), unauthorized: true },
+    ], undefined, async (signal, request) => {
+      if (request?.forceRefresh) throw new Error("Synthetic acquisition failure");
+    });
+    const result = await client.getHistoricalCandles(dailyRequest());
+    expect(result).toMatchObject({
+      status: "PARTIAL", dxlink_auth: { status: "FAILED", retry_count: 1 },
+      provider_error: { code: "UNAUTHORIZED", message: "Authentication failed" },
+    });
+    expect(result.candles).toHaveLength(1);
+    expect(result.resource_usage.request.received_events).toBe(1);
+    expect(result.recovery_diagnostics.initial_windows).toMatchObject([
+      { received_events: 1, failure_reason: "AUTH_FAILED", failure_stage: "AUTHENTICATING" },
+    ]);
+    expect(sockets).toHaveLength(1);
+    expect(quoteTokens.getQuoteToken).toHaveBeenCalledTimes(2);
+    expect(quoteTokens.invalidateQuoteToken).toHaveBeenCalledTimes(1);
+  });
+
+  test("cancellation during initial refresh rejects explicitly without reconnect", async () => {
+    const controller = new AbortController();
+    const { client, sockets } = dailyClient([
+      { rows: dailyRows("SPY", [dailyFixture.expected_session_dates[0]], false), unauthorized: true },
+    ], undefined, async (signal, request) => {
+      if (request?.forceRefresh) controller.abort();
+    });
+    await expect(client.getHistoricalCandles(dailyRequest("SPY", { signal: controller.signal })))
+      .rejects.toMatchObject({ name: "HistoricalCandlesAbortedError" });
+    expect(sockets).toHaveLength(1);
+  });
+
+  test("reconnect snapshot resets and removes affect new rows, never earlier committed evidence", async () => {
+    const firstTime = rthSession("2026-08-25").open;
+    const { client } = dailyClient([
+      { rows: dailyRows("SPY", ["2026-08-25"], false), unauthorized: true },
+      [
+        row(rthSession("2026-08-26").open, 4, "101", "SPY{=d,a=s,tho=true}"),
+        row(rthSession("2026-08-27").open, 4, "102", "SPY{=d,a=s,tho=true}"),
+        marker(firstTime, "SPY{=d,a=s,tho=true}", 2),
+        marker(0, "SPY{=d,a=s,tho=true}"),
+      ],
+    ]);
+    const result = await client.getHistoricalCandles(dailyRequest("SPY", {
+      start_time: "2026-08-25T00:00:00Z", end_time: "2026-08-27T23:00:00Z",
+      max_received_events: 5,
+    }));
+    expect(result.candles.map((candle) => candle.close)).toEqual(["100", "102"]);
+    expect(result.missing_session_dates).toEqual(["2026-08-26"]);
+    expect(result.resource_usage.request).toMatchObject({
+      received_events: 5, retained_rows: 2, returned_rows: 2, unique_observations: 2,
+    });
+    expect(result.transport_diagnostics.local_pipeline.snapshot_resets).toBe(3);
+  });
+
+  test("initial uncommitted transactions stay charged but cannot be committed by a different socket", async () => {
+    const date = "2026-10-08";
+    const native = "SPY{=d,a=s,tho=true}";
+    const refreshed = [row(rthSession(date).open, 4, "101", native), marker(0, native)];
+    const request = dailyRequest("SPY", {
+      start_time: "2026-10-08T00:00:00Z", end_time: "2026-10-08T23:00:00Z",
+    });
+    const clean = await dailyClient([refreshed]).client.getHistoricalCandles(request);
+    const { client } = dailyClient([
+      { rows: [row(rthSession(date).open, 5, "100", native)], unauthorized: true },
+      refreshed,
+    ]);
+    const result = await client.getHistoricalCandles(request);
+    expect(result.status).toBe("AVAILABLE");
+    expect(result.candles).toHaveLength(1);
+    expect(result.candles[0].close).toBe("101");
+    expect(result.resource_usage.request).toMatchObject({
+      received_events: 3, retained_rows: 1, returned_rows: 1,
+    });
+    expect(result.resource_usage.request.retained_bytes).toBeGreaterThan(clean.resource_usage.request.retained_bytes);
+    expect(result.recovery_diagnostics.initial_windows.map((window) => window.received_events)).toEqual([1, 2]);
+  });
+
+  test("initial auth reconnect retains completed QQQ and subscribes only rejected SPY", async () => {
+    const dates = dailyFixture.expected_session_dates;
+    const { client, sockets } = dailyClient([
+      { rows: [...dailyRows("QQQ", dates), ...dailyRows("SPY", [dates[0]], false)], unauthorized: true },
+      { rows: dailyRows("SPY", [dates[1]], false), unauthorized: true },
+    ]);
+    const [qqq, spy] = await client.getHistoricalCandlesBatch({
+      ...dailyRequest(),
+      instruments: [{ symbol: "QQQ", instrument_type: "EQUITY" }, { symbol: "SPY", instrument_type: "EQUITY" }],
+    });
+    expect(qqq).toMatchObject({
+      status: "AVAILABLE", provider_snapshot_complete: true, session_coverage_complete: true,
+      failure_reasons: [], dxlink_auth: { status: "FAILED" },
+    });
+    expect(qqq.candles).toHaveLength(33);
+    expect(qqq.resource_usage.symbol.received_events).toBe(34);
+    expect(spy.candles).toHaveLength(2);
+    expect(spy.resource_usage.symbol.received_events).toBe(2);
+    expect(spy.resource_usage.request).toMatchObject({ received_events: 36, retained_rows: 35, returned_rows: 35 });
+    expect(spy.dxlink_auth.status).toBe("FAILED");
+    expect(spy.recovery_diagnostics.initial_windows.map((window) => window.received_events)).toEqual([1, 1]);
+    expect(qqq.recovery_diagnostics.initial_windows).toMatchObject([
+      { received_events: 34, failure_reason: null, provider_snapshot_complete: true },
+    ]);
+    expect(sockets[1].sent.find((message) => message.add).add).toEqual([{
+      type: "Candle", symbol: "SPY{=d,a=s,tho=true}", fromTime: Date.parse(dailyFixture.start_time),
+    }]);
+  });
+
+  test("successful initial reconnect and native recovery spend exactly one refresh", async () => {
+    const dates = dailyFixture.expected_session_dates;
+    const { client, sockets, quoteTokens } = dailyClient([
+      { rows: dailyRows("SPY", [dates[0]], false), unauthorized: true },
+      dailyRows("SPY", dates.filter((date) => date !== "2026-10-08")),
+      dailyRows("SPY", ["2026-10-08"]),
+    ]);
+    const result = await client.getHistoricalCandles(dailyRequest("SPY", {
+      max_output_candles: 33, max_received_events: 36,
+    }));
+    expect(result.status).toBe("AVAILABLE");
+    expect(result.resource_usage.request).toMatchObject({ received_events: 36, retained_rows: 33, returned_rows: 33 });
+    expect(result.recovery_diagnostics.initial_windows.map((window) => window.received_events)).toEqual([1, 33]);
+    expect(result.recovery_diagnostics.windows.map((window) => window.received_events)).toEqual([2]);
+    expect(result.dxlink_auth.status).toBe("REFRESHED");
+    expect(quoteTokens.getQuoteToken).toHaveBeenCalledTimes(2);
+    expect(quoteTokens.invalidateQuoteToken).toHaveBeenCalledTimes(1);
+    expect(sockets).toHaveLength(3);
+  });
+
+  test("initial reconnect does not resubscribe a provider-snipped peer or hide its terminal provenance", async () => {
+    const dates = dailyFixture.expected_session_dates;
+    const qqqRows = dailyRows("QQQ", dates);
+    qqqRows.at(-1)[2] = 18;
+    const { client, sockets } = dailyClient([
+      { rows: [...qqqRows, ...dailyRows("SPY", [dates[0]], false)], unauthorized: true },
+      dailyRows("SPY", dates),
+    ]);
+    const [qqq, spy] = await client.getHistoricalCandlesBatch({
+      ...dailyRequest(),
+      instruments: [{ symbol: "QQQ", instrument_type: "EQUITY" }, { symbol: "SPY", instrument_type: "EQUITY" }],
+    });
+    expect(qqq.failure_reasons).toContain("PROVIDER_SNAPSHOT_SNIPPED");
+    expect(qqq.recovery_diagnostics.initial_windows).toMatchObject([
+      { received_events: 34, failure_reason: "PROVIDER_SNAPSHOT_SNIPPED", provider_snapshot_complete: false },
+    ]);
+    expect(qqq.resource_usage.symbol.received_events).toBe(34);
+    expect(spy.status).toBe("AVAILABLE");
+    expect(spy.resource_usage.request.received_events).toBe(69);
+    expect(sockets[1].sent.find((message) => message.add).add.map((item) => item.symbol))
+      .toEqual(["SPY{=d,a=s,tho=true}"]);
+  });
+
+  test("initial reconnect cannot replenish committed per-symbol output capacity", async () => {
+    const dates = dailyFixture.expected_session_dates;
+    const { client, sockets } = dailyClient([
+      { rows: dailyRows("SPY", [dates[0]], false), unauthorized: true },
+      dailyRows("SPY", dates),
+    ]);
+    const result = await client.getHistoricalCandles(dailyRequest("SPY", { max_output_candles: 2 }));
+    expect(result.candles.map((candle) => candle.session_timing.session_date)).toEqual(dates.slice(0, 2));
+    expect(result.resource_usage.request).toMatchObject({ received_events: 35, retained_rows: 2, returned_rows: 2 });
+    expect(result.failure_reasons).toContain("LOCAL_OUTPUT_BUDGET_EXCEEDED");
+    expect(result.status).toBe("PARTIAL");
+    expect(sockets).toHaveLength(2);
+  });
+
+  test("initial reconnect uses the retained failed attempt's residual buffer, including diagnostic bytes", async () => {
+    const first = { rows: dailyRows("SPY", [dailyFixture.expected_session_dates[0]], false), unauthorized: true };
+    const baseline = dailyClient([first], undefined, async (signal, request) => {
+      if (request?.forceRefresh) throw new Error("Synthetic acquisition failure");
+    });
+    const measured = await baseline.client.getHistoricalCandles(dailyRequest());
+    const retained = measured.resource_usage.request.retained_bytes;
+    const limit = measured.resource_usage.request.peak_buffer_bytes + 100;
+    const remaining = limit - retained;
+    const expensive = [row(rthSession("2026-08-26").open, 4,
+      "1".repeat(Math.ceil(remaining / 4)), "SPY{=d,a=s,tho=true}")];
+    const wireBytes = Buffer.byteLength(JSON.stringify({
+      type: "FEED_DATA", channel: 3, data: ["Candle", expensive.flat()],
+    }));
+    expect(wireBytes).toBeGreaterThan(remaining);
+    expect(wireBytes).toBeLessThan(limit);
+    const { client, sockets } = dailyClient([first, expensive]);
+    const result = await client.getHistoricalCandles(dailyRequest("SPY", { max_buffer_bytes: limit }));
+    expect(result.candles).toHaveLength(1);
+    expect(result.resource_usage.request.received_events).toBe(1);
+    expect(result.resource_usage.request.retained_bytes).toBe(retained);
+    expect(result.resource_usage.request.peak_buffer_bytes).toBe(retained + wireBytes +
+      Buffer.byteLength(JSON.stringify({ type: "FEED_CONFIG", channel: 3 })));
+    expect(result.failure_reasons).toContain("LOCAL_BUFFER_BUDGET_EXCEEDED");
+    expect(result.recovery_diagnostics.initial_windows.map((window) => window.received_events)).toEqual([1, 0]);
+    expect(sockets).toHaveLength(2);
+  });
+
+  test.each(["index", "timestamp"])("initial reconnect rejects conflicting native %s identity without replacing evidence", async (conflict) => {
+    const firstDate = dailyFixture.expected_session_dates[0];
+    const firstTime = rthSession(firstDate).open;
+    const conflicting = row(conflict === "index" ? rthSession("2026-08-26").open : firstTime,
+      4, "101", "SPY{=d,a=s,tho=true}", conflict === "index" ? String(firstTime) : "different-index");
+    const { client } = dailyClient([
+      { rows: dailyRows("SPY", [firstDate], false), unauthorized: true },
+      [conflicting, marker(0, "SPY{=d,a=s,tho=true}")],
+    ]);
+    const result = await client.getHistoricalCandles(dailyRequest());
+    expect(result.candles).toHaveLength(1);
+    expect(result.candles[0].close).toBe("100");
+    expect(result.failure_reasons).toContain("PROVIDER_SCHEMA_MISMATCH");
+    expect(result.resource_usage.request.received_events).toBe(3);
+    expect(result.status).toBe("PARTIAL");
+  });
+
+  test.each([false, true])("recovery handshake rejection, repeated=%s, records every attempted window", async (repeated) => {
+    const dates = dailyFixture.expected_session_dates.filter((date) => date !== "2026-10-08");
+    const { client, sockets, quoteTokens } = dailyClient([
+      dailyRows("SPY", dates),
+      { rows: [], unauthorizedTokens: ["synthetic-stale-token"] },
+      { rows: dailyRows("SPY", ["2026-10-08"]),
+        unauthorizedTokens: repeated ? ["synthetic-fresh-token"] : [] },
+    ]);
+    const result = await client.getHistoricalCandles(dailyRequest());
+    expect(result.candles).toHaveLength(repeated ? 32 : 33);
+    expect(result.resource_usage.request.received_events).toBe(repeated ? 33 : 35);
+    expect(result.dxlink_auth).toMatchObject({
+      status: repeated ? "FAILED" : "REFRESHED", refresh_attempted: true, retry_count: 1,
+    });
+    expect(result.provider_error).toEqual({ code: "UNAUTHORIZED", message: "Authentication failed" });
+    expect(result.recovery_diagnostics.windows).toMatchObject([
+      { failure_reason: "AUTH_FAILED", received_events: 0, provider_snapshot_complete: false },
+      { failure_reason: repeated ? "AUTH_FAILED" : null,
+        received_events: repeated ? 0 : 2, provider_snapshot_complete: !repeated },
+    ]);
+    expect(result.recovery_diagnostics.failures).toEqual(repeated ? ["AUTH_FAILED"] : []);
+    expect(sockets).toHaveLength(3);
+    expect(quoteTokens.getQuoteToken).toHaveBeenCalledTimes(2);
+    expect(quoteTokens.invalidateQuoteToken).toHaveBeenCalledTimes(1);
+  });
+
+  test("a recovery auth reconnect consumes the four-attempt batch allowance, not an extra window", async () => {
+    const symbols = ["SPX", "SPY", "QQQ", "IWM"];
+    const initial = symbols.flatMap((symbol) => dailyRows(symbol,
+      dailyFixture.expected_session_dates.filter((date) => !dailyFixture.omissions[symbol].includes(date))));
+    const { client, sockets, quoteTokens } = dailyClient([
+      initial, dailyRows("SPX", dailyFixture.omissions.SPX), dailyRows("SPY", dailyFixture.omissions.SPY),
+      { rows: dailyRows("QQQ", dailyFixture.omissions.QQQ, false), unauthorized: true },
+      dailyRows("QQQ", dailyFixture.omissions.QQQ),
+    ]);
+    const results = await client.getHistoricalCandlesBatch({
+      ...dailyRequest(), instruments: symbols.map((symbol) => ({
+        symbol, instrument_type: symbol === "SPX" ? "INDEX" : "EQUITY",
+      })),
+    });
+    expect(results.map((result) => result.recovery_diagnostics.attempts)).toEqual([1, 1, 2, 0]);
+    expect(results.map((result) => result.candles.length)).toEqual([33, 33, 33, 32]);
+    expect(results.map((result) => result.status)).toEqual(["AVAILABLE", "AVAILABLE", "AVAILABLE", "PARTIAL"]);
+    expect(results[3].recovery_diagnostics.stopped_reason).toBe("RECOVERY_ATTEMPT_LIMIT");
+    expect(results[0].resource_usage.request).toMatchObject({ received_events: 139, returned_rows: 131 });
+    expect(sockets).toHaveLength(5);
+    expect(quoteTokens.getQuoteToken).toHaveBeenCalledTimes(2);
+    expect(quoteTokens.invalidateQuoteToken).toHaveBeenCalledTimes(1);
+  });
+
+  test.each([34, 35])("auth refresh retains an exact %i-event request cap", async (limit) => {
+    const dates = dailyFixture.expected_session_dates.filter((date) => date !== "2026-10-08");
+    const { client, sockets, quoteTokens } = dailyClient([
+      dailyRows("SPY", dates),
+      { rows: dailyRows("SPY", ["2026-10-08"], false), unauthorized: true },
+      dailyRows("SPY", ["2026-10-08"]),
+    ]);
+    const result = await client.getHistoricalCandles(dailyRequest("SPY", { max_received_events: limit }));
+    expect(result.status).toBe("PARTIAL");
+    expect(result.candles).toHaveLength(33);
+    expect(result.resource_usage.request.received_events).toBe(limit);
+    expect(result.recovery_diagnostics.windows.map((window) => window.received_events))
+      .toEqual(limit === 34 ? [1] : [1, 1]);
+    expect(result.failure_reasons).toContain(limit === 34 ? "AUTH_FAILED" : "LOCAL_RECEIVE_BUDGET_EXCEEDED");
+    expect(result.dxlink_auth.status).toBe(limit === 34 ? "NOT_CONFIRMED" : "REFRESHED");
+    expect(result.provider_error.code).toBe("UNAUTHORIZED");
+    expect(sockets).toHaveLength(limit === 34 ? 2 : 3);
+    expect(quoteTokens.getQuoteToken).toHaveBeenCalledTimes(2);
+    expect(quoteTokens.invalidateQuoteToken).toHaveBeenCalledTimes(1);
+  });
+
+  test("auth refresh cannot replenish output capacity already spent by committed recovery rows", async () => {
+    const missing = dailyFixture.omissions.SPX;
+    const { client } = dailyClient([
+      dailyRows("SPX", dailyFixture.expected_session_dates.filter((date) => !missing.includes(date))),
+      { rows: dailyRows("SPX", [missing[0]], false), unauthorized: true },
+      dailyRows("SPX", missing.slice(1)),
+    ]);
+    const result = await client.getHistoricalCandles(dailyRequest("SPX", { max_output_candles: 32 }));
+    expect(result.candles).toHaveLength(32);
+    expect(result.missing_session_dates).toEqual([missing[2]]);
+    expect(result.resource_usage.request.received_events).toBe(35);
+    expect(result.failure_reasons).toContain("LOCAL_OUTPUT_BUDGET_EXCEEDED");
+    expect(result.recovery_diagnostics.windows.map((window) => window.received_events)).toEqual([1, 3]);
+  });
+
+  test("token refresh latency consumes the original request deadline without opening a fresh socket", async () => {
+    let now = Date.parse("2026-12-31T23:00:00Z");
+    const dates = dailyFixture.expected_session_dates.filter((date) => date !== "2026-10-08");
+    const { client, sockets, quoteTokens } = dailyClient([
+      dailyRows("SPY", dates),
+      { rows: dailyRows("SPY", ["2026-10-08"], false), unauthorized: true },
+      dailyRows("SPY", ["2026-10-08"]),
+    ], () => now, async (signal, request) => {
+      if (request?.forceRefresh) now += 100;
+    });
+    const result = await client.getHistoricalCandles(dailyRequest("SPY", { deadline_ms: 100 }));
+    expect(result.candles).toHaveLength(33);
+    expect(result.status).toBe("PARTIAL");
+    expect(result.dxlink_auth.status).toBe("NOT_CONFIRMED");
+    expect(result.recovery_diagnostics.stopped_reason).toBe("SHARED_RESOURCE_BUDGET_EXHAUSTED");
+    expect(result.resource_usage.request.received_events).toBe(34);
+    expect(result.resource_usage.limits.deadline_ms_per_request).toBe(100);
+    expect(sockets).toHaveLength(2);
+    expect(quoteTokens.getQuoteToken).toHaveBeenCalledTimes(2);
+  });
+
+  test("cancellation during authentication refresh stays explicit", async () => {
+    const controller = new AbortController();
+    const dates = dailyFixture.expected_session_dates.filter((date) => date !== "2026-10-08");
+    const { client, sockets } = dailyClient([
+      dailyRows("SPY", dates), { rows: [], unauthorized: true },
+    ], undefined, async (signal, request) => {
+      if (request?.forceRefresh) controller.abort();
+    });
+    await expect(client.getHistoricalCandles(dailyRequest("SPY", { signal: controller.signal })))
+      .rejects.toMatchObject({ name: "HistoricalCandlesAbortedError" });
+    expect(sockets).toHaveLength(2);
+  });
+
+  test("refresh acquisition failure retains committed evidence and sanitized AUTH_FAILED provenance", async () => {
+    const dates = dailyFixture.expected_session_dates.filter((date) => date !== "2026-10-08");
+    const { client, sockets, quoteTokens } = dailyClient([
+      dailyRows("SPY", dates),
+      { rows: dailyRows("SPY", ["2026-10-08"], false), unauthorized: true },
+    ], undefined, async (signal, request) => {
+      if (request?.forceRefresh) throw new Error("Synthetic acquisition failure");
+    });
+    const result = await client.getHistoricalCandles(dailyRequest());
+    expect(result).toMatchObject({
+      status: "PARTIAL", failure_reasons: ["AUTH_FAILED"],
+      dxlink_auth: { status: "FAILED", refresh_attempted: true, retry_count: 1 },
+      provider_error: { code: "UNAUTHORIZED", message: "Authentication failed" },
+    });
+    expect(result.candles).toHaveLength(33);
+    expect(result.resource_usage.request.received_events).toBe(34);
+    expect(result.recovery_diagnostics.windows).toHaveLength(1);
+    expect(sockets).toHaveLength(2);
+    expect(quoteTokens.getQuoteToken).toHaveBeenCalledTimes(2);
+    expect(quoteTokens.invalidateQuoteToken).toHaveBeenCalledTimes(1);
+  });
+
+  test("a recovery failure before feed rows still records its zero-event attempt window", async () => {
+    const dates = dailyFixture.expected_session_dates.filter((date) => date !== "2026-10-08");
+    const { client, sockets, quoteTokens } = dailyClient([
+      dailyRows("SPY", dates),
+      { rows: [], feedConfig: { type: "ERROR", error: "TEMPORARY_FAILURE" } },
+    ]);
+    const result = await client.getHistoricalCandles(dailyRequest());
+    expect(result.status).toBe("PARTIAL");
+    expect(result.candles).toHaveLength(32);
+    expect(result.resource_usage.request.received_events).toBe(33);
+    expect(result.recovery_diagnostics).toMatchObject({
+      attempts: 1, failures: ["PROVIDER_TEMPORARY_FAILURE"],
+      windows: [{
+        start: "2026-10-08T13:30:00.000Z", end: "2026-10-08T20:00:00.000Z",
+        failure_reason: "PROVIDER_TEMPORARY_FAILURE", provider_snapshot_complete: false,
+        received_events: 0,
+      }],
+    });
+    expect(sockets).toHaveLength(2);
+    expect(quoteTokens.getQuoteToken).toHaveBeenCalledTimes(1);
+    expect(quoteTokens.invalidateQuoteToken).not.toHaveBeenCalled();
+  });
+
+  test("a recovery socket construction failure does not erase the initial snapshot or attempted window", async () => {
+    const dates = dailyFixture.expected_session_dates.filter((date) => date !== "2026-10-08");
+    const { client, sockets } = dailyClient([
+      dailyRows("SPY", dates), { constructionError: true },
+    ]);
+    const result = await client.getHistoricalCandles(dailyRequest());
+    expect(result.status).toBe("PARTIAL");
+    expect(result.candles).toHaveLength(32);
+    expect(result.resource_usage.request.received_events).toBe(33);
+    expect(result.recovery_diagnostics).toMatchObject({
+      attempts: 1, failures: ["PROVIDER_TEMPORARY_FAILURE"],
+      windows: [{ failure_reason: "PROVIDER_TEMPORARY_FAILURE", received_events: 0 }],
+    });
+    expect(sockets).toHaveLength(1);
+  });
+
+  test("a refreshed recovery uses only buffer allowance left by initial and rejected-attempt evidence", async () => {
+    const dates = dailyFixture.expected_session_dates.filter((date) => date !== "2026-10-08");
+    const initial = dailyRows("SPY", dates);
+    const rejected = { rows: dailyRows("SPY", ["2026-10-08"], false), unauthorized: true };
+    const baseline = dailyClient([initial, rejected], undefined, async (signal, request) => {
+      if (request?.forceRefresh) throw new Error("Synthetic acquisition failure");
+    });
+    const measured = await baseline.client.getHistoricalCandles(dailyRequest());
+    const originalRetained = measured.resource_usage.request.retained_bytes;
+    const limit = Math.max(measured.resource_usage.request.peak_buffer_bytes, originalRetained) + 100;
+    const remainingBytes = limit - originalRetained;
+    const native = "SPY{=d,a=s,tho=true}";
+    const expensive = [row(rthSession("2026-10-08").open, 4,
+      "1".repeat(Math.ceil(remainingBytes / 4)), native), marker(0, native)];
+    const wireBytes = Buffer.byteLength(JSON.stringify({
+      type: "FEED_DATA", channel: 3, data: ["Candle", expensive.flat()],
+    }));
+    expect(wireBytes).toBeGreaterThan(remainingBytes);
+    expect(wireBytes).toBeLessThan(limit);
+    const { client, sockets, quoteTokens } = dailyClient([initial, rejected, expensive]);
+    const result = await client.getHistoricalCandles(dailyRequest("SPY", { max_buffer_bytes: limit }));
+    expect(result.candles).toHaveLength(33);
+    expect(result.status).toBe("PARTIAL");
+    expect(result.failure_reasons).toContain("LOCAL_BUFFER_BUDGET_EXCEEDED");
+    expect(result.resource_usage.request.received_events).toBe(34);
+    expect(result.resource_usage.request.retained_bytes).toBe(originalRetained);
+    const pendingConfigBytes = Buffer.byteLength(JSON.stringify({ type: "FEED_CONFIG", channel: 3 }));
+    expect(result.resource_usage.request.peak_buffer_bytes).toBe(originalRetained + wireBytes + pendingConfigBytes);
+    expect(result.resource_usage.request.peak_buffer_bytes).toBeGreaterThan(limit);
+    expect(result.recovery_diagnostics.windows.map((window) => window.received_events)).toEqual([1, 0]);
+    expect(sockets).toHaveLength(3);
+    expect(quoteTokens.getQuoteToken).toHaveBeenCalledTimes(2);
+    expect(quoteTokens.invalidateQuoteToken).toHaveBeenCalledTimes(1);
+  });
+
+  test("partial initial timeout preserves IWM daily rows without spending a fresh retry deadline", async () => {
+    const { client, sockets } = dailyClient([dailyRows("IWM", ["2026-10-07"], false)]);
+    const result = await client.getHistoricalCandles(dailyRequest("IWM", {
+      start_time: "2026-10-07T00:00:00Z", end_time: "2026-10-09T23:00:00Z", deadline_ms: 5,
+    }));
+    expect(result.candles).toHaveLength(1);
+    expect(result.status).toBe("PARTIAL");
+    expect(result.failure_reasons).toContain("PROVIDER_TIMEOUT");
+    expect(result.snapshot_complete).toBe(false);
+    expect(result.session_coverage_complete).toBe(false);
+    expect(result.session_coverage.ma20_eligible).toBe(false);
+    expect(sockets).toHaveLength(1);
+  });
+
+  test.each(["BID", "ASK"])("RTH daily %s stays price-specific and reference-only", async (priceType) => {
+    const native = `SPY{=d,a=s,tho=true,price=${priceType.toLowerCase()}}`;
+    const { client, sockets } = dailyClient([[
+      row(rthSession("2026-10-08").open, 4, "100", native), marker(0, native),
+    ]]);
+    const result = await client.getHistoricalCandles(dailyRequest("SPY", {
+      price_type: priceType, start_time: "2026-10-08T00:00:00Z", end_time: "2026-10-08T23:00:00Z",
+    }));
+    expect(result.status).toBe("AVAILABLE");
+    expect(result.price_type).toBe(priceType);
+    expect(result.evidence_class).toBe("VALUATION_ONLY");
+    expect(result.resampled).toBe(false);
+    expect(sockets[0].sent.find((message) => message.add).add[0].symbol)
+      .toBe(`SPY{=d,price=${priceType.toLowerCase()},a=s,tho=true}`);
+    expect(result.warnings).toContain("VALUATION_ONLY_NOT_EXECUTABLE");
+  });
+
+  test("legacy option REGULAR daily timing is not promoted to the cash calendar", async () => {
+    const symbol = ".SPXW261009C7800";
+    const native = `${symbol}{=d,a=s,tho=true}`;
+    const { client } = dailyClient([[
+      row(rthSession("2026-10-08").open, 4, "100", native), marker(0, native),
+    ]]);
+    const result = await client.getHistoricalCandles(dailyRequest("SPXW  261009C07800000", {
+      streamer_symbol: symbol, instrument_type: "OPTION",
+      start_time: "2026-10-08T00:00:00Z", end_time: "2026-10-08T23:00:00Z",
+    }));
+    expect(result.status).toBe("AVAILABLE");
+    expect(result.session_coverage_complete).toBeNull();
+    expect(result.candles[0].session_timing).toBeUndefined();
+    expect(result.candles[0].bar_end).toBe("2026-10-09T13:30:00.000Z");
+  });
+
+  test("recovery cannot spend a fresh buffer budget after the initial retained snapshot", async () => {
+    const dates = dailyFixture.expected_session_dates.filter((date) => date !== "2026-10-08");
+    const initial = dailyRows("SPY", dates);
+    const baseline = dailyClient([initial, dailyRows("SPY", [])]);
+    const measured = await baseline.client.getHistoricalCandles(dailyRequest());
+    const limit = measured.resource_usage.request.peak_buffer_bytes + 100;
+    const expensiveRetry = [row(rthSession("2026-10-08").open, 4, "1".repeat(2000),
+      "SPY{=d,a=s,tho=true}"), marker(0, "SPY{=d,a=s,tho=true}")];
+    const { client, sockets } = dailyClient([initial, expensiveRetry]);
+    const result = await client.getHistoricalCandles(dailyRequest("SPY", { max_buffer_bytes: limit }));
+    expect(result.status).toBe("PARTIAL");
+    expect(result.candles).toHaveLength(32);
+    expect(sockets).toHaveLength(2);
+    expect(result.resource_usage.request.retained_bytes).toBeLessThanOrEqual(limit);
+    expect(result.failure_reasons).toContain("LOCAL_BUFFER_BUDGET_EXCEEDED");
+  });
+
+  test("one batch deadline bounds all retries, even when the injected market clock is fixed", async () => {
+    const dates = dailyFixture.expected_session_dates.filter((date) => date !== "2026-10-08");
+    const first = ["SPY", "QQQ", "IWM"].flatMap((symbol) => dailyRows(symbol, dates));
+    const { client, sockets } = dailyClient([first, null]);
+    const before = performance.now();
+    const results = await client.getHistoricalCandlesBatch({
+      ...dailyRequest(), instruments: ["SPY", "QQQ", "IWM"].map((symbol) => ({
+        symbol, instrument_type: "EQUITY",
+      })), deadline_ms: 15,
+    });
+    expect(performance.now() - before).toBeLessThan(100);
+    expect(sockets).toHaveLength(2);
+    expect(results.map((result) => result.candles.length)).toEqual([32, 32, 32]);
+    expect(results[0].recovery_diagnostics.failures).toContain("PROVIDER_TIMEOUT");
+    expect(results[1].recovery_diagnostics.attempts).toBe(0);
+    expect(results[2].recovery_diagnostics.attempts).toBe(0);
+  });
+
+  test("long-window initial timeout reserves bounded time for a five-session native retry", async () => {
+    const { client, sockets } = dailyClient([
+      null, dailyRows("IWM", dailyFixture.expected_session_dates.slice(0, 5)),
+    ]);
+    const before = performance.now();
+    const result = await client.getHistoricalCandles(dailyRequest("IWM", { deadline_ms: 100 }));
+    expect(performance.now() - before).toBeLessThan(150);
+    expect(sockets).toHaveLength(2);
+    expect(result.status).toBe("PARTIAL");
+    expect(result.snapshot_complete).toBe(false);
+    expect(result.provider_snapshot_complete).toBe(false);
+    expect(result.candles).toHaveLength(5);
+    expect(result.missing_session_dates).toHaveLength(28);
+    expect(result.failure_reasons).toContain("PROVIDER_TIMEOUT");
+    expect(result.recovery_diagnostics.windows[0]).toMatchObject({
+      start: "2026-08-25T13:30:00.000Z", end: "2026-08-31T20:00:00.000Z",
+      received_events: 6, provider_snapshot_complete: true, failure_reason: null,
+    });
+    expect(result.transport_diagnostics.oldest_received_timestamp).toBe("2026-08-25T13:30:00.000Z");
+    expect(result.recovery_diagnostics.stopped_reason).toBe("RECOVERY_WINDOW_LIMIT");
+  });
+
+  test("four-symbol native retries are isolated and capped at four attempts per request", async () => {
+    const symbols = ["SPX", "SPY", "QQQ", "IWM"];
+    const initial = symbols.flatMap((symbol) => dailyRows(symbol,
+      dailyFixture.expected_session_dates.filter((date) => !dailyFixture.omissions[symbol].includes(date))));
+    const { client, sockets } = dailyClient([
+      initial, ...symbols.map((symbol) => dailyRows(symbol, dailyFixture.omissions[symbol])),
+    ]);
+    const results = await client.getHistoricalCandlesBatch({
+      ...dailyRequest(), instruments: symbols.map((symbol) => ({
+        symbol, instrument_type: symbol === "SPX" ? "INDEX" : "EQUITY",
+      })),
+    });
+    expect(sockets).toHaveLength(5);
+    expect(results.every((result) => result.status === "AVAILABLE" &&
+      result.candles.length === 33 && result.recovery_diagnostics.attempts === 1)).toBe(true);
+    expect(results[0].resource_usage.request.received_events).toBe(140);
+    expect(results[0].resource_usage.request.returned_rows).toBe(132);
+    expect(results[0].resource_usage.request.retained_bytes).toBeLessThanOrEqual(1_000_000);
+  });
+});
 
 describe("DXLink candle normalization", () => {
   test.each(["BID", "ASK"])(
