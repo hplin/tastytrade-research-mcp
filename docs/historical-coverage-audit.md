@@ -25,13 +25,33 @@ npm run report:historical-coverage -- --output coverage-audit.json
 npm run report:historical-coverage -- --month 2026-03 --output coverage-2026-03.json
 ```
 
-These commands build and import **this checkout's** `dist/`. The script resolves
-all source paths relative to itself, not a caller's working directory. Its only
-source inputs are seven explicitly named, byte-SHA-256-pinned repository
-artifacts/documents, at most 128 KiB each. A changed, unknown, symlinked, or
-oversized source fails closed. It accepts no arbitrary evidence input or provider
-configuration. Seven local reads and 56 observation rows bound the entire
-inventory; no pagination, retries, or network requests are needed.
+These commands build and import **this checkout's** `dist/`. The launcher resolves
+relative output paths against this checkout, not a caller's working directory.
+It verifies and runs the original byte-pinned generator in
+`scripts/historical-coverage-audit-v1/`, which contains the original seven
+byte-SHA-256-pinned inputs, at most 128 KiB each. Its
+[`provenance.json`](../scripts/historical-coverage-audit-v1/provenance.json)
+records their original repository paths, revision, and hashes. Logical paths in
+the report still identify those original inputs, not the latest editable docs.
+No Git checkout, history lookup, download, or temporary source copy is required
+at runtime.
+
+The original generator and inputs are retained byte for byte from revision
+`3ca41fa6f5b05f471640cb172e723c893935eafc`; this archival copy does not create
+new market observations or establish a historical frozen package inventory.
+Retaining the generator itself is necessary because the historical report binds
+its exact bytes. The launcher's code is not represented by that historical
+generator hash. The two checked-in `dist/` adapters inside the bundle only
+re-export hashing and symbol parsing from this checkout's build; they are not
+generated build output.
+
+A changed, unknown, symlinked, or oversized bundled source fails closed, as
+does a changed or unsafe original generator. Edits to current documentation,
+including `historical-candles.md` and `evidence-cache.md`, do not alter this
+historical inventory. No current-document fallback or relaxed pin is used.
+The launcher accepts no arbitrary evidence input or provider configuration.
+Seven bounded evidence reads, generator verification, and 56 observation rows
+bound the inventory; no pagination, retries, or network requests are needed.
 
 Each month shard shares the full audit's `audit_id`, source identities, and
 generator hash. Select shards by `scope.months` and require one of each month
@@ -43,10 +63,11 @@ clock-dependent output, or query fallback. `report_id` uses #41's canonical
 binds the generator bytes, seven source identities, and full six-month scope.
 This report is **not** a #41 provider manifest and grants no storage rights.
 
-Input changes require a deliberate new audit revision after inspecting the new
-evidence, updating pins and interpretation, and rerunning tests. Do not relax
-pin checks to ingest arbitrary or synthetic fixtures as measured coverage.
-Preserve the original report in version history; `--check` never writes.
+Input or generator changes require a deliberate new audit revision after
+inspecting the new evidence, updating pins and interpretation, and rerunning
+tests. Preserve this versioned bundle and the existing report rather than
+repinning them to current documentation. Do not relax pin checks to ingest
+arbitrary or synthetic fixtures as measured coverage. `--check` never writes.
 
 ## What the matrix can actually establish
 

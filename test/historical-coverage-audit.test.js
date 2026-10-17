@@ -1,6 +1,9 @@
 import { describe, expect, test } from "@jest/globals";
 import { execFile } from "node:child_process";
-import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { copyFile, cp, mkdir, mkdtemp, readFile, realpath, rm, symlink, unlink, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import {
@@ -12,6 +15,7 @@ import { stableEvidenceContentId } from "../dist/evidence-cache.js";
 const ROOT = fileURLToPath(new URL("../", import.meta.url));
 const SCRIPT = fileURLToPath(new URL("../scripts/audit-historical-coverage.mjs", import.meta.url));
 const SNAPSHOT = "docs/historical-coverage-audit-issue-98.json";
+const BUNDLE = new URL("../scripts/historical-coverage-audit-v1/", import.meta.url);
 const exec = promisify(execFile);
 const cli = (...args) => exec(process.execPath, [SCRIPT, ...args], { cwd: ROOT, maxBuffer: 1048576 });
 
@@ -24,6 +28,94 @@ describe("issue 98 pinned offline historical inventory", () => {
     expect(await buildHistoricalCoverageAudit()).toEqual(report);
     await expect(cli("--check", "--output", SNAPSHOT)).resolves.toMatchObject({ stdout: "", stderr: "" });
   });
+
+  test("retains original source and generator identities with explicit Git provenance", async () => {
+    const report = await buildHistoricalCoverageAudit();
+    const provenance = JSON.parse(await readFile(new URL("provenance.json", BUNDLE), "utf8"));
+    expect(provenance.origin_repository).toBe("hplin/tastytrade-research-mcp");
+    expect(provenance.origin_revision).toBe("3ca41fa6f5b05f471640cb172e723c893935eafc");
+    expect(provenance.files.map(({ path, byte_sha256 }) => ({ path, byte_sha256 }))).toEqual([
+      { path: "scripts/audit-historical-coverage.mjs", byte_sha256: report.generator_byte_sha256 },
+      ...report.inputs,
+    ]);
+    for (const item of provenance.files) {
+      const bytes = await readFile(new URL(item.path, BUNDLE));
+      expect(`sha256:${createHash("sha256").update(bytes).digest("hex")}`).toBe(item.byte_sha256);
+      expect(createHash("sha1").update(`blob ${bytes.length}\0`).update(bytes).digest("hex")).toBe(item.git_blob_id);
+      if (item.path.startsWith("docs/")) expect(() => verifyPinnedSource(item.path, bytes)).not.toThrow();
+    }
+  });
+
+  test("reproduces the original audit despite live-document drift and rejects unsafe bundled inputs", async () => {
+    const fixture = await realpath(await mkdtemp(join(tmpdir(), "historical-coverage-audit-")));
+    const bundled = join(fixture, "scripts", "historical-coverage-audit-v1");
+    const fixtureScript = join(fixture, "scripts", "audit-historical-coverage.mjs");
+    const run = (...args) => exec(process.execPath, [fixtureScript, ...args], { cwd: tmpdir(), maxBuffer: 1048576 });
+    try {
+      await mkdir(join(fixture, "scripts"));
+      await mkdir(join(fixture, "docs"));
+      await cp(BUNDLE, bundled, { recursive: true });
+      await copyFile(SCRIPT, fixtureScript);
+      await symlink(join(ROOT, "dist"), join(fixture, "dist"), "dir");
+      await writeFile(join(fixture, "package.json"), '{"type":"module"}\n');
+      const originalReport = await readFile(join(ROOT, SNAPSHOT), "utf8");
+      await writeFile(join(fixture, SNAPSHOT), originalReport);
+      for (const path of ["docs/historical-candles.md", "docs/evidence-cache.md"]) {
+        const changed = `${await readFile(join(ROOT, path), "utf8")}\nChanged current documentation.\n`;
+        await writeFile(join(fixture, path), changed);
+        expect(() => verifyPinnedSource(path, Buffer.from(changed))).toThrow("changed audit source");
+      }
+      await expect(run("--check", "--output", SNAPSHOT)).resolves.toMatchObject({ stdout: "", stderr: "" });
+      const full = JSON.parse(originalReport);
+      const shards = [];
+      for (const month of full.scope.months) {
+        const { stdout } = await run("--month", month);
+        const shard = JSON.parse(stdout);
+        expect(shard.audit_id).toBe(full.audit_id);
+        expect(shard.generator_byte_sha256).toBe(full.generator_byte_sha256);
+        expect(shard.inputs).toEqual(full.inputs);
+        shards.push(shard);
+      }
+      expect(shards.flatMap((shard) => shard.family_matrix)).toEqual(full.family_matrix);
+      expect(shards.flatMap((shard) => shard.observations)).toEqual(full.observations);
+      await expect(run("--month", "2026-03")).resolves.toMatchObject({
+        stdout: `${JSON.stringify(shards[0], null, 2)}\n`,
+      });
+      await run("--month", "2026-03", "--output", "march.json");
+      expect(await readFile(join(fixture, "march.json"), "utf8")).toBe(`${JSON.stringify(shards[0], null, 2)}\n`);
+      await expect(run("--month", "2026-03", "--output", "march.json")).rejects.toMatchObject({ code: 1 });
+      for (const path of ["docs/historical-candles.md", "docs/evidence-cache.md", "scripts/audit-historical-coverage.mjs"]) {
+        const target = join(bundled, path);
+        const original = await readFile(target);
+        try {
+          await writeFile(target, Buffer.concat([original, Buffer.from("\nchanged\n")]));
+          await expect(run("--check", "--output", SNAPSHOT)).rejects.toMatchObject({
+            code: 1,
+            stderr: expect.stringContaining(path.startsWith("docs/") ? "changed audit source" : "Changed historical audit generator"),
+          });
+        } finally {
+          await writeFile(target, original);
+        }
+      }
+      const target = join(bundled, "docs/historical-candles.md");
+      const original = await readFile(target);
+      try {
+        await writeFile(target, Buffer.alloc(131073));
+        await expect(run()).rejects.toMatchObject({ code: 1, stderr: expect.stringContaining("Unsafe audit source") });
+        await unlink(target);
+        await expect(run()).rejects.toMatchObject({ code: 1, stderr: expect.stringContaining("ENOENT") });
+        await symlink(join(fixture, "docs/historical-candles.md"), target, "file");
+        await expect(run()).rejects.toMatchObject({ code: 1, stderr: expect.stringContaining("Unsafe audit source") });
+        await unlink(target);
+      } finally {
+        await writeFile(target, original);
+      }
+      expect(await readFile(join(fixture, SNAPSHOT), "utf8")).toBe(originalReport);
+      await expect(run("--check", "--output", SNAPSHOT)).resolves.toMatchObject({ stdout: "", stderr: "" });
+    } finally {
+      await rm(fixture, { recursive: true });
+    }
+  }, 30000);
 
   test("keeps all six months and every family/checkpoint blocked, never 0/0 success", async () => {
     const report = await buildHistoricalCoverageAudit();
